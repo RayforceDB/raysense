@@ -162,6 +162,7 @@ pub struct RuleConfig {
     pub max_function_lines: usize,
     pub no_god_files: bool,
     pub high_file_fan_in: usize,
+    pub high_file_fan_out: usize,
     pub large_file_lines: usize,
     pub max_large_file_findings: usize,
     pub low_call_resolution_min_calls: usize,
@@ -183,6 +184,7 @@ impl Default for RuleConfig {
             min_equality: 0.0,
             min_redundancy: 0.0,
             high_file_fan_in: 50,
+            high_file_fan_out: 15,
             max_cycles: 0,
             max_coupling_ratio: 1.0,
             max_function_complexity: 15,
@@ -362,8 +364,28 @@ pub struct CouplingMetrics {
     pub entropy_pairs: usize,
     pub average_module_cohesion: Option<f64>,
     pub cohesive_module_count: usize,
+    pub god_files: Vec<FileCouplingMetric>,
+    pub unstable_hotspots: Vec<FileCouplingMetric>,
+    pub most_unstable_files: Vec<FileInstabilityMetric>,
     pub max_fan_in: usize,
     pub max_fan_out: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileCouplingMetric {
+    pub file_id: usize,
+    pub path: String,
+    pub fan_in: usize,
+    pub fan_out: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileInstabilityMetric {
+    pub file_id: usize,
+    pub path: String,
+    pub fan_in: usize,
+    pub fan_out: usize,
+    pub instability: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -657,6 +679,7 @@ fn coupling_metrics(
     let (entropy, entropy_bits, entropy_pairs) =
         coupling_entropy(report, config, &stable_foundations);
     let (average_module_cohesion, cohesive_module_count) = module_cohesion(report, config);
+    let (god_files, unstable_hotspots, most_unstable_files) = file_coupling_metrics(report, config);
     let cross_unstable_edges = report
         .imports
         .iter()
@@ -690,6 +713,9 @@ fn coupling_metrics(
         entropy_pairs,
         average_module_cohesion,
         cohesive_module_count,
+        god_files,
+        unstable_hotspots,
+        most_unstable_files,
         max_fan_in: hotspots
             .iter()
             .map(|hotspot| hotspot.fan_in)
@@ -837,6 +863,96 @@ fn module_cohesion(report: &ScanReport, config: &RaysenseConfig) -> (Option<f64>
     } else {
         (Some(round3(total / count as f64)), count)
     }
+}
+
+fn file_coupling_metrics(
+    report: &ScanReport,
+    config: &RaysenseConfig,
+) -> (
+    Vec<FileCouplingMetric>,
+    Vec<FileCouplingMetric>,
+    Vec<FileInstabilityMetric>,
+) {
+    let mut fan_in: HashMap<usize, usize> = HashMap::new();
+    let mut fan_out: HashMap<usize, usize> = HashMap::new();
+    for import in &report.imports {
+        let Some(to_file_id) = import.resolved_file else {
+            continue;
+        };
+        if to_file_id == import.from_file || import.resolution != ImportResolution::Local {
+            continue;
+        }
+        *fan_out.entry(import.from_file).or_default() += 1;
+        *fan_in.entry(to_file_id).or_default() += 1;
+    }
+
+    let mut coupling = Vec::new();
+    let mut instability = Vec::new();
+    for file in &report.files {
+        let path = normalize_rule_path(&file.path);
+        if is_test_path_configured(&path, config) {
+            continue;
+        }
+        let incoming = fan_in.get(&file.file_id).copied().unwrap_or(0);
+        let outgoing = fan_out.get(&file.file_id).copied().unwrap_or(0);
+        if incoming > 0 || outgoing > 0 {
+            coupling.push(FileCouplingMetric {
+                file_id: file.file_id,
+                path: path.clone(),
+                fan_in: incoming,
+                fan_out: outgoing,
+            });
+            instability.push(FileInstabilityMetric {
+                file_id: file.file_id,
+                path,
+                fan_in: incoming,
+                fan_out: outgoing,
+                instability: if incoming + outgoing == 0 {
+                    0.5
+                } else {
+                    ratio(outgoing, incoming + outgoing)
+                },
+            });
+        }
+    }
+
+    let mut god_files: Vec<FileCouplingMetric> = coupling
+        .iter()
+        .filter(|metric| {
+            metric.fan_out >= config.rules.high_file_fan_out && !is_package_index_path(&metric.path)
+        })
+        .cloned()
+        .collect();
+    god_files.sort_by(|a, b| b.fan_out.cmp(&a.fan_out).then_with(|| a.path.cmp(&b.path)));
+    god_files.truncate(10);
+
+    let mut unstable_hotspots: Vec<FileCouplingMetric> = coupling
+        .iter()
+        .filter(|metric| {
+            metric.fan_in >= config.rules.high_file_fan_in
+                && !is_package_index_path(&metric.path)
+                && ratio(metric.fan_out, metric.fan_in + metric.fan_out) >= 0.15
+        })
+        .cloned()
+        .collect();
+    unstable_hotspots.sort_by(|a, b| {
+        b.fan_in
+            .cmp(&a.fan_in)
+            .then_with(|| b.fan_out.cmp(&a.fan_out))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    unstable_hotspots.truncate(10);
+
+    instability.sort_by(|a, b| {
+        b.instability
+            .partial_cmp(&a.instability)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.fan_out.cmp(&a.fan_out))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    instability.truncate(10);
+
+    (god_files, unstable_hotspots, instability)
 }
 
 fn call_metrics(report: &ScanReport) -> CallMetrics {
@@ -2421,6 +2537,17 @@ fn rules(
         }
     }
 
+    if rules.no_god_files {
+        for file in &metrics.coupling.god_files {
+            findings.push(RuleFinding {
+                severity: RuleSeverity::Warning,
+                code: "no_god_files".to_string(),
+                path: file.path.clone(),
+                message: format!("{} outgoing dependency edges", file.fan_out),
+            });
+        }
+    }
+
     for import in &report.imports {
         let Some(to_file_id) = import.resolved_file else {
             continue;
@@ -3252,6 +3379,54 @@ mod tests {
 
         assert_eq!(health.metrics.coupling.cohesive_module_count, 1);
         assert_eq!(health.metrics.coupling.average_module_cohesion, Some(0.5));
+    }
+
+    #[test]
+    fn reports_file_instability_and_god_files() {
+        let files = vec![
+            file(0, "src/app.rs"),
+            file(1, "src/a.rs"),
+            file(2, "src/b.rs"),
+            file(3, "src/c.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(1), ImportResolution::Local),
+            import(1, 0, Some(2), ImportResolution::Local),
+            import(2, 0, Some(3), ImportResolution::Local),
+        ];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+        let mut config = RaysenseConfig::default();
+        config.rules.high_file_fan_out = 2;
+        let health = compute_health_with_config(&report, &config);
+
+        assert_eq!(health.metrics.coupling.god_files[0].path, "src/app.rs");
+        assert_eq!(health.metrics.coupling.god_files[0].fan_out, 3);
+        assert_eq!(
+            health.metrics.coupling.most_unstable_files[0].path,
+            "src/app.rs"
+        );
+        assert_eq!(
+            health.metrics.coupling.most_unstable_files[0].instability,
+            1.0
+        );
+        assert!(health.rules.iter().any(|rule| rule.code == "no_god_files"));
     }
 
     #[test]

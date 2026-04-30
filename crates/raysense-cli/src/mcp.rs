@@ -1682,6 +1682,7 @@ fn config_schema() -> Value {
                     "max_function_lines": {"type": "integer", "minimum": 0},
                     "no_god_files": {"type": "boolean"},
                     "high_file_fan_in": {"type": "integer", "minimum": 0},
+                    "high_file_fan_out": {"type": "integer", "minimum": 0},
                     "large_file_lines": {"type": "integer", "minimum": 0},
                     "max_large_file_findings": {"type": "integer", "minimum": 0},
                     "low_call_resolution_ratio": {"type": "number", "minimum": 0, "maximum": 1},
@@ -2064,6 +2065,7 @@ mod tests {
 
         assert_eq!(content["source"], "default");
         assert_eq!(content["config"]["rules"]["high_file_fan_in"], 50);
+        assert_eq!(content["config"]["rules"]["high_file_fan_out"], 15);
         assert_eq!(
             content["config"]["boundaries"]["forbidden_edges"]
                 .as_array()

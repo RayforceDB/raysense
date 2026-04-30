@@ -39,10 +39,11 @@ pub use facts::{
 pub use graph::GraphMetrics;
 pub use health::{
     compute_health, compute_health_with_config, is_foundation_file, BoundaryConfig,
-    ComplexityMetrics, ConfigError, DuplicateFunctionGroup, FileHotspot, ForbiddenEdgeConfig,
-    FunctionComplexityMetric, HealthSummary, LanguagePluginConfig, LayerConfig,
-    ModuleDistanceMetric, RaysenseConfig, Remediation, ResolutionBreakdown, RuleConfig, ScanConfig,
-    ScoreConfig, TestGapCandidate, TestGapMetrics, TrendMetrics,
+    ComplexityMetrics, ConfigError, DuplicateFunctionGroup, FileCouplingMetric, FileHotspot,
+    FileInstabilityMetric, ForbiddenEdgeConfig, FunctionComplexityMetric, HealthSummary,
+    LanguagePluginConfig, LayerConfig, ModuleDistanceMetric, RaysenseConfig, Remediation,
+    ResolutionBreakdown, RuleConfig, ScanConfig, ScoreConfig, TestGapCandidate, TestGapMetrics,
+    TrendMetrics,
 };
 pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;
