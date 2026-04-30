@@ -94,7 +94,7 @@ raysense memory <path> [--config <path>]
 raysense check [path] [--json] [--config <path>]
 raysense gate [path] [--save] [--baseline <path>] [--json] [--config <path>]
 raysense watch [path] [--interval <seconds>] [--config <path>]
-raysense visualize [path] [--output <path>] [--config <path>]
+raysense visualize [path] [--watch] [--interval <seconds>] [--output <path>] [--config <path>]
 raysense plugin list [path] [--config <path>]
 raysense plugin add <name> <extensions...> [--path <path>] [--config <path>]
 raysense plugin add-standard [--path <path>] [--config <path>]
@@ -132,6 +132,11 @@ save/diff baselines and query saved baseline tables with projection, filters,
 sorting, and pagination. Agent session tools can save an in-memory baseline,
 rescan, end the session, check rules, inspect evolution, inspect DSM data,
 inspect test gaps, and list configured language plugins.
+
+`raysense visualize` writes a self-refreshing local HTML dashboard with file
+size blocks, module graph edges, hotspots, rules, complexity, test gaps, and an
+embedded telemetry JSON payload. Use `--watch` to keep regenerating the page
+from fresh scans.
 
 Baselines are stored under `<path>/.raysense/baseline` by default. The manifest
 is JSON for fast agent diffs, and baseline tables are written under `tables/`

@@ -32,6 +32,7 @@ use raysense_memory::{
     BaselineTableQuery, BaselineTableSort,
 };
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -113,6 +114,10 @@ enum Command {
         path: PathBuf,
         #[arg(long)]
         output: Option<PathBuf>,
+        #[arg(long)]
+        watch: bool,
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
         #[arg(long)]
         config: Option<PathBuf>,
     },
@@ -331,8 +336,10 @@ pub fn run() -> Result<()> {
         Command::Visualize {
             path,
             output,
+            watch,
+            interval,
             config,
-        } => visualize_project(&path, output, config.as_deref())?,
+        } => visualize_project(&path, output, config.as_deref(), watch, interval)?,
         Command::Plugin { command } => match command {
             PluginCommand::List { path, config } => list_plugins(&path, config.as_deref())?,
             PluginCommand::Add {
@@ -544,18 +551,31 @@ fn visualize_project(
     root: &Path,
     output: Option<PathBuf>,
     config_path: Option<&Path>,
+    watch: bool,
+    interval: u64,
 ) -> Result<()> {
-    let config = config_for_root(root, config_path)?;
-    let report = scan_path_with_config(root, &config)?;
-    let health = compute_health_with_config(&report, &config);
     let output = output.unwrap_or_else(|| root.join(".raysense/visualization.html"));
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(&output, visualization_html(&report, &health))
-        .with_context(|| format!("failed to write {}", output.display()))?;
-    println!("visualization {}", output.display());
+    loop {
+        let config = config_for_root(root, config_path)?;
+        let report = scan_path_with_config(root, &config)?;
+        let health = compute_health_with_config(&report, &config);
+        fs::write(&output, visualization_html(&report, &health))
+            .with_context(|| format!("failed to write {}", output.display()))?;
+        println!(
+            "visualization {} snapshot={} quality_signal={}",
+            output.display(),
+            report.snapshot.snapshot_id,
+            health.quality_signal
+        );
+        if !watch {
+            break;
+        }
+        thread::sleep(Duration::from_secs(interval.max(1)));
+    }
     Ok(())
 }
 
@@ -630,24 +650,114 @@ fn visualization_html(
         })
         .collect::<Vec<_>>()
         .join("");
-    let module_nodes = health
-        .metrics
-        .architecture
-        .unstable_modules
+    let hotspots = health
+        .hotspots
         .iter()
-        .take(12)
-        .enumerate()
-        .map(|(idx, module)| {
-            let x = 70 + (idx % 4) * 180;
-            let y = 70 + (idx / 4) * 95;
+        .map(|hotspot| {
             format!(
-                "<g><circle cx=\"{x}\" cy=\"{y}\" r=\"28\" fill=\"#263b57\" stroke=\"#78a6d8\"/><text x=\"{x}\" y=\"{text_y}\" text-anchor=\"middle\">{}</text></g>",
-                html_escape(&module.module),
-                text_y = y + 5
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&hotspot.path),
+                html_escape(&hotspot.module),
+                hotspot.fan_in,
+                hotspot.fan_out
             )
         })
         .collect::<Vec<_>>()
         .join("");
+    let rules = health
+        .rules
+        .iter()
+        .take(12)
+        .map(|rule| {
+            format!(
+                "<tr><td>{:?}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                rule.severity,
+                html_escape(&rule.code),
+                html_escape(&rule.path),
+                html_escape(&rule.message)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let mut module_names = BTreeSet::new();
+    for module in &health.metrics.architecture.unstable_modules {
+        if !module.module.is_empty() {
+            module_names.insert(module.module.clone());
+        }
+    }
+    for edge in &health.metrics.dsm.top_module_edges {
+        if !edge.from_module.is_empty() {
+            module_names.insert(edge.from_module.clone());
+        }
+        if !edge.to_module.is_empty() {
+            module_names.insert(edge.to_module.clone());
+        }
+    }
+    let module_names = module_names.into_iter().take(16).collect::<Vec<_>>();
+    let stability_by_module = health
+        .metrics
+        .architecture
+        .unstable_modules
+        .iter()
+        .map(|module| (module.module.clone(), module.instability))
+        .collect::<BTreeMap<_, _>>();
+    let module_positions = module_names
+        .iter()
+        .enumerate()
+        .map(|(idx, module)| {
+            let x = 80 + (idx % 4) * 190;
+            let y = 70 + (idx / 4) * 70;
+            (module.clone(), (x, y))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let module_edges = health
+        .metrics
+        .dsm
+        .top_module_edges
+        .iter()
+        .filter_map(|edge| {
+            let (x1, y1) = module_positions.get(&edge.from_module)?;
+            let (x2, y2) = module_positions.get(&edge.to_module)?;
+            let width = edge.edges.min(8).max(1);
+            Some(format!(
+                "<line x1=\"{x1}\" y1=\"{y1}\" x2=\"{x2}\" y2=\"{y2}\" stroke-width=\"{width}\"/>"
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let module_nodes = module_names
+        .iter()
+        .map(|module| {
+            let (x, y) = module_positions[module];
+            let instability = stability_by_module.get(module).copied().unwrap_or(0.0);
+            let radius = 22 + (instability * 18.0).round() as usize;
+            let label = compact_label(module, 24);
+            format!(
+                "<g><circle cx=\"{x}\" cy=\"{y}\" r=\"{radius}\"/><text x=\"{x}\" y=\"{text_y}\" text-anchor=\"middle\">{}</text><title>{} instability {:.3}</title></g>",
+                html_escape(&label),
+                html_escape(module),
+                instability,
+                text_y = y + radius + 16
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let telemetry = serde_json::to_string(&serde_json::json!({
+        "snapshot_id": report.snapshot.snapshot_id,
+        "files": report.files.len(),
+        "functions": report.functions.len(),
+        "rules": health.rules.len(),
+        "score": health.score,
+        "quality_signal": health.quality_signal,
+        "coverage_score": health.coverage_score,
+        "structural_score": health.structural_score,
+        "root_causes": health.root_causes,
+        "resolution": health.resolution,
+        "top_module_edges": health.metrics.dsm.top_module_edges,
+        "hotspots": health.hotspots,
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"<!doctype html>
 <html><head><meta charset="utf-8"><meta http-equiv="refresh" content="10"><title>Raysense</title>
@@ -662,11 +772,15 @@ body{{font-family:system-ui,sans-serif;margin:24px;background:#111;color:#eee;li
 .panels{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}}
 .bar{{height:8px;background:#263b57;margin-top:6px}}.bar span{{display:block;height:8px;background:#78a6d8}}
 svg{{width:100%;max-width:820px;height:330px;background:#151b24;border:1px solid #333}}
+svg line{{stroke:#78a6d8;opacity:.42}}svg circle{{fill:#263b57;stroke:#9cc7ef;stroke-width:2}}
 svg text{{fill:#eee;font-size:11px}}
 table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom:1px solid #333;padding:6px;text-align:left}}
 </style></head><body>
 <div class="top">
 <div class="metric"><b>{}</b>quality signal</div>
+<div class="metric"><b>{}</b>score</div>
+<div class="metric"><b>{}</b>coverage</div>
+<div class="metric"><b>{}</b>structure</div>
 <div class="metric"><b>{}</b>files</div>
 <div class="metric"><b>{}</b>functions</div>
 <div class="metric"><b>{}</b>rules</div>
@@ -676,13 +790,19 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <h2>Files</h2>
 <div class="grid">{}</div>
 <div class="panels">
-<section><h2>Modules</h2><svg viewBox="0 0 820 330">{}</svg></section>
+<section><h2>Modules</h2><svg viewBox="0 0 820 330">{}{}</svg></section>
 <section><h2>Module Edges</h2><table><tr><th>from</th><th>to</th><th>edges</th></tr>{}</table></section>
+<section><h2>Hotspots</h2><table><tr><th>file</th><th>module</th><th>fan in</th><th>fan out</th></tr>{}</table></section>
+<section><h2>Rules</h2><table><tr><th>severity</th><th>code</th><th>path</th><th>message</th></tr>{}</table></section>
 <section><h2>Complexity</h2><table><tr><th>file</th><th>function</th><th>value</th></tr>{}</table></section>
 <section><h2>Test Gaps</h2><table><tr><th>source</th><th>expected tests</th></tr>{}</table></section>
 </div>
+<script type="application/json" id="raysense-telemetry">{}</script>
 </body></html>"#,
         health.quality_signal,
+        health.score,
+        health.coverage_score,
+        health.structural_score,
         report.files.len(),
         report.functions.len(),
         health.rules.len(),
@@ -691,10 +811,14 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
         health.root_causes.redundancy,
         health.root_causes.redundancy * 100.0,
         cells,
+        module_edges,
         module_nodes,
         modules,
+        hotspots,
+        rules,
         complex,
-        gaps
+        gaps,
+        json_script_escape(&telemetry)
     )
 }
 
@@ -704,6 +828,32 @@ fn html_escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn json_script_escape(value: &str) -> String {
+    value
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+}
+
+fn compact_label(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let tail = value
+        .rsplit(['/', '.'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(value);
+    if tail.chars().count() <= max_chars {
+        tail.to_string()
+    } else {
+        let prefix = tail
+            .chars()
+            .take(max_chars.saturating_sub(3))
+            .collect::<String>();
+        format!("{prefix}...")
+    }
 }
 
 fn list_plugins(root: &Path, config_path: Option<&Path>) -> Result<()> {
