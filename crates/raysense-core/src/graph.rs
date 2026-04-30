@@ -87,6 +87,7 @@ mod tests {
             file_id,
             path: PathBuf::from(path),
             language: Language::Rust,
+            module: path.trim_end_matches(".rs").replace('/', "."),
             lines: 1,
             bytes: 1,
             content_hash: String::new(),

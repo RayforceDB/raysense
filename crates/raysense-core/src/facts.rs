@@ -44,6 +44,7 @@ pub struct FileFact {
     pub file_id: usize,
     pub path: PathBuf,
     pub language: Language,
+    pub module: String,
     pub lines: usize,
     pub bytes: usize,
     pub content_hash: String,

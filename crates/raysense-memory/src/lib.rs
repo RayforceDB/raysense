@@ -110,6 +110,10 @@ fn build_files_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
             .iter()
             .map(|file| format!("{:?}", file.language).to_lowercase()),
     )?;
+    let modules = str_vec(
+        report.files.len(),
+        report.files.iter().map(|file| file.module.clone()),
+    )?;
     let lines = i64_vec(
         report.files.len(),
         report.files.iter().map(|file| file.lines as i64),
@@ -124,11 +128,12 @@ fn build_files_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
     )?;
 
     table(
-        6,
+        7,
         [
             ("file_id", ids),
             ("path", paths),
             ("language", languages),
+            ("module", modules),
             ("lines", lines),
             ("bytes", bytes),
             ("content_hash", hashes),

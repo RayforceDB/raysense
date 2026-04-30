@@ -4,7 +4,7 @@ use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -67,6 +67,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
         let file_fact = FileFact {
             file_id,
+            module: module_name(&relative_path, language),
             path: relative_path,
             language,
             lines: content.lines().count(),
@@ -123,6 +124,32 @@ fn snapshot_id(files: &[FileFact]) -> String {
         hasher.update(file.content_hash.as_bytes());
     }
     format!("{:x}", hasher.finalize())
+}
+
+fn module_name(path: &Path, language: Language) -> String {
+    let mut components: Vec<String> = path.components().filter_map(component_to_string).collect();
+
+    if let Some(last) = components.last_mut() {
+        if let Some(stem) = Path::new(last).file_stem().and_then(|stem| stem.to_str()) {
+            *last = stem.to_string();
+        }
+    }
+
+    match language {
+        Language::Rust if components.last().is_some_and(|name| name == "mod") => {
+            components.pop();
+        }
+        Language::TypeScript | Language::Python
+            if components
+                .last()
+                .is_some_and(|name| name == "index" || name == "__init__") =>
+        {
+            components.pop();
+        }
+        _ => {}
+    }
+
+    components.join(".")
 }
 
 fn extract_functions(file_id: usize, language: Language, content: &str) -> Vec<FunctionFact> {
@@ -309,24 +336,158 @@ fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
 }
 
 fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
-    let mut by_stem = HashMap::new();
     let mut by_path = HashMap::new();
+    let mut by_module = HashMap::new();
 
     for file in files {
-        if let Some(stem) = file.path.file_stem().and_then(|stem| stem.to_str()) {
-            by_stem.entry(stem.to_string()).or_insert(file.file_id);
-        }
-        by_path.insert(file.path.to_string_lossy().replace('\\', "/"), file.file_id);
+        by_path.insert(normalize_path(&file.path), file.file_id);
+        by_module.entry(file.module.clone()).or_insert(file.file_id);
     }
 
+    let file_by_id: HashMap<usize, &FileFact> =
+        files.iter().map(|file| (file.file_id, file)).collect();
+
     for import in imports {
-        let target = import.target.replace("::", "/").replace('.', "/");
-        let target = target.trim_start_matches("./").trim_start_matches("../");
-        import.resolved_file = by_path.get(target).copied().or_else(|| {
-            by_stem
-                .get(target.rsplit('/').next().unwrap_or(target))
-                .copied()
-        });
+        let Some(from_file) = file_by_id.get(&import.from_file).copied() else {
+            continue;
+        };
+        import.resolved_file = resolve_import(from_file, import, &by_path, &by_module);
+    }
+}
+
+fn resolve_import(
+    from_file: &FileFact,
+    import: &ImportFact,
+    by_path: &HashMap<String, usize>,
+    by_module: &HashMap<String, usize>,
+) -> Option<usize> {
+    let candidates = import_candidates(from_file, import);
+    candidates
+        .iter()
+        .find_map(|candidate| by_path.get(candidate).copied())
+        .or_else(|| {
+            module_candidate(&import.target).and_then(|module| by_module.get(&module).copied())
+        })
+}
+
+fn import_candidates(from_file: &FileFact, import: &ImportFact) -> Vec<String> {
+    match from_file.language {
+        Language::Rust => rust_import_candidates(&import.target),
+        Language::Python => python_import_candidates(&import.target),
+        Language::TypeScript => typescript_import_candidates(&from_file.path, &import.target),
+        Language::C | Language::Cpp => c_import_candidates(&from_file.path, &import.target),
+        Language::Unknown => Vec::new(),
+    }
+}
+
+fn rust_import_candidates(target: &str) -> Vec<String> {
+    let target = target
+        .trim_start_matches("crate::")
+        .trim_start_matches("self::")
+        .replace("::", "/");
+    vec![
+        format!("{target}.rs"),
+        format!("{target}/mod.rs"),
+        format!("src/{target}.rs"),
+        format!("src/{target}/mod.rs"),
+    ]
+}
+
+fn python_import_candidates(target: &str) -> Vec<String> {
+    let target = target.replace('.', "/");
+    vec![format!("{target}.py"), format!("{target}/__init__.py")]
+}
+
+fn typescript_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
+    let Some(base) = relative_base(from_path, target) else {
+        return Vec::new();
+    };
+    let base = normalize_path(&base);
+    let extensions = ["ts", "tsx", "js", "jsx"];
+    let mut candidates = Vec::new();
+
+    if has_known_extension(&base, &extensions) {
+        candidates.push(base.clone());
+    } else {
+        candidates.extend(extensions.iter().map(|ext| format!("{base}.{ext}")));
+    }
+    candidates.extend(extensions.iter().map(|ext| format!("{base}/index.{ext}")));
+    candidates
+}
+
+fn c_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
+    if target.starts_with('<') {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(base) = relative_base(from_path, target) {
+        candidates.push(normalize_path(base));
+    }
+    candidates.push(target.replace('\\', "/"));
+    candidates
+}
+
+fn module_candidate(target: &str) -> Option<String> {
+    let target = target
+        .trim()
+        .trim_start_matches("crate::")
+        .trim_start_matches("self::")
+        .trim_start_matches("./")
+        .trim_matches(['"', '\'']);
+    if target.starts_with("../") || target.starts_with('/') || target.starts_with('@') {
+        return None;
+    }
+    Some(
+        target
+            .replace("::", ".")
+            .replace('/', ".")
+            .trim_matches('.')
+            .to_string(),
+    )
+    .filter(|target| !target.is_empty())
+}
+
+fn relative_base(from_path: &Path, target: &str) -> Option<PathBuf> {
+    let target_path = Path::new(target);
+    if !target.starts_with('.') {
+        return Some(target_path.to_path_buf());
+    }
+
+    let parent = from_path.parent().unwrap_or_else(|| Path::new(""));
+    Some(normalize_components(parent.join(target_path)))
+}
+
+fn normalize_components(path: PathBuf) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    out
+}
+
+fn normalize_path(path: impl AsRef<Path>) -> String {
+    path.as_ref().to_string_lossy().replace('\\', "/")
+}
+
+fn has_known_extension(path: &str, extensions: &[&str]) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| extensions.contains(&ext))
+}
+
+fn component_to_string(component: Component<'_>) -> Option<String> {
+    match component {
+        Component::Normal(value) => value.to_str().map(ToOwned::to_owned),
+        _ => None,
     }
 }
 
@@ -379,6 +540,7 @@ def run():
                 file_id: 0,
                 path: PathBuf::from("src/main.rs"),
                 language: Language::Rust,
+                module: "src.main".to_string(),
                 lines: 1,
                 bytes: 1,
                 content_hash: String::new(),
@@ -387,6 +549,7 @@ def run():
                 file_id: 1,
                 path: PathBuf::from("src/graph.rs"),
                 language: Language::Rust,
+                module: "src.graph".to_string(),
                 lines: 1,
                 bytes: 1,
                 content_hash: String::new(),
@@ -397,5 +560,64 @@ def run():
         resolve_imports(&files, &mut imports);
 
         assert_eq!(imports[0].resolved_file, Some(1));
+    }
+
+    #[test]
+    fn resolves_typescript_relative_imports() {
+        let files = vec![
+            file(0, "src/ui/form.ts", Language::TypeScript),
+            file(1, "src/db/client.ts", Language::TypeScript),
+            file(2, "src/widgets/index.ts", Language::TypeScript),
+        ];
+        let mut imports = vec![
+            new_import(0, "../db/client", "import"),
+            new_import(0, "../widgets", "import"),
+        ];
+
+        resolve_imports(&files, &mut imports);
+
+        assert_eq!(imports[0].resolved_file, Some(1));
+        assert_eq!(imports[1].resolved_file, Some(2));
+    }
+
+    #[test]
+    fn resolves_rust_mod_files() {
+        let files = vec![
+            file(0, "src/main.rs", Language::Rust),
+            file(1, "src/memory/mod.rs", Language::Rust),
+        ];
+        let mut imports = vec![new_import(0, "crate::memory", "use")];
+
+        resolve_imports(&files, &mut imports);
+
+        assert_eq!(imports[0].resolved_file, Some(1));
+    }
+
+    #[test]
+    fn derives_module_names() {
+        assert_eq!(
+            module_name(Path::new("src/memory/mod.rs"), Language::Rust),
+            "src.memory"
+        );
+        assert_eq!(
+            module_name(Path::new("src/widgets/index.ts"), Language::TypeScript),
+            "src.widgets"
+        );
+        assert_eq!(
+            module_name(Path::new("pkg/__init__.py"), Language::Python),
+            "pkg"
+        );
+    }
+
+    fn file(file_id: usize, path: &str, language: Language) -> FileFact {
+        FileFact {
+            file_id,
+            path: PathBuf::from(path),
+            language,
+            module: module_name(Path::new(path), language),
+            lines: 1,
+            bytes: 1,
+            content_hash: String::new(),
+        }
     }
 }
