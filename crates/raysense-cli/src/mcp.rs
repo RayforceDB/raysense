@@ -569,8 +569,10 @@ fn architecture_tool(args: &Value) -> Result<Value> {
             "levels": health.metrics.architecture.levels,
             "cycles": limited(&health.metrics.architecture.cycles, limit),
             "unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
+            "stable_foundations": limited(&health.metrics.architecture.stable_foundations, limit),
             "cycle_total": health.metrics.architecture.cycles.len(),
-            "unstable_module_total": health.metrics.architecture.unstable_modules.len()
+            "unstable_module_total": health.metrics.architecture.unstable_modules.len(),
+            "stable_foundation_total": health.metrics.architecture.stable_foundations.len()
         },
         "dsm": {
             "module_count": health.metrics.dsm.module_count,
@@ -812,6 +814,7 @@ fn dsm_tool(args: &Value) -> Result<Value> {
         "dsm": health.metrics.dsm,
         "levels": health.metrics.architecture.levels,
         "unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
+        "stable_foundations": limited(&health.metrics.architecture.stable_foundations, limit),
         "module_edges": limited(&health.metrics.dsm.top_module_edges, limit)
     }))
 }

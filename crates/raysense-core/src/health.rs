@@ -285,6 +285,7 @@ pub struct ArchitectureMetrics {
     pub max_blast_radius_file: String,
     pub levels: BTreeMap<String, usize>,
     pub unstable_modules: Vec<ModuleStabilityMetric>,
+    pub stable_foundations: Vec<ModuleStabilityMetric>,
     pub cycles: Vec<Vec<String>>,
 }
 
@@ -333,7 +334,9 @@ pub struct DuplicateFunctionGroup {
 pub struct CouplingMetrics {
     pub local_edges: usize,
     pub cross_module_edges: usize,
+    pub cross_unstable_edges: usize,
     pub cross_module_ratio: f64,
+    pub cross_unstable_ratio: f64,
     pub max_fan_in: usize,
     pub max_fan_out: usize,
 }
@@ -625,11 +628,35 @@ fn coupling_metrics(
             module_group(from_file, config) != module_group(to_file, config)
         })
         .count();
+    let stable_foundations = stable_foundation_modules(report, config);
+    let cross_unstable_edges = report
+        .imports
+        .iter()
+        .filter(|import| {
+            let Some(to_file_id) = import.resolved_file else {
+                return false;
+            };
+            if to_file_id == import.from_file {
+                return false;
+            }
+            let Some(from_file) = report.files.get(import.from_file) else {
+                return false;
+            };
+            let Some(to_file) = report.files.get(to_file_id) else {
+                return false;
+            };
+            let from = module_group(from_file, config);
+            let to = module_group(to_file, config);
+            from != to && !stable_foundations.contains(&to)
+        })
+        .count();
 
     CouplingMetrics {
         local_edges,
         cross_module_edges,
+        cross_unstable_edges,
         cross_module_ratio: ratio(cross_module_edges, local_edges),
+        cross_unstable_ratio: ratio(cross_unstable_edges, local_edges),
         max_fan_in: hotspots
             .iter()
             .map(|hotspot| hotspot.fan_in)
@@ -716,6 +743,7 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
         max_blast_radius_file,
         levels: dependency_levels(report, &adjacency, &reverse),
         unstable_modules: module_stability(report, config),
+        stable_foundations: stable_foundation_metrics(report, config),
         cycles: cycle_components(report, &adjacency),
     }
 }
@@ -884,7 +912,7 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
 
 fn root_causes(report: &ScanReport, metrics: &MetricsSummary) -> RootCauseScores {
     RootCauseScores {
-        modularity: (1.0 - metrics.coupling.cross_module_ratio).clamp(0.0, 1.0),
+        modularity: (1.0 - metrics.coupling.cross_unstable_ratio).clamp(0.0, 1.0),
         acyclicity: 1.0 / (1.0 + report.graph.cycle_count as f64),
         depth: 1.0 / (1.0 + metrics.architecture.module_depth.saturating_sub(4) as f64),
         equality: (1.0 - metrics.complexity.complexity_gini).clamp(0.0, 1.0),
@@ -1004,6 +1032,43 @@ fn dependency_levels(
 }
 
 fn module_stability(report: &ScanReport, config: &RaysenseConfig) -> Vec<ModuleStabilityMetric> {
+    let stable = stable_foundation_modules(report, config);
+    let mut metrics = module_stability_all(report, config);
+    metrics.retain(|metric| !stable.contains(&metric.module));
+    metrics.truncate(20);
+    metrics
+}
+
+fn stable_foundation_metrics(
+    report: &ScanReport,
+    config: &RaysenseConfig,
+) -> Vec<ModuleStabilityMetric> {
+    let stable = stable_foundation_modules(report, config);
+    let mut metrics: Vec<ModuleStabilityMetric> = module_stability_all(report, config)
+        .into_iter()
+        .filter(|metric| stable.contains(&metric.module))
+        .collect();
+    metrics.sort_by(|a, b| {
+        b.fan_in
+            .cmp(&a.fan_in)
+            .then_with(|| a.module.cmp(&b.module))
+    });
+    metrics.truncate(20);
+    metrics
+}
+
+fn stable_foundation_modules(report: &ScanReport, config: &RaysenseConfig) -> HashSet<String> {
+    module_stability_all(report, config)
+        .into_iter()
+        .filter(|metric| metric.fan_in >= 2 && (metric.fan_out == 0 || metric.instability <= 0.15))
+        .map(|metric| metric.module)
+        .collect()
+}
+
+fn module_stability_all(
+    report: &ScanReport,
+    config: &RaysenseConfig,
+) -> Vec<ModuleStabilityMetric> {
     let mut fan_in: HashMap<String, usize> = HashMap::new();
     let mut fan_out: HashMap<String, usize> = HashMap::new();
     for import in &report.imports {
@@ -1050,7 +1115,6 @@ fn module_stability(report: &ScanReport, config: &RaysenseConfig) -> Vec<ModuleS
             .cmp(&a.fan_out)
             .then_with(|| a.module.cmp(&b.module))
     });
-    metrics.truncate(20);
     metrics
 }
 
@@ -2513,6 +2577,54 @@ mod tests {
         assert!(health.coverage_score < 100);
         assert_eq!(health.structural_score, 100);
         assert!(health.score < 100);
+    }
+
+    #[test]
+    fn discounts_edges_to_stable_foundations() {
+        let files = vec![
+            file(0, "src/app/a.rs"),
+            file(1, "src/app/b.rs"),
+            file(2, "src/core/types.rs"),
+            file(3, "src/feature/use_case.rs"),
+            file(4, "src/infra/adapter.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(2), ImportResolution::Local),
+            import(1, 1, Some(2), ImportResolution::Local),
+            import(2, 3, Some(4), ImportResolution::Local),
+        ];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+
+        let mut config = RaysenseConfig::default();
+        config.scan.module_roots = vec!["src".to_string()];
+        let health = compute_health_with_config(&report, &config);
+
+        assert_eq!(health.metrics.coupling.cross_module_edges, 3);
+        assert_eq!(health.metrics.coupling.cross_unstable_edges, 1);
+        assert!(health
+            .metrics
+            .architecture
+            .stable_foundations
+            .iter()
+            .any(|module| module.module == "src/core"));
+        assert!(health.root_causes.modularity > 0.6);
     }
 
     #[test]
