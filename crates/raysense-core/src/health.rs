@@ -198,10 +198,12 @@ pub struct BoundaryConfig {
     pub layers: Vec<LayerConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ForbiddenEdgeConfig {
     pub from: String,
     pub to: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2082,7 +2084,12 @@ fn boundary_findings(report: &ScanReport, config: &BoundaryConfig) -> Vec<RuleFi
         .iter()
         .map(|edge| (edge.from.as_str(), edge.to.as_str()))
         .collect();
-    let mut edges: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let reasons: BTreeMap<(&str, &str), &str> = config
+        .forbidden_edges
+        .iter()
+        .map(|edge| ((edge.from.as_str(), edge.to.as_str()), edge.reason.as_str()))
+        .collect();
+    let mut edges: BTreeMap<(String, String), (usize, String)> = BTreeMap::new();
 
     for import in &report.imports {
         let Some(to_file_id) = import.resolved_file else {
@@ -2100,19 +2107,33 @@ fn boundary_findings(report: &ScanReport, config: &BoundaryConfig) -> Vec<RuleFi
         let from_module = top_module(&from_file.module);
         let to_module = top_module(&to_file.module);
         if forbidden.contains(&(from_module, to_module)) {
-            *edges
+            let reason = reasons
+                .get(&(from_module, to_module))
+                .copied()
+                .unwrap_or_default()
+                .to_string();
+            edges
                 .entry((from_module.to_string(), to_module.to_string()))
-                .or_default() += 1;
+                .and_modify(|entry| entry.0 += 1)
+                .or_insert((1, reason));
         }
     }
 
     edges
         .into_iter()
-        .map(|((from_module, to_module), count)| RuleFinding {
-            severity: RuleSeverity::Warning,
-            code: "forbidden_module_edge".to_string(),
-            path: report.snapshot.root.to_string_lossy().into_owned(),
-            message: format!("{from_module} -> {to_module} has {count} dependency edges"),
+        .map(|((from_module, to_module), (count, reason))| {
+            let reason = reason.trim();
+            let message = if reason.is_empty() {
+                format!("{from_module} -> {to_module} has {count} dependency edges")
+            } else {
+                format!("{from_module} -> {to_module} has {count} dependency edges: {reason}")
+            };
+            RuleFinding {
+                severity: RuleSeverity::Warning,
+                code: "forbidden_module_edge".to_string(),
+                path: report.snapshot.root.to_string_lossy().into_owned(),
+                message,
+            }
         })
         .collect()
 }
@@ -2807,16 +2828,21 @@ max_function_lines = 50
 [[boundaries.forbidden_edges]]
 from = "src"
 to = "test"
+reason = "runtime code must not depend on tests"
 "#,
         )
         .unwrap();
 
         let health = compute_health_with_config(&report, &config);
 
-        assert!(health
+        let finding = health
             .rules
             .iter()
-            .any(|rule| rule.code == "forbidden_module_edge"));
+            .find(|rule| rule.code == "forbidden_module_edge")
+            .expect("forbidden edge rule should be reported");
+        assert!(finding
+            .message
+            .contains("runtime code must not depend on tests"));
     }
 
     #[test]

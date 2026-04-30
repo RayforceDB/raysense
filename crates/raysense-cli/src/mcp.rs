@@ -1611,7 +1611,8 @@ fn config_schema() -> Value {
                             "type": "object",
                             "properties": {
                                 "from": {"type": "string"},
-                                "to": {"type": "string"}
+                                "to": {"type": "string"},
+                                "reason": {"type": "string"}
                             },
                             "required": ["from", "to"]
                         }

@@ -255,6 +255,7 @@ no_tests_detected = true
 [[boundaries.forbidden_edges]]
 from = "src"
 to = "test"
+reason = "runtime code must not depend on tests"
 
 [[boundaries.layers]]
 name = "core"
