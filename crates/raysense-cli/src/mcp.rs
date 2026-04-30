@@ -249,6 +249,11 @@ fn tools_list() -> Value {
                 "inputSchema": health_limit_schema("Maximum files to return. Defaults to 100.")
             },
             {
+                "name": "raysense_visualize",
+                "description": "Write a self-refreshing HTML architecture dashboard and optionally return the HTML.",
+                "inputSchema": visualize_schema()
+            },
+            {
                 "name": "raysense_plugins",
                 "description": "List configured generic language plugins.",
                 "inputSchema": path_limit_schema("Unused.")
@@ -346,6 +351,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_evolution" => evolution_tool(&args),
         "raysense_dsm" => dsm_tool(&args),
         "raysense_test_gaps" => test_gaps_tool(&args),
+        "raysense_visualize" => visualize_tool(&args),
         "raysense_plugins" => plugins_tool(&args),
         "raysense_standard_plugins" => standard_plugins_tool(&args),
         "raysense_remediations" => remediations_tool(&args),
@@ -778,6 +784,34 @@ fn test_gaps_tool(args: &Value) -> Result<Value> {
         "root": report.snapshot.root,
         "test_gap": health.metrics.test_gap,
         "candidate_files": limited(&health.metrics.test_gap.candidates, limit)
+    }))
+}
+
+fn visualize_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
+    let output = args
+        .get("output_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".raysense/visualization.html"));
+    let include_html = bool_arg(args, "include_html", false)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let html = super::visualization_html(&report, &health);
+    fs::write(&output, &html).with_context(|| format!("failed to write {}", output.display()))?;
+
+    Ok(json!({
+        "root": report.snapshot.root,
+        "output_path": output,
+        "snapshot_id": report.snapshot.snapshot_id,
+        "quality_signal": health.quality_signal,
+        "score": health.score,
+        "html": if include_html { Value::String(html) } else { Value::Null }
     }))
 }
 
@@ -1522,6 +1556,19 @@ fn what_if_schema() -> Value {
     })
 }
 
+fn visualize_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema(),
+            "output_path": {"type": "string", "description": "HTML output path. Defaults to <path>/.raysense/visualization.html."},
+            "include_html": {"type": "boolean", "description": "Return generated HTML inline. Defaults to false."}
+        }
+    })
+}
+
 fn baseline_schema(path_description: &str) -> Value {
     json!({
         "type": "object",
@@ -1642,6 +1689,7 @@ mod tests {
         assert!(names.contains(&"raysense_evolution"));
         assert!(names.contains(&"raysense_dsm"));
         assert!(names.contains(&"raysense_test_gaps"));
+        assert!(names.contains(&"raysense_visualize"));
         assert!(names.contains(&"raysense_plugins"));
         assert!(names.contains(&"raysense_standard_plugins"));
         assert!(names.contains(&"raysense_remediations"));
