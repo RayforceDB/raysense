@@ -56,8 +56,8 @@ The first testable version focuses on Rust and C/C++ codebases:
 
 - Tree-sitter-backed Rust, C, and C++ function discovery with lightweight
   fallback extraction.
-- Rust `use` and `mod` extraction.
-- C/C++ local and system include extraction.
+- Tree-sitter-backed Rust `use`/`mod` and C/C++ include extraction with
+  lightweight fallback extraction.
 - Project profile inference for reusable include-root discovery.
 - Entry point facts for binaries, examples, and tests.
 - Local, external, system, and unresolved import classification.

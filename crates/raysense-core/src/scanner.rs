@@ -458,12 +458,102 @@ fn leading_spaces(line: &str) -> usize {
 
 fn extract_imports(file_id: usize, language: Language, content: &str) -> Vec<ImportFact> {
     match language {
-        Language::Rust => extract_rust_imports(file_id, content),
+        Language::Rust => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_rust::LANGUAGE.into())
+                .unwrap_or_else(|| extract_rust_imports(file_id, content))
+        }
         Language::Python => extract_python_imports(file_id, content),
         Language::TypeScript => extract_typescript_imports(file_id, content),
-        Language::C | Language::Cpp => extract_c_imports(file_id, content),
+        Language::C => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_c::LANGUAGE.into())
+                .unwrap_or_else(|| extract_c_imports(file_id, content))
+        }
+        Language::Cpp => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_cpp::LANGUAGE.into())
+                .unwrap_or_else(|| extract_c_imports(file_id, content))
+        }
         Language::Unknown => Vec::new(),
     }
+}
+
+fn extract_tree_sitter_imports(
+    file_id: usize,
+    content: &str,
+    language: tree_sitter::Language,
+) -> Option<Vec<ImportFact>> {
+    let mut parser = Parser::new();
+    parser.set_language(&language).ok()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let mut imports = Vec::new();
+    collect_tree_sitter_imports(file_id, content, root, &mut imports);
+    Some(imports)
+}
+
+fn collect_tree_sitter_imports(
+    file_id: usize,
+    content: &str,
+    node: Node<'_>,
+    imports: &mut Vec<ImportFact>,
+) {
+    match node.kind() {
+        "use_declaration" => {
+            if let Some(target) = rust_use_target(content, node) {
+                imports.push(new_import(file_id, &target, "use"));
+            }
+        }
+        "mod_item" => {
+            if let Some(target) = rust_mod_target(content, node) {
+                imports.push(new_import(file_id, &target, "mod"));
+            }
+        }
+        "preproc_include" => {
+            if let Some((target, kind)) = c_include_target(content, node) {
+                imports.push(new_import(file_id, &target, kind));
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_tree_sitter_imports(file_id, content, child, imports);
+    }
+}
+
+fn rust_use_target(content: &str, node: Node<'_>) -> Option<String> {
+    Some(
+        node_text(content, node)?
+            .strip_prefix("use ")?
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .to_string(),
+    )
+}
+
+fn rust_mod_target(content: &str, node: Node<'_>) -> Option<String> {
+    let text = node_text(content, node)?;
+    if text.contains('{') {
+        return None;
+    }
+    node.child_by_field_name("name")
+        .and_then(|name| node_text(content, name))
+}
+
+fn c_include_target(content: &str, node: Node<'_>) -> Option<(String, &'static str)> {
+    let text = node_text(content, node)?;
+    let target = text.trim().strip_prefix("#include")?.trim();
+    let kind = if target.starts_with('<') {
+        "include_system"
+    } else {
+        "include"
+    };
+    Some((clean_c_include_target(target).to_string(), kind))
 }
 
 fn extract_rust_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
@@ -1071,6 +1161,36 @@ class Store {
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].target, "scanner");
         assert_eq!(imports[0].kind, "mod");
+    }
+
+    #[test]
+    fn extracts_tree_sitter_rust_imports() {
+        let imports = extract_imports(
+            0,
+            Language::Rust,
+            "use crate::facts::{FileFact, ImportFact};\nmod graph;\nmod tests {\n}\n",
+        );
+
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].target, "crate::facts::{FileFact, ImportFact}");
+        assert_eq!(imports[0].kind, "use");
+        assert_eq!(imports[1].target, "graph");
+        assert_eq!(imports[1].kind, "mod");
+    }
+
+    #[test]
+    fn extracts_tree_sitter_c_includes() {
+        let imports = extract_imports(
+            0,
+            Language::C,
+            "#include <stdio.h>\n#include \"core/runtime.h\"\n",
+        );
+
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].target, "stdio.h");
+        assert_eq!(imports[0].kind, "include_system");
+        assert_eq!(imports[1].target, "core/runtime.h");
+        assert_eq!(imports[1].kind, "include");
     }
 
     #[test]
