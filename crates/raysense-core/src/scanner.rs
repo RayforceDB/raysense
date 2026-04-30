@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
+use tree_sitter::{Node, Parser};
 
 #[derive(Debug, Error)]
 pub enum ScanError {
@@ -167,12 +168,106 @@ fn module_name(path: &Path, language: Language) -> String {
 
 fn extract_functions(file_id: usize, language: Language, content: &str) -> Vec<FunctionFact> {
     match language {
-        Language::Rust => extract_token_functions(file_id, content, "fn "),
+        Language::Rust => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_rust::LANGUAGE.into(),
+            &["function_item"],
+        )
+        .unwrap_or_else(|| extract_token_functions(file_id, content, "fn ")),
         Language::Python => extract_prefixed_functions(file_id, content, "def "),
         Language::TypeScript => extract_typescript_functions(file_id, content),
-        Language::C | Language::Cpp => extract_c_like_functions(file_id, content),
+        Language::C => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_c::LANGUAGE.into(),
+            &["function_definition"],
+        )
+        .unwrap_or_else(|| extract_c_like_functions(file_id, content)),
+        Language::Cpp => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_cpp::LANGUAGE.into(),
+            &["function_definition"],
+        )
+        .unwrap_or_else(|| extract_c_like_functions(file_id, content)),
         Language::Unknown => Vec::new(),
     }
+}
+
+fn extract_tree_sitter_functions(
+    file_id: usize,
+    content: &str,
+    language: tree_sitter::Language,
+    function_kinds: &[&str],
+) -> Option<Vec<FunctionFact>> {
+    let mut parser = Parser::new();
+    parser.set_language(&language).ok()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let mut functions = Vec::new();
+    collect_tree_sitter_functions(file_id, content, root, function_kinds, &mut functions);
+    Some(functions)
+}
+
+fn collect_tree_sitter_functions(
+    file_id: usize,
+    content: &str,
+    node: Node<'_>,
+    function_kinds: &[&str],
+    functions: &mut Vec<FunctionFact>,
+) {
+    if function_kinds.contains(&node.kind()) {
+        if let Some(name) = function_name(content, node) {
+            functions.push(FunctionFact {
+                function_id: 0,
+                file_id,
+                name,
+                start_line: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
+            });
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_tree_sitter_functions(file_id, content, child, function_kinds, functions);
+    }
+}
+
+fn function_name(content: &str, node: Node<'_>) -> Option<String> {
+    if let Some(name) = node.child_by_field_name("name") {
+        return node_text(content, name);
+    }
+    if let Some(declarator) = node.child_by_field_name("declarator") {
+        return first_identifier(content, declarator);
+    }
+    first_identifier(content, node)
+}
+
+fn first_identifier(content: &str, node: Node<'_>) -> Option<String> {
+    if node.kind() == "identifier" || node.kind() == "field_identifier" {
+        return node_text(content, node);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(identifier) = first_identifier(content, child) {
+            return Some(identifier);
+        }
+    }
+    None
+}
+
+fn node_text(content: &str, node: Node<'_>) -> Option<String> {
+    node.utf8_text(content.as_bytes())
+        .ok()
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
 }
 
 fn extract_entry_points(
@@ -812,6 +907,64 @@ int add(int a, int b) {
 
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].start_line, 2);
+        assert_eq!(functions[0].end_line, 5);
+    }
+
+    #[test]
+    fn extracts_tree_sitter_rust_methods() {
+        let content = r#"
+pub struct Store;
+
+impl Store {
+    pub fn open() -> Self {
+        Store
+    }
+}
+"#;
+
+        let functions = extract_functions(0, Language::Rust, content);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "open");
+        assert_eq!(functions[0].start_line, 5);
+        assert_eq!(functions[0].end_line, 7);
+    }
+
+    #[test]
+    fn extracts_tree_sitter_c_multiline_declarators() {
+        let content = r#"
+static int
+add(
+    int a,
+    int b
+) {
+    return a + b;
+}
+"#;
+
+        let functions = extract_functions(0, Language::C, content);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "add");
+        assert_eq!(functions[0].start_line, 2);
+        assert_eq!(functions[0].end_line, 8);
+    }
+
+    #[test]
+    fn extracts_tree_sitter_cpp_methods() {
+        let content = r#"
+class Store {
+    int open() {
+        return 1;
+    }
+};
+"#;
+
+        let functions = extract_functions(0, Language::Cpp, content);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "open");
+        assert_eq!(functions[0].start_line, 3);
         assert_eq!(functions[0].end_line, 5);
     }
 

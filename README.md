@@ -28,12 +28,12 @@ Current Rayforce baseline:
 score 96
 coverage_score 100
 structural_score 92
-facts files=186 functions=8269 imports=1015
+facts files=186 functions=5044 imports=1015
 entry_points total=50 binaries=6 examples=4 tests=40
 imports local=639 external=0 system=376 unresolved=0
 graph resolved_edges=639 cycles=0
 coupling local_edges=639 cross_module_edges=238 cross_module_ratio=0.372
-size max_file_lines=6329 max_function_lines=2334 large_files=62 long_functions=696
+size max_file_lines=6329 max_function_lines=2334 large_files=62 long_functions=423
 test_gap production_files=146 test_files=40 files_without_nearby_tests=146
 dsm modules=5 module_edges=238
 evolution available=true commits_sampled=500 changed_files=186
@@ -54,6 +54,8 @@ raysense rayforce-version
 
 The first testable version focuses on Rust and C/C++ codebases:
 
+- Tree-sitter-backed Rust, C, and C++ function discovery with lightweight
+  fallback extraction.
 - Rust `use` and `mod` extraction.
 - C/C++ local and system include extraction.
 - Project profile inference for reusable include-root discovery.

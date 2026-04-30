@@ -11,3 +11,7 @@ ignore.workspace = true
 serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tree-sitter = "0.26.8"
+tree-sitter-c = "0.24.2"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-rust = "0.24.2"
