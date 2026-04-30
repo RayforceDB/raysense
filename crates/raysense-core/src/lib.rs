@@ -27,6 +27,7 @@ pub mod graph;
 pub mod health;
 pub mod profile;
 pub mod scanner;
+pub mod simulate;
 
 pub use baseline::{
     build_baseline, diff_baselines, BaselineDiff, BaselineModuleEdge, ModuleEdgeDelta,
@@ -48,3 +49,4 @@ pub use health::{
 pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;
 pub use scanner::{scan_path, scan_path_with_config, standard_language_plugins, ScanError};
+pub use simulate::{remove_file as simulate_remove_file, SimulateError};
