@@ -1578,6 +1578,12 @@ fn config_schema() -> Value {
             "rules": {
                 "type": "object",
                 "properties": {
+                    "min_quality_signal": {"type": "integer", "minimum": 0, "maximum": 10000},
+                    "min_modularity": {"type": "number", "minimum": 0, "maximum": 1},
+                    "min_acyclicity": {"type": "number", "minimum": 0, "maximum": 1},
+                    "min_depth": {"type": "number", "minimum": 0, "maximum": 1},
+                    "min_equality": {"type": "number", "minimum": 0, "maximum": 1},
+                    "min_redundancy": {"type": "number", "minimum": 0, "maximum": 1},
                     "max_cycles": {"type": "integer", "minimum": 0},
                     "max_coupling_ratio": {"type": "number", "minimum": 0, "maximum": 1},
                     "max_function_complexity": {"type": "integer", "minimum": 0},

@@ -229,6 +229,12 @@ ignored_paths = ["build/*"]
 local_import_prefixes = ["."]
 
 [rules]
+min_quality_signal = 0
+min_modularity = 0.0
+min_acyclicity = 0.0
+min_depth = 0.0
+min_equality = 0.0
+min_redundancy = 0.0
 max_cycles = 0
 max_coupling_ratio = 1.0
 max_function_complexity = 15

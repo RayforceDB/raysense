@@ -138,6 +138,12 @@ impl Default for LanguagePluginConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuleConfig {
+    pub min_quality_signal: u32,
+    pub min_modularity: f64,
+    pub min_acyclicity: f64,
+    pub min_depth: f64,
+    pub min_equality: f64,
+    pub min_redundancy: f64,
     pub max_cycles: usize,
     pub max_coupling_ratio: f64,
     pub max_function_complexity: usize,
@@ -156,6 +162,12 @@ pub struct RuleConfig {
 impl Default for RuleConfig {
     fn default() -> Self {
         Self {
+            min_quality_signal: 0,
+            min_modularity: 0.0,
+            min_acyclicity: 0.0,
+            min_depth: 0.0,
+            min_equality: 0.0,
+            min_redundancy: 0.0,
             high_file_fan_in: 50,
             max_cycles: 0,
             max_coupling_ratio: 1.0,
@@ -1662,6 +1674,61 @@ fn rules(
 ) -> Vec<RuleFinding> {
     let mut findings = Vec::new();
     let rules = &config.rules;
+    let root_causes = root_causes(report, metrics);
+    let quality_signal = quality_signal(&root_causes, &config.score);
+
+    if rules.min_quality_signal > 0 && quality_signal < rules.min_quality_signal {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Error,
+            code: "min_quality_signal".to_string(),
+            path: report.snapshot.root.to_string_lossy().into_owned(),
+            message: format!(
+                "quality signal {} below minimum {}",
+                quality_signal, rules.min_quality_signal
+            ),
+        });
+    }
+
+    push_min_score_finding(
+        &mut findings,
+        report,
+        "min_modularity",
+        "modularity",
+        root_causes.modularity,
+        rules.min_modularity,
+    );
+    push_min_score_finding(
+        &mut findings,
+        report,
+        "min_acyclicity",
+        "acyclicity",
+        root_causes.acyclicity,
+        rules.min_acyclicity,
+    );
+    push_min_score_finding(
+        &mut findings,
+        report,
+        "min_depth",
+        "depth",
+        root_causes.depth,
+        rules.min_depth,
+    );
+    push_min_score_finding(
+        &mut findings,
+        report,
+        "min_equality",
+        "equality",
+        root_causes.equality,
+        rules.min_equality,
+    );
+    push_min_score_finding(
+        &mut findings,
+        report,
+        "min_redundancy",
+        "redundancy",
+        root_causes.redundancy,
+        rules.min_redundancy,
+    );
 
     if report.graph.cycle_count > rules.max_cycles {
         findings.push(RuleFinding {
@@ -1846,10 +1913,38 @@ fn rules(
     findings
 }
 
+fn push_min_score_finding(
+    findings: &mut Vec<RuleFinding>,
+    report: &ScanReport,
+    code: &str,
+    label: &str,
+    value: f64,
+    min: f64,
+) {
+    if min > 0.0 && value < min {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Error,
+            code: code.to_string(),
+            path: report.snapshot.root.to_string_lossy().into_owned(),
+            message: format!("{label} score {value:.3} below minimum {min:.3}"),
+        });
+    }
+}
+
 fn remediations(rules: &[RuleFinding], metrics: &MetricsSummary) -> Vec<Remediation> {
     let mut out = Vec::new();
     for rule in rules {
         let action = match rule.code.as_str() {
+            "min_quality_signal" => {
+                "inspect the lowest root-cause score and fix the matching structural bottleneck"
+            }
+            "min_modularity" => "reduce cross-module edges or regroup files by cohesive module",
+            "min_acyclicity" => "remove dependency cycles by introducing a lower-level interface",
+            "min_depth" => "flatten long dependency chains or invert unnecessary layers",
+            "min_equality" => {
+                "split oversized files/functions and rebalance concentrated complexity"
+            }
+            "min_redundancy" => "remove dead functions or consolidate duplicated implementations",
             "max_function_complexity" => {
                 "split the function, extract decision branches, or add a local policy override"
             }
@@ -2534,6 +2629,47 @@ no_tests_detected = false
         assert!(!codes.contains(&"high_function_fan_in"));
         assert!(!codes.contains(&"high_function_fan_out"));
         assert!(!codes.contains(&"no_tests_detected"));
+    }
+
+    #[test]
+    fn applies_minimum_score_gates() {
+        let files = vec![file(0, "src/a.rs"), file(1, "src/b.rs")];
+        let imports = vec![
+            import(0, 0, Some(1), ImportResolution::Local),
+            import(1, 1, Some(0), ImportResolution::Local),
+        ];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[rules]
+min_quality_signal = 9999
+min_acyclicity = 0.9
+"#,
+        )
+        .unwrap();
+
+        let health = compute_health_with_config(&report, &config);
+        let codes: Vec<&str> = health.rules.iter().map(|rule| rule.code.as_str()).collect();
+
+        assert!(codes.contains(&"min_quality_signal"));
+        assert!(codes.contains(&"min_acyclicity"));
     }
 
     #[test]
