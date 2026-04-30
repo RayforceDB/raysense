@@ -28,8 +28,8 @@ use raysense_core::{
     BaselineDiff, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
 use raysense_memory::{
-    BaselineFilterOp, BaselineSortDirection, BaselineTableFilter, BaselineTableQuery,
-    BaselineTableSort,
+    BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
+    BaselineTableQuery, BaselineTableSort,
 };
 use serde_json::Value;
 use std::fs;
@@ -116,6 +116,8 @@ enum BaselineCommand {
         columns: Option<String>,
         #[arg(long = "filter")]
         filters: Vec<String>,
+        #[arg(long, default_value = "all", value_parser = ["all", "any"])]
+        filter_mode: String,
         #[arg(long)]
         sort: Vec<String>,
         #[arg(long)]
@@ -216,6 +218,7 @@ fn main() -> Result<()> {
                 baseline,
                 columns,
                 filters,
+                filter_mode,
                 sort,
                 desc,
                 offset,
@@ -229,6 +232,7 @@ fn main() -> Result<()> {
                     limit,
                     columns: parse_columns(columns.as_deref())?,
                     filters: parse_filters(&filters)?,
+                    filter_mode: parse_filter_mode(&filter_mode)?,
                     sort: parse_sort(&sort, desc)?,
                 };
                 let rows = raysense_memory::query_baseline_table(&tables_dir, &table, query)
@@ -374,6 +378,14 @@ fn parse_filter_op(op: &str) -> Result<BaselineFilterOp> {
         "lt" => Ok(BaselineFilterOp::Lt),
         "lte" => Ok(BaselineFilterOp::Lte),
         _ => Err(anyhow!("unsupported filter op {op}")),
+    }
+}
+
+fn parse_filter_mode(mode: &str) -> Result<BaselineFilterMode> {
+    match mode {
+        "all" => Ok(BaselineFilterMode::All),
+        "any" => Ok(BaselineFilterMode::Any),
+        _ => Err(anyhow!("unsupported filter mode {mode}")),
     }
 }
 

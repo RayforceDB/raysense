@@ -27,8 +27,8 @@ use raysense_core::{
     ImportResolution, ProjectBaseline, RaysenseConfig,
 };
 use raysense_memory::{
-    BaselineFilterOp, BaselineSortDirection, BaselineTableFilter, BaselineTableQuery,
-    BaselineTableSort,
+    BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
+    BaselineTableQuery, BaselineTableSort,
 };
 use serde_json::{json, Value};
 use std::fs;
@@ -483,6 +483,7 @@ fn baseline_table_read_tool(args: &Value) -> Result<Value> {
         limit,
         columns: columns_arg(args)?,
         filters: filters_arg(args)?,
+        filter_mode: filter_mode_arg(args)?,
         sort: sort_arg(args)?,
     };
     let table_rows = raysense_memory::query_baseline_table(&tables_dir, table, query)
@@ -627,6 +628,18 @@ fn parse_filter_op(op: &str) -> Result<BaselineFilterOp> {
         "lt" => Ok(BaselineFilterOp::Lt),
         "lte" => Ok(BaselineFilterOp::Lte),
         _ => Err(anyhow!("unsupported filter op {op}")),
+    }
+}
+
+fn filter_mode_arg(args: &Value) -> Result<BaselineFilterMode> {
+    match args
+        .get("filter_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("all")
+    {
+        "all" => Ok(BaselineFilterMode::All),
+        "any" => Ok(BaselineFilterMode::Any),
+        mode => Err(anyhow!("unsupported filter mode {mode}")),
     }
 }
 
@@ -845,6 +858,7 @@ fn baseline_table_schema(require_table: bool) -> Value {
                     "required": ["column", "value"]
                 }
             },
+            "filter_mode": {"type": "string", "enum": ["all", "any"], "description": "How filters combine. all is AND and any is OR. Defaults to all."},
             "sort": {
                 "description": "Optional sort object or ordered array of sort objects applied after filters.",
                 "oneOf": [

@@ -76,7 +76,7 @@ raysense memory <path> [--config <path>]
 raysense baseline save <path> [--output <path>] [--config <path>]
 raysense baseline diff <path> [--baseline <path>] [--config <path>] [--json]
 raysense baseline tables [--baseline <path>] [--json]
-raysense baseline table <name> [--baseline <path>] [--columns <a,b>] [--filter <column:op:value>] [--sort <column[:asc|desc]>] [--desc] [--offset <n>] [--limit <n>] [--json]
+raysense baseline table <name> [--baseline <path>] [--columns <a,b>] [--filter <column:op:value>] [--filter-mode <all|any>] [--sort <column[:asc|desc]>] [--desc] [--offset <n>] [--limit <n>] [--json]
 raysense mcp
 raysense rayforce-version
 ```
@@ -96,7 +96,8 @@ in Rayforce splayed-table format.
 
 Baseline table filters use `column:op:value`, where `op` is one of `eq`, `ne`,
 `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `gt`, `gte`, `lt`, or
-`lte`. Repeat `--sort` to apply ordered multi-column sorting.
+`lte`. Filters default to AND semantics; use `--filter-mode any` for OR.
+Repeat `--sort` to apply ordered multi-column sorting.
 
 Example config:
 

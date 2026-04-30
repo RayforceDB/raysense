@@ -125,6 +125,12 @@ pub struct BaselineTableFilter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaselineFilterMode {
+    All,
+    Any,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaselineSortDirection {
     Asc,
     Desc,
@@ -142,6 +148,7 @@ pub struct BaselineTableQuery {
     pub limit: usize,
     pub columns: Option<Vec<String>>,
     pub filters: Vec<BaselineTableFilter>,
+    pub filter_mode: BaselineFilterMode,
     pub sort: Vec<BaselineTableSort>,
 }
 
@@ -152,6 +159,7 @@ impl BaselineTableQuery {
             limit,
             columns: None,
             filters: Vec::new(),
+            filter_mode: BaselineFilterMode::All,
             sort: Vec::new(),
         }
     }
@@ -397,7 +405,13 @@ fn table_rows(
 
     let mut row_indexes = Vec::new();
     for row_idx in 0..total_rows.max(0) as usize {
-        if row_matches(&columns, &col_ptrs, row_idx, &query.filters) {
+        if row_matches(
+            &columns,
+            &col_ptrs,
+            row_idx,
+            &query.filters,
+            query.filter_mode,
+        ) {
             row_indexes.push(row_idx);
         }
     }
@@ -482,8 +496,12 @@ fn row_matches(
     col_ptrs: &[*mut rayforce_sys::ray_t],
     row_idx: usize,
     filters: &[BaselineTableFilter],
+    filter_mode: BaselineFilterMode,
 ) -> bool {
-    filters.iter().all(|filter| {
+    if filters.is_empty() {
+        return true;
+    }
+    let matches = |filter: &BaselineTableFilter| {
         let Some(col_idx) = columns.iter().position(|column| column == &filter.column) else {
             return false;
         };
@@ -492,7 +510,11 @@ fn row_matches(
             &cell_value(col_ptrs[col_idx], row_idx as i64),
             &filter.value,
         )
-    })
+    };
+    match filter_mode {
+        BaselineFilterMode::All => filters.iter().all(matches),
+        BaselineFilterMode::Any => filters.iter().any(matches),
+    }
 }
 
 fn filter_matches(
@@ -1307,6 +1329,7 @@ mod tests {
                     op: BaselineFilterOp::EndsWith,
                     value: json!(".c"),
                 }],
+                filter_mode: BaselineFilterMode::All,
                 sort: vec![BaselineTableSort {
                     column: "lines".to_string(),
                     direction: BaselineSortDirection::Desc,
@@ -1340,6 +1363,7 @@ mod tests {
                 limit: 10,
                 columns: Some(vec!["missing".to_string()]),
                 filters: Vec::new(),
+                filter_mode: BaselineFilterMode::All,
                 sort: Vec::new(),
             },
         )
@@ -1380,6 +1404,7 @@ mod tests {
                         value: json!(["src/small.c"]),
                     },
                 ],
+                filter_mode: BaselineFilterMode::All,
                 sort: vec![
                     BaselineTableSort {
                         column: "language".to_string(),
@@ -1401,6 +1426,53 @@ mod tests {
                 json!({"path": "src/large.c", "language": "c", "lines": 30}),
                 json!({"path": "src/mid.c", "language": "c", "lines": 20}),
                 json!({"path": "src/lib.rs", "language": "rust", "lines": 40}),
+            ]
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn queries_saved_baseline_table_with_any_filter_mode() {
+        let dir = temp_tables_dir("any-filter");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let rows = query_baseline_table(
+            &dir,
+            "files",
+            BaselineTableQuery {
+                offset: 0,
+                limit: 10,
+                columns: Some(vec!["path".to_string(), "language".to_string()]),
+                filters: vec![
+                    BaselineTableFilter {
+                        column: "path".to_string(),
+                        op: BaselineFilterOp::Eq,
+                        value: json!("src/small.c"),
+                    },
+                    BaselineTableFilter {
+                        column: "language".to_string(),
+                        op: BaselineFilterOp::Eq,
+                        value: json!("rust"),
+                    },
+                ],
+                filter_mode: BaselineFilterMode::Any,
+                sort: vec![BaselineTableSort {
+                    column: "path".to_string(),
+                    direction: BaselineSortDirection::Asc,
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(rows.matched_rows, 2);
+        assert_eq!(
+            rows.rows,
+            vec![
+                json!({"path": "src/lib.rs", "language": "rust"}),
+                json!({"path": "src/small.c", "language": "c"}),
             ]
         );
 
