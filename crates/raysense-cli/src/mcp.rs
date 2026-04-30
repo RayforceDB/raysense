@@ -22,7 +22,9 @@
  */
 
 use anyhow::{anyhow, Context, Result};
-use raysense_core::{compute_health_with_config, scan_path, ImportResolution, RaysenseConfig};
+use raysense_core::{
+    compute_health_with_config, scan_path_with_config, ImportResolution, RaysenseConfig,
+};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -145,6 +147,8 @@ fn tools_list() -> Value {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+                        "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+                        "config": config_schema(),
                         "all": {"type": "boolean", "description": "Include unresolved, external, and system imports. Defaults to false."},
                         "limit": {"type": "integer", "minimum": 1, "description": "Maximum edges to return. Defaults to 1000."}
                     }
@@ -229,8 +233,8 @@ fn write_config_tool(args: &Value) -> Result<Value> {
 
 fn health_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
-    let report = scan_path(&root)?;
-    let config = effective_config(args, &report.snapshot.root)?;
+    let config = effective_config(args, &root)?;
+    let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
 
     Ok(json!({
@@ -241,8 +245,9 @@ fn health_tool(args: &Value) -> Result<Value> {
 
 fn scan_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
     let limit = limit_arg(args, 1000)?;
-    let report = scan_path(&root)?;
+    let report = scan_path_with_config(&root, &config)?;
 
     Ok(json!({
         "root": report.snapshot.root,
@@ -268,9 +273,10 @@ fn scan_tool(args: &Value) -> Result<Value> {
 
 fn edges_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
     let all = bool_arg(args, "all", false)?;
     let limit = limit_arg(args, 1000)?;
-    let report = scan_path(&root)?;
+    let report = scan_path_with_config(&root, &config)?;
     let mut total = 0usize;
     let mut edges = Vec::new();
 
@@ -349,8 +355,8 @@ fn module_edges_tool(args: &Value) -> Result<Value> {
 
 fn memory_summary_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
-    let report = scan_path(&root)?;
-    let config = effective_config(args, &report.snapshot.root)?;
+    let config = effective_config(args, &root)?;
+    let report = scan_path_with_config(&root, &config)?;
     let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
 
     Ok(json!({
@@ -361,8 +367,8 @@ fn memory_summary_tool(args: &Value) -> Result<Value> {
 
 fn health_from_args(args: &Value) -> Result<(PathBuf, raysense_core::HealthSummary)> {
     let root = root_arg(args)?;
-    let report = scan_path(&root)?;
-    let config = effective_config(args, &report.snapshot.root)?;
+    let config = effective_config(args, &root)?;
+    let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
     Ok((report.snapshot.root, health))
 }
@@ -491,6 +497,23 @@ fn config_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            "scan": {
+                "type": "object",
+                "properties": {
+                    "ignored_paths": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "enabled_languages": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["c", "cpp", "python", "rust", "typescript"]}
+                    },
+                    "disabled_languages": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["c", "cpp", "python", "rust", "typescript"]}
+                    }
+                }
+            },
             "rules": {
                 "type": "object",
                 "properties": {
@@ -530,6 +553,8 @@ fn path_limit_schema(limit_description: &str) -> Value {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema(),
             "limit": {"type": "integer", "minimum": 1, "description": limit_description}
         }
     })

@@ -32,6 +32,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RaysenseConfig {
+    pub scan: ScanConfig,
     pub rules: RuleConfig,
     pub boundaries: BoundaryConfig,
 }
@@ -48,6 +49,14 @@ impl RaysenseConfig {
             source,
         })
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScanConfig {
+    pub ignored_paths: Vec<String>,
+    pub enabled_languages: Vec<String>,
+    pub disabled_languages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

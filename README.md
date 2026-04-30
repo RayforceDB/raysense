@@ -69,7 +69,7 @@ rules high_fan_in=2
 ```text
 raysense observe <path> [--json] [--memory] [--config <path>]
 raysense health <path> [--json] [--config <path>]
-raysense edges <path> [--all]
+raysense edges <path> [--all] [--config <path>]
 raysense memory <path> [--config <path>]
 raysense mcp
 raysense rayforce-version
@@ -86,6 +86,11 @@ table summaries.
 Example config:
 
 ```toml
+[scan]
+ignored_paths = ["target", "fixtures/generated"]
+enabled_languages = []
+disabled_languages = []
+
 [rules]
 high_file_fan_in = 50
 large_file_lines = 500
@@ -106,6 +111,7 @@ to = "test"
 
 The first testable version focuses on Rust and C/C++ codebases:
 
+- Configurable scan filtering by ignored paths and enabled/disabled languages.
 - Tree-sitter-backed Rust, C, and C++ function discovery with lightweight
   fallback extraction.
 - Tree-sitter-backed Rust `use`/`mod` and C/C++ include extraction with

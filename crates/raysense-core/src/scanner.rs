@@ -26,6 +26,7 @@ use crate::facts::{
     ImportResolution, Language, ScanReport, SnapshotFact,
 };
 use crate::graph::compute_graph_metrics;
+use crate::health::RaysenseConfig;
 use crate::profile::ProjectProfile;
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
@@ -52,6 +53,13 @@ pub enum ScanError {
 }
 
 pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
+    scan_path_with_config(root, &RaysenseConfig::default())
+}
+
+pub fn scan_path_with_config(
+    root: impl AsRef<Path>,
+    config: &RaysenseConfig,
+) -> Result<ScanReport, ScanError> {
     let root = root
         .as_ref()
         .canonicalize()
@@ -83,8 +91,13 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         }
 
         let path = entry.path();
+        let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
+        if is_ignored_path(&relative_path, &config.scan.ignored_paths) {
+            continue;
+        }
+
         let language = Language::from_path(path);
-        if !language.is_supported() {
+        if !language.is_supported() || !is_enabled_language(language, config) {
             continue;
         }
 
@@ -94,7 +107,6 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         })?;
 
         let file_id = files.len();
-        let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
         let file_fact = FileFact {
             file_id,
             module: module_name(&relative_path, language),
@@ -157,6 +169,99 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         call_edges,
         graph,
     })
+}
+
+fn is_ignored_path(path: &Path, ignored_paths: &[String]) -> bool {
+    let path = normalize_relative_path(path);
+    ignored_paths
+        .iter()
+        .map(|pattern| pattern.trim())
+        .filter(|pattern| !pattern.is_empty())
+        .any(|pattern| matches_path_pattern(&path, &normalize_pattern(pattern)))
+}
+
+fn matches_path_pattern(path: &str, pattern: &str) -> bool {
+    let pattern = pattern.trim_matches('/');
+    if pattern.is_empty() {
+        return false;
+    }
+    if pattern.contains('*') {
+        return wildcard_match(path, pattern);
+    }
+    path == pattern || path.starts_with(&format!("{pattern}/"))
+}
+
+fn wildcard_match(value: &str, pattern: &str) -> bool {
+    let mut remaining = value;
+    let mut parts = pattern.split('*').peekable();
+    let starts_with_wildcard = pattern.starts_with('*');
+    let ends_with_wildcard = pattern.ends_with('*');
+
+    if let Some(first) = parts.next() {
+        if !first.is_empty() {
+            if !remaining.starts_with(first) {
+                return false;
+            }
+            remaining = &remaining[first.len()..];
+        } else if !starts_with_wildcard {
+            return false;
+        }
+    }
+
+    while let Some(part) = parts.next() {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(index) = remaining.find(part) else {
+            return false;
+        };
+        remaining = &remaining[index + part.len()..];
+        if parts.peek().is_none() && !ends_with_wildcard && !remaining.is_empty() {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn normalize_relative_path(path: &Path) -> String {
+    path.components()
+        .filter_map(component_to_string)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn normalize_pattern(pattern: &str) -> String {
+    pattern.replace('\\', "/").trim_matches('/').to_string()
+}
+
+fn is_enabled_language(language: Language, config: &RaysenseConfig) -> bool {
+    let language = language_name(language);
+    if config
+        .scan
+        .disabled_languages
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case(language))
+    {
+        return false;
+    }
+    config.scan.enabled_languages.is_empty()
+        || config
+            .scan
+            .enabled_languages
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(language))
+}
+
+fn language_name(language: Language) -> &'static str {
+    match language {
+        Language::C => "c",
+        Language::Cpp => "cpp",
+        Language::Python => "python",
+        Language::Rust => "rust",
+        Language::TypeScript => "typescript",
+        Language::Unknown => "unknown",
+    }
 }
 
 fn hash_content(content: &str) -> String {
@@ -1247,6 +1352,7 @@ fn is_test_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn extracts_rust_facts() {
@@ -1284,6 +1390,51 @@ def run():
         assert_eq!(functions[0].name, "run");
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[1].target, "pathlib");
+    }
+
+    #[test]
+    fn scan_config_ignores_paths() {
+        let root = temp_scan_root("ignored_paths");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("ignored")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn kept() {}\n").unwrap();
+        fs::write(root.join("ignored/lib.rs"), "pub fn skipped() {}\n").unwrap();
+
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[scan]
+ignored_paths = ["ignored"]
+"#,
+        )
+        .unwrap();
+        let report = scan_path_with_config(&root, &config).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(report.files[0].path, PathBuf::from("src/lib.rs"));
+        assert_eq!(report.functions.len(), 1);
+        assert_eq!(report.functions[0].name, "kept");
+    }
+
+    #[test]
+    fn scan_config_filters_languages() {
+        let root = temp_scan_root("languages");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn kept() {}\n").unwrap();
+        fs::write(root.join("src/tool.py"), "def skipped():\n    pass\n").unwrap();
+
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[scan]
+enabled_languages = ["rust"]
+"#,
+        )
+        .unwrap();
+        let report = scan_path_with_config(&root, &config).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(report.files[0].language, Language::Rust);
     }
 
     #[test]
@@ -1744,5 +1895,13 @@ int run(void) {
             start_line,
             end_line,
         }
+    }
+
+    fn temp_scan_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("raysense-{name}-{nanos}"))
     }
 }
