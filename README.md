@@ -88,8 +88,8 @@ hotspots, read rule findings, read DSM module edges, and materialize memory
 table summaries. It can also save and diff baselines.
 
 Baselines are stored under `<path>/.raysense/baseline` by default. The manifest
-is JSON for fast agent diffs, and splay-compatible baseline tables are written
-under `tables/` in Rayforce splayed-table format.
+is JSON for fast agent diffs, and baseline tables are written under `tables/`
+in Rayforce splayed-table format.
 
 Example config:
 
@@ -141,7 +141,7 @@ The first testable version focuses on Rust and C/C++ codebases:
 - Config read/write, health runs, scan facts, edges, hotspots, rule findings,
   module edges, and memory summaries are exposed through the MCP interface.
 - Baseline save/diff is available through the CLI and MCP, with Rayforce
-  splayed-table storage for splay-compatible baseline tables.
+  splayed-table storage for baseline tables.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.

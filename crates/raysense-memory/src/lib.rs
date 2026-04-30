@@ -132,8 +132,17 @@ impl RayMemory {
             source,
         })?;
 
+        self.save_table("files", self.files.as_ptr(), dir)?;
+        self.save_table("functions", self.functions.as_ptr(), dir)?;
+        self.save_table("entry_points", self.entry_points.as_ptr(), dir)?;
+        self.save_table("imports", self.imports.as_ptr(), dir)?;
+        self.save_table("calls", self.calls.as_ptr(), dir)?;
         self.save_table("call_edges", self.call_edges.as_ptr(), dir)?;
         self.save_table("health", self.health.as_ptr(), dir)?;
+        self.save_table("hotspots", self.hotspots.as_ptr(), dir)?;
+        self.save_table("rules", self.rules.as_ptr(), dir)?;
+        self.save_table("module_edges", self.module_edges.as_ptr(), dir)?;
+        self.save_table("changed_files", self.changed_files.as_ptr(), dir)?;
         Ok(())
     }
 
