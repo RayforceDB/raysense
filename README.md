@@ -43,6 +43,8 @@ Against Rayforce from this workspace layout:
 cargo run -q -p raysense-cli -- health ../rayforce
 cargo run -q -p raysense-cli -- edges ../rayforce | head
 cargo run -q -p raysense-cli -- observe ../rayforce --memory
+cargo run -q -p raysense-cli -- baseline save ../rayforce
+cargo run -q -p raysense-cli -- baseline diff ../rayforce
 ```
 
 Current Rayforce baseline:
@@ -51,15 +53,15 @@ Current Rayforce baseline:
 score 96
 coverage_score 100
 structural_score 92
-facts files=186 functions=2677 calls=25067 call_edges=15271 imports=1015
+facts files=190 functions=2705 calls=25269 call_edges=15408 imports=1038
 entry_points total=50 binaries=6 examples=4 tests=40
-imports local=639 external=0 system=376 unresolved=0
-graph resolved_edges=639 cycles=0
-coupling local_edges=639 cross_module_edges=238 cross_module_ratio=0.372
-calls total=25067 resolved_edges=15271 resolution_ratio=0.609 max_function_fan_in=2513 max_function_fan_out=293
-size max_file_lines=6329 max_function_lines=2334 large_files=62 long_functions=206
-test_gap production_files=146 test_files=40 files_without_nearby_tests=146
-dsm modules=5 module_edges=238
+imports local=656 external=0 system=382 unresolved=0
+graph resolved_edges=656 cycles=0
+coupling local_edges=656 cross_module_edges=240 cross_module_ratio=0.366
+calls total=25269 resolved_edges=15408 resolution_ratio=0.610 max_function_fan_in=2527 max_function_fan_out=293
+size max_file_lines=6329 max_function_lines=2334 large_files=63 long_functions=208
+test_gap production_files=150 test_files=40 files_without_nearby_tests=150
+dsm modules=5 module_edges=240
 evolution available=true commits_sampled=500 changed_files=186
 rules high_fan_in=2
 ```
@@ -71,6 +73,8 @@ raysense observe <path> [--json] [--memory] [--config <path>]
 raysense health <path> [--json] [--config <path>]
 raysense edges <path> [--all] [--config <path>]
 raysense memory <path> [--config <path>]
+raysense baseline save <path> [--output <path>] [--config <path>]
+raysense baseline diff <path> [--baseline <path>] [--config <path>] [--json]
 raysense mcp
 raysense rayforce-version
 ```
@@ -81,7 +85,11 @@ automatically. `--config` overrides that path.
 `raysense mcp` runs a stdio MCP server for agents. It exposes tools to read and
 write config, run health, inspect scan facts, list dependency edges, read
 hotspots, read rule findings, read DSM module edges, and materialize memory
-table summaries.
+table summaries. It can also save and diff baselines.
+
+Baselines are stored under `<path>/.raysense/baseline` by default. The manifest
+is JSON for fast agent diffs, and splay-compatible baseline tables are written
+under `tables/` in Rayforce splayed-table format.
 
 Example config:
 
@@ -132,6 +140,8 @@ The first testable version focuses on Rust and C/C++ codebases:
 - Forbidden top-level module dependencies can be configured with TOML.
 - Config read/write, health runs, scan facts, edges, hotspots, rule findings,
   module edges, and memory summaries are exposed through the MCP interface.
+- Baseline save/diff is available through the CLI and MCP, with Rayforce
+  splayed-table storage for splay-compatible baseline tables.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.

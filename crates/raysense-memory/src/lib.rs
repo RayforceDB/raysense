@@ -24,6 +24,8 @@
 use raysense_core::{compute_health_with_config, HealthSummary, RaysenseConfig, ScanReport};
 use serde::Serialize;
 use std::ffi::CString;
+use std::fs;
+use std::path::Path;
 use std::ptr::NonNull;
 use thiserror::Error;
 
@@ -35,6 +37,14 @@ pub enum MemoryError {
     Null(&'static str),
     #[error("string contains an interior null byte: {0}")]
     StringNul(#[from] std::ffi::NulError),
+    #[error("failed to create directory {path}: {source}")]
+    CreateDir {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("rayforce failed to save splayed table {table} with code {code}")]
+    SplaySave { table: &'static str, code: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -112,6 +122,36 @@ impl RayMemory {
             rules: table_summary(self.rules.as_ptr()),
             module_edges: table_summary(self.module_edges.as_ptr()),
             changed_files: table_summary(self.changed_files.as_ptr()),
+        }
+    }
+
+    pub fn save_splayed(&self, dir: impl AsRef<Path>) -> Result<(), MemoryError> {
+        let dir = dir.as_ref();
+        fs::create_dir_all(dir).map_err(|source| MemoryError::CreateDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+
+        self.save_table("call_edges", self.call_edges.as_ptr(), dir)?;
+        self.save_table("health", self.health.as_ptr(), dir)?;
+        Ok(())
+    }
+
+    fn save_table(
+        &self,
+        name: &'static str,
+        table: *mut rayforce_sys::ray_t,
+        base: &Path,
+    ) -> Result<(), MemoryError> {
+        let path = CString::new(base.join(name).to_string_lossy().into_owned())?;
+        let err = unsafe { rayforce_sys::ray_splay_save(table, path.as_ptr(), std::ptr::null()) };
+        if err == rayforce_sys::RAY_OK {
+            Ok(())
+        } else {
+            Err(MemoryError::SplaySave {
+                table: name,
+                code: err,
+            })
         }
     }
 }

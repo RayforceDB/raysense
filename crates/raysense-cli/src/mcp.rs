@@ -23,7 +23,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use raysense_core::{
-    compute_health_with_config, scan_path_with_config, ImportResolution, RaysenseConfig,
+    build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
+    ImportResolution, ProjectBaseline, RaysenseConfig,
 };
 use serde_json::{json, Value};
 use std::fs;
@@ -180,6 +181,16 @@ fn tools_list() -> Value {
                         "config": config_schema()
                     }
                 }
+            },
+            {
+                "name": "raysense_baseline_save",
+                "description": "Save a project baseline manifest plus Rayforce splayed baseline tables.",
+                "inputSchema": baseline_schema("Destination baseline directory. Defaults to <path>/.raysense/baseline.")
+            },
+            {
+                "name": "raysense_baseline_diff",
+                "description": "Diff the current project health against a saved baseline.",
+                "inputSchema": baseline_schema("Baseline directory. Defaults to <path>/.raysense/baseline.")
             }
         ]
     })
@@ -205,6 +216,8 @@ fn call_tool(params: &Value) -> Result<Value> {
         "raysense_rules" => rules_tool(&args),
         "raysense_module_edges" => module_edges_tool(&args),
         "raysense_memory_summary" => memory_summary_tool(&args),
+        "raysense_baseline_save" => baseline_save_tool(&args),
+        "raysense_baseline_diff" => baseline_diff_tool(&args),
         _ => Err(anyhow!("unknown tool {name}")),
     }
 }
@@ -365,6 +378,57 @@ fn memory_summary_tool(args: &Value) -> Result<Value> {
     }))
 }
 
+fn baseline_save_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let output = baseline_dir_arg(args, &root)?;
+    let config = effective_config(args, &root)?;
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let baseline = build_baseline(&report, &health);
+    let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
+    let tables_dir = output.join("tables");
+
+    fs::create_dir_all(&output)
+        .with_context(|| format!("failed to create baseline dir {}", output.display()))?;
+    fs::write(
+        output.join("manifest.json"),
+        serde_json::to_string_pretty(&baseline)?,
+    )
+    .with_context(|| format!("failed to write baseline manifest {}", output.display()))?;
+    if tables_dir.exists() {
+        fs::remove_dir_all(&tables_dir)
+            .with_context(|| format!("failed to clear baseline tables {}", tables_dir.display()))?;
+    }
+    memory
+        .save_splayed(&tables_dir)
+        .with_context(|| format!("failed to write baseline tables {}", tables_dir.display()))?;
+
+    Ok(json!({
+        "path": output,
+        "tables_path": tables_dir,
+        "baseline": baseline
+    }))
+}
+
+fn baseline_diff_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let baseline_dir = baseline_dir_arg(args, &root)?;
+    let manifest = baseline_dir.join("manifest.json");
+    let before: ProjectBaseline =
+        serde_json::from_str(&fs::read_to_string(&manifest).with_context(|| {
+            format!("failed to read baseline manifest {}", manifest.display())
+        })?)?;
+    let config = effective_config(args, &root)?;
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let after = build_baseline(&report, &health);
+
+    Ok(json!({
+        "baseline_path": baseline_dir,
+        "diff": diff_baselines(&before, &after)
+    }))
+}
+
 fn health_from_args(args: &Value) -> Result<(PathBuf, raysense_core::HealthSummary)> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
@@ -379,6 +443,18 @@ fn effective_config(args: &Value, root: &Path) -> Result<RaysenseConfig> {
     } else {
         Ok(load_config(root, config_path_arg(args)?)?.0)
     }
+}
+
+fn baseline_dir_arg(args: &Value, root: &Path) -> Result<PathBuf> {
+    args.get("baseline_path")
+        .map(|value| {
+            value
+                .as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow!("baseline_path must be a string"))
+        })
+        .transpose()
+        .map(|path| path.unwrap_or_else(|| root.join(".raysense/baseline")))
 }
 
 fn root_arg(args: &Value) -> Result<PathBuf> {
@@ -572,6 +648,18 @@ fn health_limit_schema(limit_description: &str) -> Value {
     })
 }
 
+fn baseline_schema(path_description: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "baseline_path": {"type": "string", "description": path_description},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema()
+        }
+    })
+}
+
 fn limited<T: serde::Serialize>(items: &[T], limit: usize) -> Vec<Value> {
     items
         .iter()
@@ -605,6 +693,8 @@ mod tests {
         assert!(names.contains(&"raysense_rules"));
         assert!(names.contains(&"raysense_module_edges"));
         assert!(names.contains(&"raysense_memory_summary"));
+        assert!(names.contains(&"raysense_baseline_save"));
+        assert!(names.contains(&"raysense_baseline_diff"));
     }
 
     #[test]

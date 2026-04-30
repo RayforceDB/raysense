@@ -56,6 +56,13 @@ unsafe extern "C" {
     pub fn ray_table_add_col(tbl: *mut ray_t, name_id: i64, col_vec: *mut ray_t) -> *mut ray_t;
     pub fn ray_table_ncols(tbl: *mut ray_t) -> i64;
     pub fn ray_table_nrows(tbl: *mut ray_t) -> i64;
+
+    pub fn ray_splay_save(
+        tbl: *mut ray_t,
+        dir: *const c_char,
+        sym_path: *const c_char,
+    ) -> ray_err_t;
+    pub fn ray_read_splayed(dir: *const c_char, sym_path: *const c_char) -> *mut ray_t;
 }
 
 pub type ray_err_t = c_int;

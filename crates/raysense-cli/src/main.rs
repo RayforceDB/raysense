@@ -24,10 +24,12 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use raysense_core::{
-    compute_health_with_config, scan_path_with_config, ImportResolution, RaysenseConfig,
+    build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
+    BaselineDiff, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
+use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod mcp;
 
@@ -70,7 +72,31 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    Baseline {
+        #[command(subcommand)]
+        command: BaselineCommand,
+    },
     Mcp,
+}
+
+#[derive(Debug, Subcommand)]
+enum BaselineCommand {
+    Save {
+        path: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    Diff {
+        path: PathBuf,
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -118,6 +144,31 @@ fn main() -> Result<()> {
             let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
             print_memory_summary(&memory.summary());
         }
+        Command::Baseline { command } => match command {
+            BaselineCommand::Save {
+                path,
+                output,
+                config,
+            } => {
+                let output = output.unwrap_or_else(|| path.join(".raysense/baseline"));
+                save_baseline(&path, &output, config.as_deref())?;
+                println!("baseline {}", output.display());
+            }
+            BaselineCommand::Diff {
+                path,
+                baseline,
+                config,
+                json,
+            } => {
+                let baseline = baseline.unwrap_or_else(|| path.join(".raysense/baseline"));
+                let diff = diff_baseline(&path, &baseline, config.as_deref())?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&diff)?);
+                } else {
+                    print_baseline_diff(&diff);
+                }
+            }
+        },
         Command::Mcp => {
             mcp::run()?;
         }
@@ -142,6 +193,52 @@ fn config_for_root(
     }
 
     Ok(RaysenseConfig::default())
+}
+
+fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Result<()> {
+    let config = config_for_root(root, config_path)?;
+    let report = scan_path_with_config(root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let baseline = build_baseline(&report, &health);
+    let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
+    let tables_dir = output.join("tables");
+
+    fs::create_dir_all(output)
+        .with_context(|| format!("failed to create baseline dir {}", output.display()))?;
+    fs::write(
+        output.join("manifest.json"),
+        serde_json::to_string_pretty(&baseline)?,
+    )
+    .with_context(|| format!("failed to write baseline manifest {}", output.display()))?;
+    if tables_dir.exists() {
+        fs::remove_dir_all(&tables_dir)
+            .with_context(|| format!("failed to clear baseline tables {}", tables_dir.display()))?;
+    }
+    memory
+        .save_splayed(&tables_dir)
+        .with_context(|| format!("failed to write baseline tables {}", tables_dir.display()))?;
+
+    Ok(())
+}
+
+fn diff_baseline(
+    root: &Path,
+    baseline_dir: &Path,
+    config_path: Option<&Path>,
+) -> Result<BaselineDiff> {
+    let before: ProjectBaseline = serde_json::from_str(
+        &fs::read_to_string(baseline_dir.join("manifest.json")).with_context(|| {
+            format!(
+                "failed to read baseline manifest {}",
+                baseline_dir.join("manifest.json").display()
+            )
+        })?,
+    )?;
+    let config = config_for_root(root, config_path)?;
+    let report = scan_path_with_config(root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let after = build_baseline(&report, &health);
+    Ok(diff_baselines(&before, &after))
 }
 
 fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
@@ -189,6 +286,56 @@ fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
         "changed_files rows={} cols={}",
         summary.changed_files.rows, summary.changed_files.columns
     );
+}
+
+fn print_baseline_diff(diff: &BaselineDiff) {
+    println!("score_delta {}", diff.score_delta);
+    println!("coverage_score_delta {}", diff.coverage_score_delta);
+    println!("structural_score_delta {}", diff.structural_score_delta);
+    println!(
+        "facts_delta files={} functions={} imports={} calls={} call_edges={}",
+        diff.file_count_delta,
+        diff.function_count_delta,
+        diff.import_count_delta,
+        diff.call_count_delta,
+        diff.call_edge_count_delta
+    );
+    println!(
+        "rules added={} removed={}",
+        diff.added_rules.len(),
+        diff.removed_rules.len()
+    );
+    println!(
+        "hotspots added={} removed={}",
+        diff.added_hotspots.len(),
+        diff.removed_hotspots.len()
+    );
+    println!(
+        "module_edges added={} removed={} changed={}",
+        diff.added_module_edges.len(),
+        diff.removed_module_edges.len(),
+        diff.changed_module_edges.len()
+    );
+
+    if !diff.added_rules.is_empty() {
+        println!("added_rules");
+        for rule in &diff.added_rules {
+            println!(
+                "  {:?} {} {} - {}",
+                rule.severity, rule.code, rule.path, rule.message
+            );
+        }
+    }
+
+    if !diff.changed_module_edges.is_empty() {
+        println!("changed_module_edges");
+        for edge in &diff.changed_module_edges {
+            println!(
+                "  {} -> {} before={} after={} delta={}",
+                edge.from_module, edge.to_module, edge.before, edge.after, edge.delta
+            );
+        }
+    }
 }
 
 fn print_summary(report: &raysense_core::ScanReport, config: &RaysenseConfig) {

@@ -21,12 +21,17 @@
  *   SOFTWARE.
  */
 
+pub mod baseline;
 pub mod facts;
 pub mod graph;
 pub mod health;
 pub mod profile;
 pub mod scanner;
 
+pub use baseline::{
+    build_baseline, diff_baselines, BaselineDiff, BaselineModuleEdge, ModuleEdgeDelta,
+    ProjectBaseline,
+};
 pub use facts::{
     CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
     ImportResolution, Language, ScanReport, SnapshotFact,
