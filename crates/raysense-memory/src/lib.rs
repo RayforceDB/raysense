@@ -111,6 +111,8 @@ pub enum BaselineFilterOp {
     Contains,
     StartsWith,
     EndsWith,
+    Regex,
+    NotRegex,
     Gt,
     Gte,
     Lt,
@@ -538,11 +540,26 @@ fn filter_matches(
             .is_some_and(|(actual, expected)| actual.starts_with(expected)),
         BaselineFilterOp::EndsWith => string_pair(actual, expected)
             .is_some_and(|(actual, expected)| actual.ends_with(expected)),
+        BaselineFilterOp::Regex => {
+            regex_pair(actual, expected).is_some_and(|(actual, pattern)| pattern.is_match(actual))
+        }
+        BaselineFilterOp::NotRegex => {
+            regex_pair(actual, expected).is_some_and(|(actual, pattern)| !pattern.is_match(actual))
+        }
         BaselineFilterOp::Gt => compare_values(actual, expected).is_gt(),
         BaselineFilterOp::Gte => !compare_values(actual, expected).is_lt(),
         BaselineFilterOp::Lt => compare_values(actual, expected).is_lt(),
         BaselineFilterOp::Lte => !compare_values(actual, expected).is_gt(),
     }
+}
+
+fn regex_pair<'a>(
+    actual: &'a serde_json::Value,
+    expected: &'a serde_json::Value,
+) -> Option<(&'a str, regex::Regex)> {
+    let actual = actual.as_str()?;
+    let pattern = regex::Regex::new(expected.as_str()?).ok()?;
+    Some((actual, pattern))
 }
 
 fn value_set(value: &serde_json::Value) -> Option<&[serde_json::Value]> {
@@ -1473,6 +1490,54 @@ mod tests {
             vec![
                 json!({"path": "src/lib.rs", "language": "rust"}),
                 json!({"path": "src/small.c", "language": "c"}),
+            ]
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn queries_saved_baseline_table_with_regex_filters() {
+        let dir = temp_tables_dir("regex-filter");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let rows = query_baseline_table(
+            &dir,
+            "files",
+            BaselineTableQuery {
+                offset: 0,
+                limit: 10,
+                columns: Some(vec!["path".to_string()]),
+                filters: vec![
+                    BaselineTableFilter {
+                        column: "path".to_string(),
+                        op: BaselineFilterOp::Regex,
+                        value: json!(r"^src/.*\.(c|rs)$"),
+                    },
+                    BaselineTableFilter {
+                        column: "path".to_string(),
+                        op: BaselineFilterOp::NotRegex,
+                        value: json!(r"small"),
+                    },
+                ],
+                filter_mode: BaselineFilterMode::All,
+                sort: vec![BaselineTableSort {
+                    column: "path".to_string(),
+                    direction: BaselineSortDirection::Asc,
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(rows.matched_rows, 3);
+        assert_eq!(
+            rows.rows,
+            vec![
+                json!({"path": "src/large.c"}),
+                json!({"path": "src/lib.rs"}),
+                json!({"path": "src/mid.c"}),
             ]
         );
 

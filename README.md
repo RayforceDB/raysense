@@ -95,8 +95,9 @@ is JSON for fast agent diffs, and baseline tables are written under `tables/`
 in Rayforce splayed-table format.
 
 Baseline table filters use `column:op:value`, where `op` is one of `eq`, `ne`,
-`in`, `not_in`, `contains`, `starts_with`, `ends_with`, `gt`, `gte`, `lt`, or
-`lte`. Filters default to AND semantics; use `--filter-mode any` for OR.
+`in`, `not_in`, `contains`, `starts_with`, `ends_with`, `regex`, `not_regex`,
+`gt`, `gte`, `lt`, or `lte`. Filters default to AND semantics; use
+`--filter-mode any` for OR.
 Repeat `--sort` to apply ordered multi-column sorting.
 
 Example config:

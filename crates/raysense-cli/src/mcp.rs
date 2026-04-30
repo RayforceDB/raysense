@@ -623,6 +623,8 @@ fn parse_filter_op(op: &str) -> Result<BaselineFilterOp> {
         "contains" => Ok(BaselineFilterOp::Contains),
         "starts_with" => Ok(BaselineFilterOp::StartsWith),
         "ends_with" => Ok(BaselineFilterOp::EndsWith),
+        "regex" => Ok(BaselineFilterOp::Regex),
+        "not_regex" => Ok(BaselineFilterOp::NotRegex),
         "gt" => Ok(BaselineFilterOp::Gt),
         "gte" => Ok(BaselineFilterOp::Gte),
         "lt" => Ok(BaselineFilterOp::Lt),
@@ -852,7 +854,7 @@ fn baseline_table_schema(require_table: bool) -> Value {
                     "type": "object",
                     "properties": {
                         "column": {"type": "string"},
-                        "op": {"type": "string", "enum": ["eq", "ne", "in", "not_in", "contains", "starts_with", "ends_with", "gt", "gte", "lt", "lte"]},
+                        "op": {"type": "string", "enum": ["eq", "ne", "in", "not_in", "contains", "starts_with", "ends_with", "regex", "not_regex", "gt", "gte", "lt", "lte"]},
                         "value": {}
                     },
                     "required": ["column", "value"]
