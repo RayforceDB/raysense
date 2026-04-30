@@ -117,7 +117,7 @@ enum BaselineCommand {
         #[arg(long = "filter")]
         filters: Vec<String>,
         #[arg(long)]
-        sort: Option<String>,
+        sort: Vec<String>,
         #[arg(long)]
         desc: bool,
         #[arg(long, default_value_t = 0)]
@@ -229,7 +229,7 @@ fn main() -> Result<()> {
                     limit,
                     columns: parse_columns(columns.as_deref())?,
                     filters: parse_filters(&filters)?,
-                    sort: parse_sort(sort.as_deref(), desc)?,
+                    sort: parse_sort(&sort, desc)?,
                 };
                 let rows = raysense_memory::query_baseline_table(&tables_dir, &table, query)
                     .with_context(|| {
@@ -364,6 +364,8 @@ fn parse_filter_op(op: &str) -> Result<BaselineFilterOp> {
     match op {
         "eq" => Ok(BaselineFilterOp::Eq),
         "ne" => Ok(BaselineFilterOp::Ne),
+        "in" => Ok(BaselineFilterOp::In),
+        "not_in" => Ok(BaselineFilterOp::NotIn),
         "contains" => Ok(BaselineFilterOp::Contains),
         "starts_with" => Ok(BaselineFilterOp::StartsWith),
         "ends_with" => Ok(BaselineFilterOp::EndsWith),
@@ -379,21 +381,33 @@ fn parse_filter_value(value: &str) -> Value {
     serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
 }
 
-fn parse_sort(sort: Option<&str>, desc: bool) -> Result<Option<BaselineTableSort>> {
-    let Some(column) = sort else {
-        return Ok(None);
-    };
+fn parse_sort(sorts: &[String], desc: bool) -> Result<Vec<BaselineTableSort>> {
+    sorts
+        .iter()
+        .map(|sort| {
+            let (column, direction) = parse_sort_spec(sort, desc)?;
+            Ok(BaselineTableSort { column, direction })
+        })
+        .collect()
+}
+
+fn parse_sort_spec(sort: &str, desc: bool) -> Result<(String, BaselineSortDirection)> {
+    let (column, explicit_direction) = sort
+        .split_once(':')
+        .map_or((sort, None), |(column, direction)| {
+            (column, Some(direction))
+        });
     if column.is_empty() {
         return Err(anyhow!("sort column must not be empty"));
     }
-    Ok(Some(BaselineTableSort {
-        column: column.to_string(),
-        direction: if desc {
-            BaselineSortDirection::Desc
-        } else {
-            BaselineSortDirection::Asc
-        },
-    }))
+    let direction = match explicit_direction {
+        Some("asc") => BaselineSortDirection::Asc,
+        Some("desc") => BaselineSortDirection::Desc,
+        Some(direction) => return Err(anyhow!("unsupported sort direction {direction}")),
+        None if desc => BaselineSortDirection::Desc,
+        None => BaselineSortDirection::Asc,
+    };
+    Ok((column.to_string(), direction))
 }
 
 fn print_memory_summary(summary: &raysense_memory::MemorySummary) {

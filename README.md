@@ -76,7 +76,7 @@ raysense memory <path> [--config <path>]
 raysense baseline save <path> [--output <path>] [--config <path>]
 raysense baseline diff <path> [--baseline <path>] [--config <path>] [--json]
 raysense baseline tables [--baseline <path>] [--json]
-raysense baseline table <name> [--baseline <path>] [--columns <a,b>] [--filter <column:op:value>] [--sort <column>] [--desc] [--offset <n>] [--limit <n>] [--json]
+raysense baseline table <name> [--baseline <path>] [--columns <a,b>] [--filter <column:op:value>] [--sort <column[:asc|desc]>] [--desc] [--offset <n>] [--limit <n>] [--json]
 raysense mcp
 raysense rayforce-version
 ```
@@ -95,7 +95,8 @@ is JSON for fast agent diffs, and baseline tables are written under `tables/`
 in Rayforce splayed-table format.
 
 Baseline table filters use `column:op:value`, where `op` is one of `eq`, `ne`,
-`contains`, `starts_with`, `ends_with`, `gt`, `gte`, `lt`, or `lte`.
+`in`, `not_in`, `contains`, `starts_with`, `ends_with`, `gt`, `gte`, `lt`, or
+`lte`. Repeat `--sort` to apply ordered multi-column sorting.
 
 Example config:
 

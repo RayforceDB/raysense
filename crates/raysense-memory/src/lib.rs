@@ -106,6 +106,8 @@ pub struct BaselineTableRows {
 pub enum BaselineFilterOp {
     Eq,
     Ne,
+    In,
+    NotIn,
     Contains,
     StartsWith,
     EndsWith,
@@ -140,7 +142,7 @@ pub struct BaselineTableQuery {
     pub limit: usize,
     pub columns: Option<Vec<String>>,
     pub filters: Vec<BaselineTableFilter>,
-    pub sort: Option<BaselineTableSort>,
+    pub sort: Vec<BaselineTableSort>,
 }
 
 impl BaselineTableQuery {
@@ -150,7 +152,7 @@ impl BaselineTableQuery {
             limit,
             columns: None,
             filters: Vec::new(),
-            sort: None,
+            sort: Vec::new(),
         }
     }
 }
@@ -387,11 +389,11 @@ fn table_rows(
 
     let projected = project_columns(&columns, query.columns.as_deref())?;
     validate_filters(&columns, &query.filters)?;
-    let sort_col = query
+    let sort_cols = query
         .sort
-        .as_ref()
+        .iter()
         .map(|sort| column_index(&columns, &sort.column))
-        .transpose()?;
+        .collect::<Result<Vec<_>, _>>()?;
 
     let mut row_indexes = Vec::new();
     for row_idx in 0..total_rows.max(0) as usize {
@@ -400,15 +402,21 @@ fn table_rows(
         }
     }
 
-    if let (Some(sort), Some(col_idx)) = (&query.sort, sort_col) {
+    if !query.sort.is_empty() {
         row_indexes.sort_by(|left, right| {
-            let left = cell_value(col_ptrs[col_idx], *left as i64);
-            let right = cell_value(col_ptrs[col_idx], *right as i64);
-            let ordering = compare_values(&left, &right);
-            match sort.direction {
-                BaselineSortDirection::Asc => ordering,
-                BaselineSortDirection::Desc => ordering.reverse(),
+            for (sort, col_idx) in query.sort.iter().zip(&sort_cols) {
+                let left = cell_value(col_ptrs[*col_idx], *left as i64);
+                let right = cell_value(col_ptrs[*col_idx], *right as i64);
+                let ordering = compare_values(&left, &right);
+                let ordering = match sort.direction {
+                    BaselineSortDirection::Asc => ordering,
+                    BaselineSortDirection::Desc => ordering.reverse(),
+                };
+                if !ordering.is_eq() {
+                    return ordering;
+                }
             }
+            left.cmp(right)
         });
     }
 
@@ -495,6 +503,13 @@ fn filter_matches(
     match op {
         BaselineFilterOp::Eq => values_equal(actual, expected),
         BaselineFilterOp::Ne => !values_equal(actual, expected),
+        BaselineFilterOp::In => value_set(expected)
+            .is_some_and(|values| values.iter().any(|expected| values_equal(actual, expected))),
+        BaselineFilterOp::NotIn => value_set(expected).is_some_and(|values| {
+            values
+                .iter()
+                .all(|expected| !values_equal(actual, expected))
+        }),
         BaselineFilterOp::Contains => string_pair(actual, expected)
             .is_some_and(|(actual, expected)| actual.contains(expected)),
         BaselineFilterOp::StartsWith => string_pair(actual, expected)
@@ -506,6 +521,10 @@ fn filter_matches(
         BaselineFilterOp::Lt => compare_values(actual, expected).is_lt(),
         BaselineFilterOp::Lte => !compare_values(actual, expected).is_gt(),
     }
+}
+
+fn value_set(value: &serde_json::Value) -> Option<&[serde_json::Value]> {
+    value.as_array().map(Vec::as_slice)
 }
 
 fn values_equal(left: &serde_json::Value, right: &serde_json::Value) -> bool {
@@ -1288,10 +1307,10 @@ mod tests {
                     op: BaselineFilterOp::EndsWith,
                     value: json!(".c"),
                 }],
-                sort: Some(BaselineTableSort {
+                sort: vec![BaselineTableSort {
                     column: "lines".to_string(),
                     direction: BaselineSortDirection::Desc,
-                }),
+                }],
             },
         )
         .unwrap();
@@ -1321,12 +1340,69 @@ mod tests {
                 limit: 10,
                 columns: Some(vec!["missing".to_string()]),
                 filters: Vec::new(),
-                sort: None,
+                sort: Vec::new(),
             },
         )
         .unwrap_err();
 
         assert!(matches!(err, MemoryError::UnknownColumn(column) if column == "missing"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn queries_saved_baseline_table_with_set_filters_and_multi_sort() {
+        let dir = temp_tables_dir("set-filter-sort");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let rows = query_baseline_table(
+            &dir,
+            "files",
+            BaselineTableQuery {
+                offset: 0,
+                limit: 10,
+                columns: Some(vec![
+                    "path".to_string(),
+                    "language".to_string(),
+                    "lines".to_string(),
+                ]),
+                filters: vec![
+                    BaselineTableFilter {
+                        column: "language".to_string(),
+                        op: BaselineFilterOp::In,
+                        value: json!(["c", "rust"]),
+                    },
+                    BaselineTableFilter {
+                        column: "path".to_string(),
+                        op: BaselineFilterOp::NotIn,
+                        value: json!(["src/small.c"]),
+                    },
+                ],
+                sort: vec![
+                    BaselineTableSort {
+                        column: "language".to_string(),
+                        direction: BaselineSortDirection::Asc,
+                    },
+                    BaselineTableSort {
+                        column: "lines".to_string(),
+                        direction: BaselineSortDirection::Desc,
+                    },
+                ],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(rows.matched_rows, 3);
+        assert_eq!(
+            rows.rows,
+            vec![
+                json!({"path": "src/large.c", "language": "c", "lines": 30}),
+                json!({"path": "src/mid.c", "language": "c", "lines": 20}),
+                json!({"path": "src/lib.rs", "language": "rust", "lines": 40}),
+            ]
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }

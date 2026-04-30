@@ -617,6 +617,8 @@ fn parse_filter_op(op: &str) -> Result<BaselineFilterOp> {
     match op {
         "eq" => Ok(BaselineFilterOp::Eq),
         "ne" => Ok(BaselineFilterOp::Ne),
+        "in" => Ok(BaselineFilterOp::In),
+        "not_in" => Ok(BaselineFilterOp::NotIn),
         "contains" => Ok(BaselineFilterOp::Contains),
         "starts_with" => Ok(BaselineFilterOp::StartsWith),
         "ends_with" => Ok(BaselineFilterOp::EndsWith),
@@ -628,26 +630,32 @@ fn parse_filter_op(op: &str) -> Result<BaselineFilterOp> {
     }
 }
 
-fn sort_arg(args: &Value) -> Result<Option<BaselineTableSort>> {
-    args.get("sort")
-        .map(|value| {
-            let column = value
-                .get("column")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("sort column must be a string"))?
-                .to_string();
-            let direction = match value
-                .get("direction")
-                .and_then(Value::as_str)
-                .unwrap_or("asc")
-            {
-                "asc" => BaselineSortDirection::Asc,
-                "desc" => BaselineSortDirection::Desc,
-                direction => return Err(anyhow!("unsupported sort direction {direction}")),
-            };
-            Ok(BaselineTableSort { column, direction })
-        })
-        .transpose()
+fn sort_arg(args: &Value) -> Result<Vec<BaselineTableSort>> {
+    let Some(sort) = args.get("sort") else {
+        return Ok(Vec::new());
+    };
+    match sort.as_array() {
+        Some(sort) => sort.iter().map(parse_sort_item).collect(),
+        None => Ok(vec![parse_sort_item(sort)?]),
+    }
+}
+
+fn parse_sort_item(value: &Value) -> Result<BaselineTableSort> {
+    let column = value
+        .get("column")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("sort column must be a string"))?
+        .to_string();
+    let direction = match value
+        .get("direction")
+        .and_then(Value::as_str)
+        .unwrap_or("asc")
+    {
+        "asc" => BaselineSortDirection::Asc,
+        "desc" => BaselineSortDirection::Desc,
+        direction => return Err(anyhow!("unsupported sort direction {direction}")),
+    };
+    Ok(BaselineTableSort { column, direction })
 }
 
 fn config_arg(args: &Value) -> Result<RaysenseConfig> {
@@ -831,20 +839,35 @@ fn baseline_table_schema(require_table: bool) -> Value {
                     "type": "object",
                     "properties": {
                         "column": {"type": "string"},
-                        "op": {"type": "string", "enum": ["eq", "ne", "contains", "starts_with", "ends_with", "gt", "gte", "lt", "lte"]},
+                        "op": {"type": "string", "enum": ["eq", "ne", "in", "not_in", "contains", "starts_with", "ends_with", "gt", "gte", "lt", "lte"]},
                         "value": {}
                     },
                     "required": ["column", "value"]
                 }
             },
             "sort": {
-                "type": "object",
-                "description": "Optional single-column sort applied after filters.",
-                "properties": {
-                    "column": {"type": "string"},
-                    "direction": {"type": "string", "enum": ["asc", "desc"]}
-                },
-                "required": ["column"]
+                "description": "Optional sort object or ordered array of sort objects applied after filters.",
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "column": {"type": "string"},
+                            "direction": {"type": "string", "enum": ["asc", "desc"]}
+                        },
+                        "required": ["column"]
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "direction": {"type": "string", "enum": ["asc", "desc"]}
+                            },
+                            "required": ["column"]
+                        }
+                    }
+                ]
             }
         }
     });
