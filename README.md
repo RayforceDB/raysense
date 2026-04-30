@@ -44,11 +44,29 @@ rules high_fan_in=2
 ## Commands
 
 ```text
-raysense observe <path> [--json] [--memory]
-raysense health <path> [--json]
+raysense observe <path> [--json] [--memory] [--config <path>]
+raysense health <path> [--json] [--config <path>]
 raysense edges <path> [--all]
-raysense memory <path>
+raysense memory <path> [--config <path>]
 raysense rayforce-version
+```
+
+If `<path>/.raysense.toml` exists, health-producing commands load it
+automatically. `--config` overrides that path.
+
+Example config:
+
+```toml
+[rules]
+high_file_fan_in = 50
+large_file_lines = 500
+max_large_file_findings = 20
+low_call_resolution_min_calls = 100
+low_call_resolution_ratio = 0.5
+high_function_fan_in = 200
+high_function_fan_out = 100
+max_call_hotspot_findings = 5
+no_tests_detected = true
 ```
 
 ## Status
@@ -71,6 +89,7 @@ The first testable version focuses on Rust and C/C++ codebases:
   entry point, test-gap, DSM, and evolution-availability metrics.
 - Built-in rules for high fan-in, production dependencies on test paths,
   large-file/no-test findings, and call-resolution/function-call hotspots.
+- Rule thresholds can be configured with TOML.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.

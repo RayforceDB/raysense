@@ -1,4 +1,4 @@
-use raysense_core::{compute_health, HealthSummary, ScanReport};
+use raysense_core::{compute_health_with_config, HealthSummary, RaysenseConfig, ScanReport};
 use std::ffi::CString;
 use std::ptr::NonNull;
 use thiserror::Error;
@@ -50,8 +50,15 @@ pub struct RayMemory {
 
 impl RayMemory {
     pub fn from_report(report: &ScanReport) -> Result<Self, MemoryError> {
+        Self::from_report_with_config(report, &RaysenseConfig::default())
+    }
+
+    pub fn from_report_with_config(
+        report: &ScanReport,
+        config: &RaysenseConfig,
+    ) -> Result<Self, MemoryError> {
         init_symbols()?;
-        let health = compute_health(report);
+        let health = compute_health_with_config(report, config);
 
         Ok(Self {
             files: build_files_table(report)?,

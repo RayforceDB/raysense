@@ -9,7 +9,10 @@ pub use facts::{
     ImportResolution, Language, ScanReport, SnapshotFact,
 };
 pub use graph::GraphMetrics;
-pub use health::{compute_health, FileHotspot, HealthSummary, ResolutionBreakdown};
+pub use health::{
+    compute_health, compute_health_with_config, ConfigError, FileHotspot, HealthSummary,
+    RaysenseConfig, ResolutionBreakdown, RuleConfig,
+};
 pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;
 pub use scanner::{scan_path, ScanError};

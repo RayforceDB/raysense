@@ -1,8 +1,76 @@
 use crate::facts::{EntryPointKind, ImportResolution, ScanReport};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use thiserror::Error;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RaysenseConfig {
+    pub rules: RuleConfig,
+}
+
+impl RaysenseConfig {
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let content = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        toml::from_str(&content).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RuleConfig {
+    pub high_file_fan_in: usize,
+    pub large_file_lines: usize,
+    pub max_large_file_findings: usize,
+    pub low_call_resolution_min_calls: usize,
+    pub low_call_resolution_ratio: f64,
+    pub high_function_fan_in: usize,
+    pub high_function_fan_out: usize,
+    pub max_call_hotspot_findings: usize,
+    pub no_tests_detected: bool,
+}
+
+impl Default for RuleConfig {
+    fn default() -> Self {
+        Self {
+            high_file_fan_in: 50,
+            large_file_lines: 500,
+            max_large_file_findings: 20,
+            low_call_resolution_min_calls: 100,
+            low_call_resolution_ratio: 0.5,
+            high_function_fan_in: 200,
+            high_function_fan_out: 100,
+            max_call_hotspot_findings: 5,
+            no_tests_detected: true,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("failed to read config {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse config {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthSummary {
@@ -139,10 +207,14 @@ pub enum RuleSeverity {
 }
 
 pub fn compute_health(report: &ScanReport) -> HealthSummary {
+    compute_health_with_config(report, &RaysenseConfig::default())
+}
+
+pub fn compute_health_with_config(report: &ScanReport, config: &RaysenseConfig) -> HealthSummary {
     let resolution = resolution_breakdown(report);
     let hotspots = hotspots(report);
     let metrics = metrics(report, &hotspots);
-    let rules = rules(report, &hotspots, &metrics);
+    let rules = rules(report, &hotspots, &metrics, &config.rules);
 
     HealthSummary {
         score: health_score(report, &resolution, &rules),
@@ -578,11 +650,12 @@ fn rules(
     report: &ScanReport,
     hotspots: &[FileHotspot],
     metrics: &MetricsSummary,
+    config: &RuleConfig,
 ) -> Vec<RuleFinding> {
     let mut findings = Vec::new();
 
     for hotspot in hotspots {
-        if hotspot.fan_in >= 50 {
+        if hotspot.fan_in >= config.high_file_fan_in {
             findings.push(RuleFinding {
                 severity: RuleSeverity::Warning,
                 code: "high_fan_in".to_string(),
@@ -618,11 +691,11 @@ fn rules(
     let mut large_files: Vec<_> = report
         .files
         .iter()
-        .filter(|file| file.lines >= 500)
+        .filter(|file| file.lines >= config.large_file_lines)
         .collect();
     large_files.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.path.cmp(&b.path)));
 
-    for file in large_files.iter().take(20) {
+    for file in large_files.iter().take(config.max_large_file_findings) {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
             code: "large_file".to_string(),
@@ -630,16 +703,22 @@ fn rules(
             message: format!("{} lines", file.lines),
         });
     }
-    if large_files.len() > 20 {
+    if large_files.len() > config.max_large_file_findings {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
             code: "large_file_summary".to_string(),
             path: report.snapshot.root.to_string_lossy().into_owned(),
-            message: format!("{} additional large files", large_files.len() - 20),
+            message: format!(
+                "{} additional large files",
+                large_files.len() - config.max_large_file_findings
+            ),
         });
     }
 
-    if metrics.test_gap.production_files > 0 && metrics.test_gap.test_files == 0 {
+    if config.no_tests_detected
+        && metrics.test_gap.production_files > 0
+        && metrics.test_gap.test_files == 0
+    {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
             code: "no_tests_detected".to_string(),
@@ -651,7 +730,9 @@ fn rules(
         });
     }
 
-    if metrics.calls.total_calls >= 100 && metrics.calls.resolution_ratio < 0.5 {
+    if metrics.calls.total_calls >= config.low_call_resolution_min_calls
+        && metrics.calls.resolution_ratio < config.low_call_resolution_ratio
+    {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
             code: "low_call_resolution".to_string(),
@@ -669,8 +750,8 @@ fn rules(
         .calls
         .top_called_functions
         .iter()
-        .filter(|function| function.calls >= 200)
-        .take(5)
+        .filter(|function| function.calls >= config.high_function_fan_in)
+        .take(config.max_call_hotspot_findings)
     {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
@@ -687,8 +768,8 @@ fn rules(
         .calls
         .top_calling_functions
         .iter()
-        .filter(|function| function.calls >= 100)
-        .take(5)
+        .filter(|function| function.calls >= config.high_function_fan_out)
+        .take(config.max_call_hotspot_findings)
     {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
@@ -954,6 +1035,55 @@ mod tests {
 
         assert!(codes.contains(&"low_call_resolution"));
         assert!(codes.contains(&"high_function_fan_out"));
+    }
+
+    #[test]
+    fn applies_rule_config_thresholds() {
+        let files = vec![file(0, "src/a.rs")];
+        let functions = vec![function(0, 0, "run"), function(1, 0, "load")];
+        let mut calls = Vec::new();
+        let mut call_edges = Vec::new();
+        for id in 0..250 {
+            calls.push(call(id, 0, Some(0), "load"));
+            if id < 100 {
+                call_edges.push(call_edge(id, id, 0, 1));
+            }
+        }
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: functions.len(),
+                import_count: 0,
+                call_count: calls.len(),
+            },
+            files,
+            functions,
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls,
+            call_edges,
+            graph: compute_graph_metrics(&[], &[]),
+        };
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[rules]
+low_call_resolution_ratio = 0.3
+high_function_fan_in = 500
+high_function_fan_out = 500
+no_tests_detected = false
+"#,
+        )
+        .unwrap();
+
+        let health = compute_health_with_config(&report, &config);
+        let codes: Vec<&str> = health.rules.iter().map(|rule| rule.code.as_str()).collect();
+
+        assert!(!codes.contains(&"low_call_resolution"));
+        assert!(!codes.contains(&"high_function_fan_in"));
+        assert!(!codes.contains(&"high_function_fan_out"));
+        assert!(!codes.contains(&"no_tests_detected"));
     }
 
     fn file(file_id: usize, path: &str) -> FileFact {

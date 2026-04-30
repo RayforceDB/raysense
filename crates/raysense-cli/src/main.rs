@@ -1,6 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use raysense_core::{compute_health, scan_path, ImportResolution};
+use raysense_core::{compute_health_with_config, scan_path, ImportResolution, RaysenseConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -20,11 +20,15 @@ enum Command {
         json: bool,
         #[arg(long)]
         memory: bool,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     Health {
         path: PathBuf,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     Edges {
         path: PathBuf,
@@ -34,6 +38,8 @@ enum Command {
     RayforceVersion,
     Memory {
         path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -41,20 +47,27 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Observe { path, json, memory } => {
+        Command::Observe {
+            path,
+            json,
+            memory,
+            config,
+        } => {
             let report = scan_path(path)?;
+            let config = config_for_report(&report, config.as_deref())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if memory {
-                let memory = raysense_memory::RayMemory::from_report(&report)?;
+                let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
                 print_memory_summary(&memory.summary());
             } else {
-                print_summary(&report);
+                print_summary(&report, &config);
             }
         }
-        Command::Health { path, json } => {
+        Command::Health { path, json, config } => {
             let report = scan_path(path)?;
-            let health = compute_health(&report);
+            let config = config_for_report(&report, config.as_deref())?;
+            let health = compute_health_with_config(&report, &config);
             if json {
                 println!("{}", serde_json::to_string_pretty(&health)?);
             } else {
@@ -68,14 +81,33 @@ fn main() -> Result<()> {
         Command::RayforceVersion => {
             println!("{}", rayforce_sys::version_string());
         }
-        Command::Memory { path } => {
+        Command::Memory { path, config } => {
             let report = scan_path(path)?;
-            let memory = raysense_memory::RayMemory::from_report(&report)?;
+            let config = config_for_report(&report, config.as_deref())?;
+            let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
             print_memory_summary(&memory.summary());
         }
     }
 
     Ok(())
+}
+
+fn config_for_report(
+    report: &raysense_core::ScanReport,
+    explicit: Option<&std::path::Path>,
+) -> Result<RaysenseConfig> {
+    if let Some(path) = explicit {
+        return RaysenseConfig::from_path(path)
+            .with_context(|| format!("failed to load config {}", path.display()));
+    }
+
+    let default_path = report.snapshot.root.join(".raysense.toml");
+    if default_path.exists() {
+        return RaysenseConfig::from_path(&default_path)
+            .with_context(|| format!("failed to load config {}", default_path.display()));
+    }
+
+    Ok(RaysenseConfig::default())
 }
 
 fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
@@ -125,8 +157,8 @@ fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
     );
 }
 
-fn print_summary(report: &raysense_core::ScanReport) {
-    let health = compute_health(report);
+fn print_summary(report: &raysense_core::ScanReport, config: &RaysenseConfig) {
+    let health = compute_health_with_config(report, config);
     println!("snapshot {}", report.snapshot.snapshot_id);
     println!("root {}", report.snapshot.root.display());
     println!("score {}", health.score);
