@@ -292,6 +292,8 @@ pub struct ArchitectureMetrics {
     pub total_graph_files: usize,
     pub average_distance_from_main_sequence: f64,
     pub levels: BTreeMap<String, usize>,
+    pub upward_violations: Vec<DependencyViolationMetric>,
+    pub upward_violation_ratio: f64,
     pub unstable_modules: Vec<ModuleStabilityMetric>,
     pub stable_foundations: Vec<ModuleStabilityMetric>,
     pub distance_metrics: Vec<ModuleDistanceMetric>,
@@ -317,6 +319,17 @@ pub struct ModuleDistanceMetric {
     pub fan_in: usize,
     pub fan_out: usize,
     pub is_foundation: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DependencyViolationMetric {
+    pub from_file_id: usize,
+    pub from_path: String,
+    pub from_level: usize,
+    pub to_file_id: usize,
+    pub to_path: String,
+    pub to_level: usize,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1010,6 +1023,8 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
     let foundation_files = foundation_file_ids(report, config);
     let distance_metrics = module_distance_metrics(report, config);
     let (attack_surface_files, total_graph_files) = attack_surface_metrics(report, &adjacency);
+    let levels = dependency_levels(report, &adjacency, &reverse);
+    let upward_violations = upward_violations(report, &adjacency, &levels);
     let non_foundation_distance: Vec<f64> = distance_metrics
         .iter()
         .filter(|metric| !metric.is_foundation)
@@ -1052,7 +1067,9 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
                 non_foundation_distance.iter().sum::<f64>() / non_foundation_distance.len() as f64,
             )
         },
-        levels: dependency_levels(report, &adjacency, &reverse),
+        levels,
+        upward_violation_ratio: ratio(upward_violations.len(), report.imports.len()),
+        upward_violations,
         unstable_modules: module_stability(report, config),
         stable_foundations: stable_foundation_metrics(report, config),
         distance_metrics,
@@ -1374,6 +1391,78 @@ fn dependency_levels(
             )
         })
         .collect()
+}
+
+fn upward_violations(
+    report: &ScanReport,
+    adjacency: &HashMap<usize, Vec<usize>>,
+    levels: &BTreeMap<String, usize>,
+) -> Vec<DependencyViolationMetric> {
+    let mut violations = Vec::new();
+    for import in &report.imports {
+        let Some(to_file_id) = import.resolved_file else {
+            continue;
+        };
+        if to_file_id == import.from_file || import.resolution != ImportResolution::Local {
+            continue;
+        }
+        let Some(from_file) = report.files.get(import.from_file) else {
+            continue;
+        };
+        let Some(to_file) = report.files.get(to_file_id) else {
+            continue;
+        };
+        let from_path = from_file.path.to_string_lossy().into_owned();
+        let to_path = to_file.path.to_string_lossy().into_owned();
+        let from_level = levels.get(&from_path).copied().unwrap_or(0);
+        let to_level = levels.get(&to_path).copied().unwrap_or(0);
+        let reason = if from_level < to_level {
+            Some("upward_level".to_string())
+        } else if reachable_from(to_file_id, import.from_file, adjacency) {
+            Some("cycle_edge".to_string())
+        } else {
+            None
+        };
+        let Some(reason) = reason else {
+            continue;
+        };
+        violations.push(DependencyViolationMetric {
+            from_file_id: import.from_file,
+            from_path,
+            from_level,
+            to_file_id,
+            to_path,
+            to_level,
+            reason,
+        });
+    }
+
+    violations.sort_by(|a, b| {
+        let a_diff = a.to_level.abs_diff(a.from_level);
+        let b_diff = b.to_level.abs_diff(b.from_level);
+        b_diff
+            .cmp(&a_diff)
+            .then_with(|| a.from_path.cmp(&b.from_path))
+            .then_with(|| a.to_path.cmp(&b.to_path))
+    });
+    violations.truncate(20);
+    violations
+}
+
+fn reachable_from(start: usize, target: usize, adjacency: &HashMap<usize, Vec<usize>>) -> bool {
+    let mut seen = HashSet::new();
+    let mut queue: VecDeque<usize> = adjacency.get(&start).cloned().unwrap_or_default().into();
+    while let Some(next) = queue.pop_front() {
+        if next == target {
+            return true;
+        }
+        if seen.insert(next) {
+            if let Some(children) = adjacency.get(&next) {
+                queue.extend(children);
+            }
+        }
+    }
+    false
 }
 
 fn module_stability(report: &ScanReport, config: &RaysenseConfig) -> Vec<ModuleStabilityMetric> {
@@ -3427,6 +3516,43 @@ mod tests {
             1.0
         );
         assert!(health.rules.iter().any(|rule| rule.code == "no_god_files"));
+    }
+
+    #[test]
+    fn reports_cycle_edges_as_upward_violations() {
+        let files = vec![file(0, "src/a.rs"), file(1, "src/b.rs")];
+        let imports = vec![
+            import(0, 0, Some(1), ImportResolution::Local),
+            import(1, 1, Some(0), ImportResolution::Local),
+        ];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+
+        let health = compute_health(&report);
+
+        assert_eq!(health.metrics.architecture.upward_violations.len(), 2);
+        assert!(health
+            .metrics
+            .architecture
+            .upward_violations
+            .iter()
+            .all(|violation| violation.reason == "cycle_edge"));
     }
 
     #[test]
