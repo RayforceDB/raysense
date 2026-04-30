@@ -1239,7 +1239,10 @@ fn table_summary(table: *mut rayforce_sys::ray_t) -> TableSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raysense_core::scan_path;
+    use raysense_core::{scan_path, FileFact, Language, SnapshotFact};
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn builds_memory_tables_from_scan_report() {
@@ -1264,5 +1267,116 @@ mod tests {
         assert_eq!(summary.rules.columns, 4);
         assert_eq!(summary.module_edges.columns, 3);
         assert_eq!(summary.changed_files.columns, 2);
+    }
+
+    #[test]
+    fn queries_saved_baseline_table_with_projection_filter_sort_and_pagination() {
+        let dir = temp_tables_dir("query");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let rows = query_baseline_table(
+            &dir,
+            "files",
+            BaselineTableQuery {
+                offset: 1,
+                limit: 1,
+                columns: Some(vec!["path".to_string(), "lines".to_string()]),
+                filters: vec![BaselineTableFilter {
+                    column: "path".to_string(),
+                    op: BaselineFilterOp::EndsWith,
+                    value: json!(".c"),
+                }],
+                sort: Some(BaselineTableSort {
+                    column: "lines".to_string(),
+                    direction: BaselineSortDirection::Desc,
+                }),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(rows.total_rows, 4);
+        assert_eq!(rows.matched_rows, 3);
+        assert_eq!(rows.columns, ["path", "lines"]);
+        assert_eq!(rows.offset, 1);
+        assert_eq!(rows.limit, 1);
+        assert_eq!(rows.rows, vec![json!({"path": "src/mid.c", "lines": 20})]);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_unknown_baseline_query_columns() {
+        let dir = temp_tables_dir("unknown-column");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let err = query_baseline_table(
+            &dir,
+            "files",
+            BaselineTableQuery {
+                offset: 0,
+                limit: 10,
+                columns: Some(vec!["missing".to_string()]),
+                filters: Vec::new(),
+                sort: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, MemoryError::UnknownColumn(column) if column == "missing"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn temp_tables_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "raysense-memory-{name}-{}-{suffix}",
+            std::process::id()
+        ))
+    }
+
+    fn sample_report() -> ScanReport {
+        let files = vec![
+            file(0, "src/small.c", Language::C, 10),
+            file(1, "src/mid.c", Language::C, 20),
+            file(2, "src/large.c", Language::C, 30),
+            file(3, "src/lib.rs", Language::Rust, 40),
+        ];
+        ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "sample".to_string(),
+                root: PathBuf::from("/tmp/raysense-sample"),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: 0,
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph: raysense_core::GraphMetrics::default(),
+        }
+    }
+
+    fn file(file_id: usize, path: &str, language: Language, lines: usize) -> FileFact {
+        FileFact {
+            file_id,
+            path: PathBuf::from(path),
+            language,
+            module: path.replace(['/', '.'], "."),
+            lines,
+            bytes: lines * 10,
+            content_hash: format!("hash-{file_id}"),
+        }
     }
 }
