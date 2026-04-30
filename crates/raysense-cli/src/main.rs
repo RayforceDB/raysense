@@ -96,6 +96,10 @@ fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
         summary.imports.rows, summary.imports.columns
     );
     println!(
+        "calls rows={} cols={}",
+        summary.calls.rows, summary.calls.columns
+    );
+    println!(
         "health rows={} cols={}",
         summary.health.rows, summary.health.columns
     );

@@ -25,6 +25,7 @@ pub struct MemorySummary {
     pub functions: TableSummary,
     pub entry_points: TableSummary,
     pub imports: TableSummary,
+    pub calls: TableSummary,
     pub health: TableSummary,
     pub hotspots: TableSummary,
     pub rules: TableSummary,
@@ -37,6 +38,7 @@ pub struct RayMemory {
     functions: RayObject,
     entry_points: RayObject,
     imports: RayObject,
+    calls: RayObject,
     health: RayObject,
     hotspots: RayObject,
     rules: RayObject,
@@ -54,6 +56,7 @@ impl RayMemory {
             functions: build_functions_table(report)?,
             entry_points: build_entry_points_table(report)?,
             imports: build_imports_table(report)?,
+            calls: build_calls_table(report)?,
             health: build_health_table(report, &health)?,
             hotspots: build_hotspots_table(&health)?,
             rules: build_rules_table(&health)?,
@@ -68,6 +71,7 @@ impl RayMemory {
             functions: table_summary(self.functions.as_ptr()),
             entry_points: table_summary(self.entry_points.as_ptr()),
             imports: table_summary(self.imports.as_ptr()),
+            calls: table_summary(self.calls.as_ptr()),
             health: table_summary(self.health.as_ptr()),
             hotspots: table_summary(self.hotspots.as_ptr()),
             rules: table_summary(self.rules.as_ptr()),
@@ -291,6 +295,43 @@ fn build_imports_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
             ("kind", kinds),
             ("resolution", resolutions),
             ("resolved_file", resolved_files),
+        ],
+    )
+}
+
+fn build_calls_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
+    let ids = i64_vec(
+        report.calls.len(),
+        report.calls.iter().map(|call| call.call_id as i64),
+    )?;
+    let file_ids = i64_vec(
+        report.calls.len(),
+        report.calls.iter().map(|call| call.file_id as i64),
+    )?;
+    let caller_functions = i64_vec(
+        report.calls.len(),
+        report
+            .calls
+            .iter()
+            .map(|call| call.caller_function.map(|id| id as i64).unwrap_or(-1)),
+    )?;
+    let targets = str_vec(
+        report.calls.len(),
+        report.calls.iter().map(|call| call.target.clone()),
+    )?;
+    let lines = i64_vec(
+        report.calls.len(),
+        report.calls.iter().map(|call| call.line as i64),
+    )?;
+
+    table(
+        5,
+        [
+            ("call_id", ids),
+            ("file_id", file_ids),
+            ("caller_function", caller_functions),
+            ("target", targets),
+            ("line", lines),
         ],
     )
 }
@@ -630,6 +671,8 @@ mod tests {
             report.entry_points.len()
         );
         assert_eq!(summary.imports.rows as usize, report.imports.len());
+        assert_eq!(summary.calls.rows as usize, report.calls.len());
+        assert_eq!(summary.calls.columns, 5);
         assert_eq!(summary.health.rows, 1);
         assert_eq!(summary.health.columns, 21);
         assert_eq!(summary.hotspots.columns, 5);
