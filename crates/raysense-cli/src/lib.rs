@@ -1842,7 +1842,7 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         report.graph.max_fan_out
     );
     println!(
-        "coupling local_edges={} cross_module_edges={} cross_module_ratio={:.3} cross_unstable_edges={} cross_unstable_ratio={:.3} entropy={:.3} entropy_bits={:.3} entropy_pairs={}",
+        "coupling local_edges={} cross_module_edges={} cross_module_ratio={:.3} cross_unstable_edges={} cross_unstable_ratio={:.3} entropy={:.3} entropy_bits={:.3} entropy_pairs={} average_module_cohesion={} cohesive_module_count={}",
         health.metrics.coupling.local_edges,
         health.metrics.coupling.cross_module_edges,
         health.metrics.coupling.cross_module_ratio,
@@ -1850,7 +1850,14 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.metrics.coupling.cross_unstable_ratio,
         health.metrics.coupling.entropy,
         health.metrics.coupling.entropy_bits,
-        health.metrics.coupling.entropy_pairs
+        health.metrics.coupling.entropy_pairs,
+        health
+            .metrics
+            .coupling
+            .average_module_cohesion
+            .map(|value| format!("{value:.3}"))
+            .unwrap_or_else(|| "none".to_string()),
+        health.metrics.coupling.cohesive_module_count
     );
     println!(
         "calls total={} resolved_edges={} resolution_ratio={:.3} max_function_fan_in={} max_function_fan_out={}",

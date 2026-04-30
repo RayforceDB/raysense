@@ -58,7 +58,7 @@ facts files=190 functions=2662 calls=25704 call_edges=15492 imports=1039
 entry_points total=50 binaries=6 examples=4 tests=40
 imports local=657 external=0 system=382 unresolved=0
 graph resolved_edges=657 cycles=0
-coupling local_edges=657 cross_module_edges=240 cross_module_ratio=0.365 cross_unstable_edges=200 cross_unstable_ratio=0.304 entropy=0.824 entropy_bits=3.201 entropy_pairs=15
+coupling local_edges=657 cross_module_edges=240 cross_module_ratio=0.365 cross_unstable_edges=200 cross_unstable_ratio=0.304 entropy=0.824 entropy_bits=3.201 entropy_pairs=15 average_module_cohesion=0.667 cohesive_module_count=18
 calls total=25704 resolved_edges=15492 resolution_ratio=0.603 max_function_fan_in=2537 max_function_fan_out=293
 size max_file_lines=6329 max_function_lines=2334 large_files=63 long_functions=209
 test_gap production_files=150 test_files=40 files_without_nearby_tests=150

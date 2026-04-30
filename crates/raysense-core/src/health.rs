@@ -360,6 +360,8 @@ pub struct CouplingMetrics {
     pub entropy: f64,
     pub entropy_bits: f64,
     pub entropy_pairs: usize,
+    pub average_module_cohesion: Option<f64>,
+    pub cohesive_module_count: usize,
     pub max_fan_in: usize,
     pub max_fan_out: usize,
 }
@@ -654,6 +656,7 @@ fn coupling_metrics(
     let stable_foundations = stable_foundation_modules(report, config);
     let (entropy, entropy_bits, entropy_pairs) =
         coupling_entropy(report, config, &stable_foundations);
+    let (average_module_cohesion, cohesive_module_count) = module_cohesion(report, config);
     let cross_unstable_edges = report
         .imports
         .iter()
@@ -685,6 +688,8 @@ fn coupling_metrics(
         entropy,
         entropy_bits,
         entropy_pairs,
+        average_module_cohesion,
+        cohesive_module_count,
         max_fan_in: hotspots
             .iter()
             .map(|hotspot| hotspot.fan_in)
@@ -752,6 +757,86 @@ fn coupling_entropy(
     };
 
     (round3(entropy), round3(entropy_bits), entropy_pairs)
+}
+
+fn module_cohesion(report: &ScanReport, config: &RaysenseConfig) -> (Option<f64>, usize) {
+    let mut files_by_module: HashMap<String, Vec<usize>> = HashMap::new();
+    for file in &report.files {
+        let path = normalize_rule_path(&file.path);
+        if is_test_path_configured(&path, config) {
+            continue;
+        }
+        files_by_module
+            .entry(module_group(file, config))
+            .or_default()
+            .push(file.file_id);
+    }
+
+    let mut module_edges: HashMap<String, HashSet<(usize, usize)>> = HashMap::new();
+    for import in &report.imports {
+        let Some(to_file_id) = import.resolved_file else {
+            continue;
+        };
+        if to_file_id == import.from_file || import.resolution != ImportResolution::Local {
+            continue;
+        }
+        let Some(from_file) = report.files.get(import.from_file) else {
+            continue;
+        };
+        let Some(to_file) = report.files.get(to_file_id) else {
+            continue;
+        };
+        let module = module_group(from_file, config);
+        if module == module_group(to_file, config) {
+            module_edges
+                .entry(module)
+                .or_default()
+                .insert((import.from_file, to_file_id));
+        }
+    }
+
+    for edge in &report.call_edges {
+        let Some(caller) = report.functions.get(edge.caller_function) else {
+            continue;
+        };
+        let Some(callee) = report.functions.get(edge.callee_function) else {
+            continue;
+        };
+        if caller.file_id == callee.file_id {
+            continue;
+        }
+        let Some(from_file) = report.files.get(caller.file_id) else {
+            continue;
+        };
+        let Some(to_file) = report.files.get(callee.file_id) else {
+            continue;
+        };
+        let module = module_group(from_file, config);
+        if module == module_group(to_file, config) {
+            module_edges
+                .entry(module)
+                .or_default()
+                .insert((caller.file_id, callee.file_id));
+        }
+    }
+
+    let mut total = 0.0;
+    let mut count = 0usize;
+    for (module, files) in files_by_module {
+        if files.len() < 2 {
+            continue;
+        }
+        let expected = files.len() - 1;
+        let actual = module_edges.get(&module).map(HashSet::len).unwrap_or(0);
+        total += (actual as f64 / expected as f64).min(1.0);
+        count += 1;
+    }
+
+    if count == 0 {
+        (None, 0)
+    } else {
+        (Some(round3(total / count as f64)), count)
+    }
 }
 
 fn call_metrics(report: &ScanReport) -> CallMetrics {
@@ -3132,6 +3217,41 @@ mod tests {
         assert_eq!(health.metrics.coupling.entropy_pairs, 2);
         assert_eq!(health.metrics.coupling.entropy_bits, 1.0);
         assert_eq!(health.metrics.coupling.entropy, 1.0);
+    }
+
+    #[test]
+    fn computes_module_cohesion_from_internal_edges() {
+        let files = vec![
+            file(0, "src/a/one.rs"),
+            file(1, "src/a/two.rs"),
+            file(2, "src/a/three.rs"),
+        ];
+        let imports = vec![import(0, 0, Some(1), ImportResolution::Local)];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+
+        let mut config = RaysenseConfig::default();
+        config.scan.module_roots = vec!["src".to_string()];
+        let health = compute_health_with_config(&report, &config);
+
+        assert_eq!(health.metrics.coupling.cohesive_module_count, 1);
+        assert_eq!(health.metrics.coupling.average_module_cohesion, Some(0.5));
     }
 
     #[test]
