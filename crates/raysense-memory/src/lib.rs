@@ -89,6 +89,7 @@ pub struct MemorySummary {
     pub rules: TableSummary,
     pub module_edges: TableSummary,
     pub changed_files: TableSummary,
+    pub file_ownership: TableSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -187,6 +188,7 @@ pub struct RayMemory {
     rules: RayObject,
     module_edges: RayObject,
     changed_files: RayObject,
+    file_ownership: RayObject,
 }
 
 impl RayMemory {
@@ -214,6 +216,7 @@ impl RayMemory {
             rules: build_rules_table(&health)?,
             module_edges: build_module_edges_table(&health)?,
             changed_files: build_changed_files_table(&health)?,
+            file_ownership: build_file_ownership_table(&health)?,
         })
     }
 
@@ -231,6 +234,7 @@ impl RayMemory {
             rules: table_summary(self.rules.as_ptr()),
             module_edges: table_summary(self.module_edges.as_ptr()),
             changed_files: table_summary(self.changed_files.as_ptr()),
+            file_ownership: table_summary(self.file_ownership.as_ptr()),
         }
     }
 
@@ -254,6 +258,12 @@ impl RayMemory {
         self.save_table("rules", self.rules.as_ptr(), dir, &sym_path)?;
         self.save_table("module_edges", self.module_edges.as_ptr(), dir, &sym_path)?;
         self.save_table("changed_files", self.changed_files.as_ptr(), dir, &sym_path)?;
+        self.save_table(
+            "file_ownership",
+            self.file_ownership.as_ptr(),
+            dir,
+            &sym_path,
+        )?;
         Ok(())
     }
 
@@ -953,6 +963,75 @@ fn build_calls_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
             ("caller_function", caller_functions),
             ("target", targets),
             ("line", lines),
+        ],
+    )
+}
+
+fn build_file_ownership_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = health.metrics.evolution.file_ownership.len();
+    let paths = str_vec(
+        rows,
+        health
+            .metrics
+            .evolution
+            .file_ownership
+            .iter()
+            .map(|file| file.path.clone()),
+    )?;
+    let top_authors = str_vec(
+        rows,
+        health
+            .metrics
+            .evolution
+            .file_ownership
+            .iter()
+            .map(|file| file.top_author.clone()),
+    )?;
+    let top_author_commits = i64_vec(
+        rows,
+        health
+            .metrics
+            .evolution
+            .file_ownership
+            .iter()
+            .map(|file| file.top_author_commits as i64),
+    )?;
+    let total_commits = i64_vec(
+        rows,
+        health
+            .metrics
+            .evolution
+            .file_ownership
+            .iter()
+            .map(|file| file.total_commits as i64),
+    )?;
+    let author_count = i64_vec(
+        rows,
+        health
+            .metrics
+            .evolution
+            .file_ownership
+            .iter()
+            .map(|file| file.author_count as i64),
+    )?;
+    let bus_factor = i64_vec(
+        rows,
+        health
+            .metrics
+            .evolution
+            .file_ownership
+            .iter()
+            .map(|file| file.bus_factor as i64),
+    )?;
+    table(
+        6,
+        [
+            ("path", paths),
+            ("top_author", top_authors),
+            ("top_author_commits", top_author_commits),
+            ("total_commits", total_commits),
+            ("author_count", author_count),
+            ("bus_factor", bus_factor),
         ],
     )
 }

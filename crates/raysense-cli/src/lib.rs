@@ -1933,8 +1933,10 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
     );
     if health.metrics.evolution.available {
         println!(
-            "evolution available=true commits_sampled={} changed_files={}",
-            health.metrics.evolution.commits_sampled, health.metrics.evolution.changed_files
+            "evolution available=true commits_sampled={} changed_files={} authors={}",
+            health.metrics.evolution.commits_sampled,
+            health.metrics.evolution.changed_files,
+            health.metrics.evolution.author_count
         );
     } else {
         println!(

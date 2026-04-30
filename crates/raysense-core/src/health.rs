@@ -545,12 +545,36 @@ pub struct EvolutionMetrics {
     pub commits_sampled: usize,
     pub changed_files: usize,
     pub top_changed_files: Vec<EvolutionFileMetric>,
+    #[serde(default)]
+    pub author_count: usize,
+    #[serde(default)]
+    pub top_authors: Vec<EvolutionAuthorMetric>,
+    #[serde(default)]
+    pub file_ownership: Vec<EvolutionFileOwnership>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvolutionFileMetric {
     pub path: String,
     pub commits: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionAuthorMetric {
+    pub author: String,
+    pub commits: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionFileOwnership {
+    pub path: String,
+    pub top_author: String,
+    pub top_author_commits: usize,
+    pub total_commits: usize,
+    pub author_count: usize,
+    /// Minimum number of authors needed to cover at least 80% of commits to
+    /// this file. Lower values mean higher key-person risk.
+    pub bus_factor: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2443,7 +2467,7 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
 
     let log = match git_output(
         root,
-        ["log", "-n", "500", "--format=commit:%H", "--name-only"],
+        ["log", "-n", "500", "--format=commit:%H|%ae", "--name-only"],
     ) {
         Ok(output) => output,
         Err(reason) => {
@@ -2462,6 +2486,9 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
         .collect();
     let mut commits_sampled = 0;
     let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+    let mut author_commits: BTreeMap<String, usize> = BTreeMap::new();
+    let mut file_author_commits: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut current_author: Option<String> = None;
     let mut commit_files = HashSet::new();
 
     for line in log.lines() {
@@ -2469,9 +2496,23 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
         if line.is_empty() {
             continue;
         }
-        if line.starts_with("commit:") {
-            flush_commit_files(&mut file_commits, &mut commit_files);
+        if let Some(rest) = line.strip_prefix("commit:") {
+            flush_commit_files_with_author(
+                &mut file_commits,
+                &mut file_author_commits,
+                &mut commit_files,
+                current_author.as_deref(),
+            );
             commits_sampled += 1;
+            let author = rest
+                .split_once('|')
+                .map(|(_, email)| email.trim().to_string());
+            if let Some(author) = author.as_ref() {
+                if !author.is_empty() {
+                    *author_commits.entry(author.clone()).or_default() += 1;
+                }
+            }
+            current_author = author;
             continue;
         }
 
@@ -2481,7 +2522,12 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
             }
         }
     }
-    flush_commit_files(&mut file_commits, &mut commit_files);
+    flush_commit_files_with_author(
+        &mut file_commits,
+        &mut file_author_commits,
+        &mut commit_files,
+        current_author.as_deref(),
+    );
 
     let mut top_changed_files: Vec<EvolutionFileMetric> = file_commits
         .iter()
@@ -2493,12 +2539,95 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
     top_changed_files.sort_by(|a, b| b.commits.cmp(&a.commits).then_with(|| a.path.cmp(&b.path)));
     top_changed_files.truncate(10);
 
+    let author_count = author_commits.len();
+    let mut top_authors: Vec<EvolutionAuthorMetric> = author_commits
+        .iter()
+        .map(|(author, commits)| EvolutionAuthorMetric {
+            author: author.clone(),
+            commits: *commits,
+        })
+        .collect();
+    top_authors.sort_by(|a, b| {
+        b.commits
+            .cmp(&a.commits)
+            .then_with(|| a.author.cmp(&b.author))
+    });
+    top_authors.truncate(10);
+
+    let mut file_ownership: Vec<EvolutionFileOwnership> = file_author_commits
+        .iter()
+        .map(|(path, by_author)| {
+            let total_commits: usize = by_author.values().sum();
+            let mut sorted: Vec<(&String, &usize)> = by_author.iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+            let (top_author, top_commits) = sorted
+                .first()
+                .map(|(name, count)| ((*name).clone(), **count))
+                .unwrap_or_default();
+            let bus_factor = bus_factor_for(&sorted, total_commits);
+            EvolutionFileOwnership {
+                path: path.clone(),
+                top_author,
+                top_author_commits: top_commits,
+                total_commits,
+                author_count: by_author.len(),
+                bus_factor,
+            }
+        })
+        .collect();
+    // Order by key-person risk: lowest bus_factor first, then by churn.
+    file_ownership.sort_by(|a, b| {
+        a.bus_factor
+            .cmp(&b.bus_factor)
+            .then_with(|| b.total_commits.cmp(&a.total_commits))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    file_ownership.truncate(20);
+
     EvolutionMetrics {
         available: true,
         reason: String::new(),
         commits_sampled,
         changed_files: file_commits.len(),
         top_changed_files,
+        author_count,
+        top_authors,
+        file_ownership,
+    }
+}
+
+fn bus_factor_for(sorted: &[(&String, &usize)], total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let target = (total as f64 * 0.8).ceil() as usize;
+    let mut covered = 0usize;
+    for (idx, (_, commits)) in sorted.iter().enumerate() {
+        covered += **commits;
+        if covered >= target {
+            return idx + 1;
+        }
+    }
+    sorted.len().max(1)
+}
+
+fn flush_commit_files_with_author(
+    file_commits: &mut BTreeMap<String, usize>,
+    file_author_commits: &mut BTreeMap<String, BTreeMap<String, usize>>,
+    commit_files: &mut HashSet<String>,
+    author: Option<&str>,
+) {
+    for path in commit_files.drain() {
+        *file_commits.entry(path.clone()).or_default() += 1;
+        if let Some(author) = author {
+            if !author.is_empty() {
+                *file_author_commits
+                    .entry(path)
+                    .or_default()
+                    .entry(author.to_string())
+                    .or_default() += 1;
+            }
+        }
     }
 }
 
@@ -2527,15 +2656,6 @@ struct TrendSample {
     score: u8,
     quality_signal: u32,
     rules: usize,
-}
-
-fn flush_commit_files(
-    file_commits: &mut BTreeMap<String, usize>,
-    commit_files: &mut HashSet<String>,
-) {
-    for path in commit_files.drain() {
-        *file_commits.entry(path).or_default() += 1;
-    }
 }
 
 fn scan_relative_git_path(path: &str, prefix: &str) -> Option<String> {
@@ -3739,6 +3859,27 @@ mod tests {
             h_uniform.root_causes.redundancy,
             h_spread.root_causes.redundancy
         );
+    }
+
+    #[test]
+    fn bus_factor_returns_minimum_authors_for_eighty_percent_coverage() {
+        // Single author owns all commits → bus factor 1.
+        let one = "alice".to_string();
+        let only_alice = vec![(&one, &10usize)];
+        assert_eq!(bus_factor_for(&only_alice, 10), 1);
+
+        // 5+5 split → top author owns 50%; need both for 80% coverage.
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let split = vec![(&alice, &5usize), (&bob, &5usize)];
+        assert_eq!(bus_factor_for(&split, 10), 2);
+
+        // 9+1 split → top author owns 90% (>= 80%) → bus factor 1.
+        let dominant = vec![(&alice, &9usize), (&bob, &1usize)];
+        assert_eq!(bus_factor_for(&dominant, 10), 1);
+
+        // No commits → bus factor 0.
+        assert_eq!(bus_factor_for(&[], 0), 0);
     }
 
     #[test]
