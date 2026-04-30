@@ -51,13 +51,13 @@ Current Rayforce baseline:
 score 96
 coverage_score 100
 structural_score 92
-facts files=186 functions=5044 calls=25067 call_edges=8624 imports=1015
+facts files=186 functions=2677 calls=25067 call_edges=15271 imports=1015
 entry_points total=50 binaries=6 examples=4 tests=40
 imports local=639 external=0 system=376 unresolved=0
 graph resolved_edges=639 cycles=0
 coupling local_edges=639 cross_module_edges=238 cross_module_ratio=0.372
-calls total=25067 resolved_edges=8624 resolution_ratio=0.344 max_function_fan_in=607 max_function_fan_out=190
-size max_file_lines=6329 max_function_lines=2334 large_files=62 long_functions=423
+calls total=25067 resolved_edges=15271 resolution_ratio=0.609 max_function_fan_in=2513 max_function_fan_out=293
+size max_file_lines=6329 max_function_lines=2334 large_files=62 long_functions=206
 test_gap production_files=146 test_files=40 files_without_nearby_tests=146
 dsm modules=5 module_edges=238
 evolution available=true commits_sampled=500 changed_files=186
@@ -78,9 +78,10 @@ raysense rayforce-version
 If `<path>/.raysense.toml` exists, health-producing commands load it
 automatically. `--config` overrides that path.
 
-`raysense mcp` runs a stdio MCP server for agents. It exposes tools to read the
-effective config, write config as TOML, and run health with either file-based or
-inline config.
+`raysense mcp` runs a stdio MCP server for agents. It exposes tools to read and
+write config, run health, inspect scan facts, list dependency edges, read
+hotspots, read rule findings, read DSM module edges, and materialize memory
+table summaries.
 
 Example config:
 
@@ -123,7 +124,8 @@ The first testable version focuses on Rust and C/C++ codebases:
   large-file/no-test findings, and call-resolution/function-call hotspots.
 - Rule thresholds can be configured with TOML.
 - Forbidden top-level module dependencies can be configured with TOML.
-- Config read/write and health runs are exposed through the MCP interface.
+- Config read/write, health runs, scan facts, edges, hotspots, rule findings,
+  module edges, and memory summaries are exposed through the MCP interface.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.

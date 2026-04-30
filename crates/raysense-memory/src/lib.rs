@@ -22,6 +22,7 @@
  */
 
 use raysense_core::{compute_health_with_config, HealthSummary, RaysenseConfig, ScanReport};
+use serde::Serialize;
 use std::ffi::CString;
 use std::ptr::NonNull;
 use thiserror::Error;
@@ -36,13 +37,13 @@ pub enum MemoryError {
     StringNul(#[from] std::ffi::NulError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct TableSummary {
     pub columns: i64,
     pub rows: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MemorySummary {
     pub files: TableSummary,
     pub functions: TableSummary,

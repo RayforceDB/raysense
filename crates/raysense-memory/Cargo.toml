@@ -28,4 +28,5 @@ license.workspace = true
 [dependencies]
 rayforce-sys = { path = "../rayforce-sys" }
 raysense-core = { path = "../raysense-core" }
+serde.workspace = true
 thiserror.workspace = true

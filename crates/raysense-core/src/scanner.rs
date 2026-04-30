@@ -434,18 +434,30 @@ fn extract_typescript_functions(file_id: usize, content: &str) -> Vec<FunctionFa
 }
 
 fn extract_c_like_functions(file_id: usize, content: &str) -> Vec<FunctionFact> {
+    let searchable = strip_c_like_comments(content);
     let lines: Vec<&str> = content.lines().collect();
-    content
+    let depths = brace_depths_before_lines(&searchable);
+    searchable
         .lines()
         .enumerate()
         .filter_map(|(idx, line)| {
+            if depths.get(idx).copied().unwrap_or_default() > 0 {
+                return None;
+            }
             let trimmed = line.trim();
             if trimmed.starts_with('#') || trimmed.ends_with(';') || !trimmed.contains('(') {
                 return None;
             }
+            if !opens_function_body(&lines, idx) {
+                return None;
+            }
             let before_paren = trimmed.split('(').next()?.trim();
             let name = before_paren.split_whitespace().last()?;
-            if name.is_empty() || matches!(name, "if" | "for" | "while" | "switch") {
+            if before_paren.contains("typedef")
+                || before_paren.contains("struct")
+                || name.is_empty()
+                || matches!(name, "if" | "for" | "while" | "switch")
+            {
                 return None;
             }
             Some(FunctionFact {
@@ -457,6 +469,86 @@ fn extract_c_like_functions(file_id: usize, content: &str) -> Vec<FunctionFact> 
             })
         })
         .collect()
+}
+
+fn brace_depths_before_lines(content: &str) -> Vec<usize> {
+    let mut depth = 0usize;
+    let mut depths = Vec::new();
+
+    for line in content.lines() {
+        depths.push(depth);
+        for ch in line.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+
+    depths
+}
+
+fn opens_function_body(lines: &[&str], start_idx: usize) -> bool {
+    for line in lines.iter().skip(start_idx) {
+        for ch in line.chars() {
+            match ch {
+                '{' => return true,
+                ';' => return false,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn strip_c_like_comments(content: &str) -> String {
+    let mut stripped = String::with_capacity(content.len());
+    let mut chars = content.chars().peekable();
+    let mut in_block = false;
+    let mut in_line = false;
+
+    while let Some(ch) = chars.next() {
+        if in_line {
+            if ch == '\n' {
+                in_line = false;
+                stripped.push('\n');
+            } else {
+                stripped.push(' ');
+            }
+            continue;
+        }
+
+        if in_block {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block = false;
+                stripped.push(' ');
+                stripped.push(' ');
+            } else if ch == '\n' {
+                stripped.push('\n');
+            } else {
+                stripped.push(' ');
+            }
+            continue;
+        }
+
+        if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            in_block = true;
+            stripped.push(' ');
+            stripped.push(' ');
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            in_line = true;
+            stripped.push(' ');
+            stripped.push(' ');
+        } else {
+            stripped.push(ch);
+        }
+    }
+
+    stripped
 }
 
 fn block_end_line(lines: &[&str], start_idx: usize) -> usize {
@@ -1208,6 +1300,64 @@ int add(int a, int b) {
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].start_line, 2);
         assert_eq!(functions[0].end_line, 5);
+    }
+
+    #[test]
+    fn ignores_c_like_functions_in_comments() {
+        let content = r#"
+/*
+ * Permission is hereby granted to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ */
+int add(int a, int b) {
+    return a + b;
+}
+"#;
+
+        let functions = extract_functions(0, Language::C, content);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "add");
+        assert_eq!(functions[0].start_line, 6);
+    }
+
+    #[test]
+    fn ignores_c_like_static_asserts_and_typedefs() {
+        let content = r#"
+_Static_assert(sizeof(int) <= 16,
+               "int must fit");
+
+typedef struct RAY_ALIGN(32) {
+    int value;
+} aligned_t;
+
+static inline int add(int a, int b) {
+    return a + b;
+}
+"#;
+
+        let functions = extract_functions(0, Language::C, content);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "add");
+        assert_eq!(functions[0].start_line, 9);
+    }
+
+    #[test]
+    fn ignores_c_like_calls_inside_function_bodies() {
+        let content = r#"
+int run(void) {
+    if (check()) {
+        return call_inside();
+    }
+    return 0;
+}
+"#;
+
+        let functions = extract_functions(0, Language::C, content);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "run");
     }
 
     #[test]

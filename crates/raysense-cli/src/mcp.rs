@@ -22,7 +22,7 @@
  */
 
 use anyhow::{anyhow, Context, Result};
-use raysense_core::{compute_health_with_config, scan_path, RaysenseConfig};
+use raysense_core::{compute_health_with_config, scan_path, ImportResolution, RaysenseConfig};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -132,6 +132,50 @@ fn tools_list() -> Value {
                         "config": config_schema()
                     }
                 }
+            },
+            {
+                "name": "raysense_scan",
+                "description": "Scan a project and return raw scan facts: files, functions, entry points, imports, calls, call edges, and graph metrics.",
+                "inputSchema": path_limit_schema("Maximum rows per fact collection. Defaults to 1000.")
+            },
+            {
+                "name": "raysense_edges",
+                "description": "Return resolved dependency edges from a project scan.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+                        "all": {"type": "boolean", "description": "Include unresolved, external, and system imports. Defaults to false."},
+                        "limit": {"type": "integer", "minimum": 1, "description": "Maximum edges to return. Defaults to 1000."}
+                    }
+                }
+            },
+            {
+                "name": "raysense_hotspots",
+                "description": "Return file dependency hotspots from project health.",
+                "inputSchema": health_limit_schema("Maximum hotspots to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_rules",
+                "description": "Return health rule findings from project health.",
+                "inputSchema": health_limit_schema("Maximum findings to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_module_edges",
+                "description": "Return DSM top-level module dependency edges from project health.",
+                "inputSchema": health_limit_schema("Maximum module edges to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_memory_summary",
+                "description": "Materialize Rayforce-backed memory tables and return their row/column counts.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+                        "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+                        "config": config_schema()
+                    }
+                }
             }
         ]
     })
@@ -151,6 +195,12 @@ fn call_tool(params: &Value) -> Result<Value> {
         "raysense_config_read" => read_config_tool(&args),
         "raysense_config_write" => write_config_tool(&args),
         "raysense_health" => health_tool(&args),
+        "raysense_scan" => scan_tool(&args),
+        "raysense_edges" => edges_tool(&args),
+        "raysense_hotspots" => hotspots_tool(&args),
+        "raysense_rules" => rules_tool(&args),
+        "raysense_module_edges" => module_edges_tool(&args),
+        "raysense_memory_summary" => memory_summary_tool(&args),
         _ => Err(anyhow!("unknown tool {name}")),
     }
 }
@@ -180,17 +230,149 @@ fn write_config_tool(args: &Value) -> Result<Value> {
 fn health_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
     let report = scan_path(&root)?;
-    let config = if args.get("config").is_some() {
-        config_arg(args)?
-    } else {
-        load_config(&report.snapshot.root, config_path_arg(args)?)?.0
-    };
+    let config = effective_config(args, &report.snapshot.root)?;
     let health = compute_health_with_config(&report, &config);
 
     Ok(json!({
         "root": report.snapshot.root,
         "health": health
     }))
+}
+
+fn scan_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let limit = limit_arg(args, 1000)?;
+    let report = scan_path(&root)?;
+
+    Ok(json!({
+        "root": report.snapshot.root,
+        "snapshot": report.snapshot,
+        "files": limited(&report.files, limit),
+        "functions": limited(&report.functions, limit),
+        "entry_points": limited(&report.entry_points, limit),
+        "imports": limited(&report.imports, limit),
+        "calls": limited(&report.calls, limit),
+        "call_edges": limited(&report.call_edges, limit),
+        "graph": report.graph,
+        "limits": {
+            "limit": limit,
+            "files_total": report.files.len(),
+            "functions_total": report.functions.len(),
+            "entry_points_total": report.entry_points.len(),
+            "imports_total": report.imports.len(),
+            "calls_total": report.calls.len(),
+            "call_edges_total": report.call_edges.len()
+        }
+    }))
+}
+
+fn edges_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let all = bool_arg(args, "all", false)?;
+    let limit = limit_arg(args, 1000)?;
+    let report = scan_path(&root)?;
+    let mut total = 0usize;
+    let mut edges = Vec::new();
+
+    for import in &report.imports {
+        if !all && import.resolution != ImportResolution::Local {
+            continue;
+        }
+        total += 1;
+        if edges.len() >= limit {
+            continue;
+        }
+
+        let from = report
+            .files
+            .get(import.from_file)
+            .map(|file| file.path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("#{}", import.from_file));
+        let to = import
+            .resolved_file
+            .and_then(|file_id| report.files.get(file_id))
+            .map(|file| file.path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| import.target.clone());
+
+        edges.push(json!({
+            "import_id": import.import_id,
+            "from": from,
+            "to": to,
+            "kind": import.kind,
+            "resolution": import.resolution
+        }));
+    }
+
+    Ok(json!({
+        "root": report.snapshot.root,
+        "edges": edges,
+        "limit": limit,
+        "total": total
+    }))
+}
+
+fn hotspots_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+
+    Ok(json!({
+        "root": root,
+        "hotspots": limited(&health.hotspots, limit),
+        "limit": limit,
+        "total": health.hotspots.len()
+    }))
+}
+
+fn rules_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+
+    Ok(json!({
+        "root": root,
+        "rules": limited(&health.rules, limit),
+        "limit": limit,
+        "total": health.rules.len()
+    }))
+}
+
+fn module_edges_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+
+    Ok(json!({
+        "root": root,
+        "module_edges": limited(&health.metrics.dsm.top_module_edges, limit),
+        "limit": limit,
+        "total": health.metrics.dsm.top_module_edges.len()
+    }))
+}
+
+fn memory_summary_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let report = scan_path(&root)?;
+    let config = effective_config(args, &report.snapshot.root)?;
+    let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
+
+    Ok(json!({
+        "root": report.snapshot.root,
+        "summary": memory.summary()
+    }))
+}
+
+fn health_from_args(args: &Value) -> Result<(PathBuf, raysense_core::HealthSummary)> {
+    let root = root_arg(args)?;
+    let report = scan_path(&root)?;
+    let config = effective_config(args, &report.snapshot.root)?;
+    let health = compute_health_with_config(&report, &config);
+    Ok((report.snapshot.root, health))
+}
+
+fn effective_config(args: &Value, root: &Path) -> Result<RaysenseConfig> {
+    if args.get("config").is_some() {
+        config_arg(args)
+    } else {
+        Ok(load_config(root, config_path_arg(args)?)?.0)
+    }
 }
 
 fn root_arg(args: &Value) -> Result<PathBuf> {
@@ -209,6 +391,31 @@ fn config_path_arg(args: &Value) -> Result<Option<PathBuf>> {
                 .ok_or_else(|| anyhow!("config_path must be a string"))
         })
         .transpose()
+}
+
+fn bool_arg(args: &Value, name: &str, default: bool) -> Result<bool> {
+    args.get(name)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| anyhow!("{name} must be a boolean"))
+        })
+        .unwrap_or(Ok(default))
+}
+
+fn limit_arg(args: &Value, default: usize) -> Result<usize> {
+    match args.get("limit") {
+        Some(value) => {
+            let limit = value
+                .as_u64()
+                .ok_or_else(|| anyhow!("limit must be a positive integer"))?;
+            if limit == 0 {
+                return Err(anyhow!("limit must be a positive integer"));
+            }
+            Ok(limit as usize)
+        }
+        None => Ok(default),
+    }
 }
 
 fn config_arg(args: &Value) -> Result<RaysenseConfig> {
@@ -318,6 +525,36 @@ fn config_schema() -> Value {
     })
 }
 
+fn path_limit_schema(limit_description: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "limit": {"type": "integer", "minimum": 1, "description": limit_description}
+        }
+    })
+}
+
+fn health_limit_schema(limit_description: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema(),
+            "limit": {"type": "integer", "minimum": 1, "description": limit_description}
+        }
+    })
+}
+
+fn limited<T: serde::Serialize>(items: &[T], limit: usize) -> Vec<Value> {
+    items
+        .iter()
+        .take(limit)
+        .map(|item| serde_json::to_value(item).unwrap_or(Value::Null))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,6 +574,12 @@ mod tests {
         assert!(names.contains(&"raysense_config_read"));
         assert!(names.contains(&"raysense_config_write"));
         assert!(names.contains(&"raysense_health"));
+        assert!(names.contains(&"raysense_scan"));
+        assert!(names.contains(&"raysense_edges"));
+        assert!(names.contains(&"raysense_hotspots"));
+        assert!(names.contains(&"raysense_rules"));
+        assert!(names.contains(&"raysense_module_edges"));
+        assert!(names.contains(&"raysense_memory_summary"));
     }
 
     #[test]

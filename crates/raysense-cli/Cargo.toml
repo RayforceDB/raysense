@@ -35,5 +35,6 @@ clap.workspace = true
 rayforce-sys = { path = "../rayforce-sys" }
 raysense-core = { path = "../raysense-core" }
 raysense-memory = { path = "../raysense-memory" }
+serde.workspace = true
 serde_json.workspace = true
 toml = "1.1.2"
