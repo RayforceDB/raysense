@@ -67,6 +67,10 @@ high_function_fan_in = 200
 high_function_fan_out = 100
 max_call_hotspot_findings = 5
 no_tests_detected = true
+
+[[boundaries.forbidden_edges]]
+from = "src"
+to = "test"
 ```
 
 ## Status
@@ -90,6 +94,7 @@ The first testable version focuses on Rust and C/C++ codebases:
 - Built-in rules for high fan-in, production dependencies on test paths,
   large-file/no-test findings, and call-resolution/function-call hotspots.
 - Rule thresholds can be configured with TOML.
+- Forbidden top-level module dependencies can be configured with TOML.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.

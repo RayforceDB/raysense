@@ -10,6 +10,7 @@ use thiserror::Error;
 #[serde(default)]
 pub struct RaysenseConfig {
     pub rules: RuleConfig,
+    pub boundaries: BoundaryConfig,
 }
 
 impl RaysenseConfig {
@@ -54,6 +55,18 @@ impl Default for RuleConfig {
             no_tests_detected: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BoundaryConfig {
+    pub forbidden_edges: Vec<ForbiddenEdgeConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForbiddenEdgeConfig {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Debug, Error)]
@@ -214,7 +227,7 @@ pub fn compute_health_with_config(report: &ScanReport, config: &RaysenseConfig) 
     let resolution = resolution_breakdown(report);
     let hotspots = hotspots(report);
     let metrics = metrics(report, &hotspots);
-    let rules = rules(report, &hotspots, &metrics, &config.rules);
+    let rules = rules(report, &hotspots, &metrics, config);
 
     HealthSummary {
         score: health_score(report, &resolution, &rules),
@@ -650,12 +663,13 @@ fn rules(
     report: &ScanReport,
     hotspots: &[FileHotspot],
     metrics: &MetricsSummary,
-    config: &RuleConfig,
+    config: &RaysenseConfig,
 ) -> Vec<RuleFinding> {
     let mut findings = Vec::new();
+    let rules = &config.rules;
 
     for hotspot in hotspots {
-        if hotspot.fan_in >= config.high_file_fan_in {
+        if hotspot.fan_in >= rules.high_file_fan_in {
             findings.push(RuleFinding {
                 severity: RuleSeverity::Warning,
                 code: "high_fan_in".to_string(),
@@ -691,11 +705,11 @@ fn rules(
     let mut large_files: Vec<_> = report
         .files
         .iter()
-        .filter(|file| file.lines >= config.large_file_lines)
+        .filter(|file| file.lines >= rules.large_file_lines)
         .collect();
     large_files.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.path.cmp(&b.path)));
 
-    for file in large_files.iter().take(config.max_large_file_findings) {
+    for file in large_files.iter().take(rules.max_large_file_findings) {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
             code: "large_file".to_string(),
@@ -703,19 +717,19 @@ fn rules(
             message: format!("{} lines", file.lines),
         });
     }
-    if large_files.len() > config.max_large_file_findings {
+    if large_files.len() > rules.max_large_file_findings {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
             code: "large_file_summary".to_string(),
             path: report.snapshot.root.to_string_lossy().into_owned(),
             message: format!(
                 "{} additional large files",
-                large_files.len() - config.max_large_file_findings
+                large_files.len() - rules.max_large_file_findings
             ),
         });
     }
 
-    if config.no_tests_detected
+    if rules.no_tests_detected
         && metrics.test_gap.production_files > 0
         && metrics.test_gap.test_files == 0
     {
@@ -730,8 +744,8 @@ fn rules(
         });
     }
 
-    if metrics.calls.total_calls >= config.low_call_resolution_min_calls
-        && metrics.calls.resolution_ratio < config.low_call_resolution_ratio
+    if metrics.calls.total_calls >= rules.low_call_resolution_min_calls
+        && metrics.calls.resolution_ratio < rules.low_call_resolution_ratio
     {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
@@ -750,8 +764,8 @@ fn rules(
         .calls
         .top_called_functions
         .iter()
-        .filter(|function| function.calls >= config.high_function_fan_in)
-        .take(config.max_call_hotspot_findings)
+        .filter(|function| function.calls >= rules.high_function_fan_in)
+        .take(rules.max_call_hotspot_findings)
     {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
@@ -768,8 +782,8 @@ fn rules(
         .calls
         .top_calling_functions
         .iter()
-        .filter(|function| function.calls >= config.high_function_fan_out)
-        .take(config.max_call_hotspot_findings)
+        .filter(|function| function.calls >= rules.high_function_fan_out)
+        .take(rules.max_call_hotspot_findings)
     {
         findings.push(RuleFinding {
             severity: RuleSeverity::Info,
@@ -782,11 +796,55 @@ fn rules(
         });
     }
 
+    findings.extend(boundary_findings(report, &config.boundaries));
+
     findings
 }
 
+fn boundary_findings(report: &ScanReport, config: &BoundaryConfig) -> Vec<RuleFinding> {
+    if config.forbidden_edges.is_empty() {
+        return Vec::new();
+    }
+
+    let forbidden: HashSet<(&str, &str)> = config
+        .forbidden_edges
+        .iter()
+        .map(|edge| (edge.from.as_str(), edge.to.as_str()))
+        .collect();
+    let mut edges: BTreeMap<(String, String), usize> = BTreeMap::new();
+
+    for import in &report.imports {
+        let Some(to_file_id) = import.resolved_file else {
+            continue;
+        };
+        let Some(from_file) = report.files.get(import.from_file) else {
+            continue;
+        };
+        let Some(to_file) = report.files.get(to_file_id) else {
+            continue;
+        };
+        let from_module = top_module(&from_file.module);
+        let to_module = top_module(&to_file.module);
+        if forbidden.contains(&(from_module, to_module)) {
+            *edges
+                .entry((from_module.to_string(), to_module.to_string()))
+                .or_default() += 1;
+        }
+    }
+
+    edges
+        .into_iter()
+        .map(|((from_module, to_module), count)| RuleFinding {
+            severity: RuleSeverity::Warning,
+            code: "forbidden_module_edge".to_string(),
+            path: report.snapshot.root.to_string_lossy().into_owned(),
+            message: format!("{from_module} -> {to_module} has {count} dependency edges"),
+        })
+        .collect()
+}
+
 fn top_module(module: &str) -> &str {
-    module.split('.').next().unwrap_or(module)
+    module.split(['.', '/']).next().unwrap_or(module)
 }
 
 fn ratio(numerator: usize, denominator: usize) -> f64 {
@@ -896,7 +954,7 @@ mod tests {
 
     #[test]
     fn computes_metric_families() {
-        let mut files = vec![file(0, "src/core/a.rs"), file(1, "src/io/b.rs")];
+        let mut files = vec![file(0, "core/a.rs"), file(1, "io/b.rs")];
         files[0].lines = 600;
         let imports = vec![import(0, 0, Some(1), ImportResolution::Local)];
         let graph = compute_graph_metrics(&files, &imports);
@@ -1084,6 +1142,45 @@ no_tests_detected = false
         assert!(!codes.contains(&"high_function_fan_in"));
         assert!(!codes.contains(&"high_function_fan_out"));
         assert!(!codes.contains(&"no_tests_detected"));
+    }
+
+    #[test]
+    fn reports_forbidden_module_edges() {
+        let files = vec![file(0, "src/a.rs"), file(1, "test/b.rs")];
+        let imports = vec![import(0, 0, Some(1), ImportResolution::Local)];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[[boundaries.forbidden_edges]]
+from = "src"
+to = "test"
+"#,
+        )
+        .unwrap();
+
+        let health = compute_health_with_config(&report, &config);
+
+        assert!(health
+            .rules
+            .iter()
+            .any(|rule| rule.code == "forbidden_module_edge"));
     }
 
     fn file(file_id: usize, path: &str) -> FileFact {
