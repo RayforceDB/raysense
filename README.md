@@ -68,6 +68,20 @@ rules high_fan_in=2
 
 ## Commands
 
+Install from crates.io after building a local Rayforce library:
+
+```sh
+git clone git@github.com:RayforceDB/rayforce.git
+make -C rayforce lib
+RAYFORCE_DIR="$PWD/rayforce" cargo install raysense
+```
+
+For library use:
+
+```sh
+cargo add raysense
+```
+
 ```text
 raysense observe <path> [--json] [--memory] [--config <path>]
 raysense health <path> [--json] [--config <path>]
@@ -135,13 +149,17 @@ MCP query example:
 Release checks:
 
 ```sh
+cargo package -p rayforce-sys
 cargo package -p raysense-core
+cargo package -p raysense-memory
+cargo package -p raysense-cli
 cargo package -p raysense
 ```
 
 Run the `publish` workflow manually with `dry_run=true` before publishing a
-release. The `raysense` package check requires the matching `raysense-core`
-version to be visible in the registry index.
+release. The workflow publishes packages in dependency order, waits for each
+new package to appear in the registry index, and then runs a post-release
+install and library smoke check.
 
 Example config:
 

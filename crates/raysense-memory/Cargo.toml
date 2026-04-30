@@ -24,10 +24,12 @@ name = "raysense-memory"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Rayforce-backed memory tables for Raysense"
 
 [dependencies]
-rayforce-sys = { path = "../rayforce-sys" }
-raysense-core = { path = "../raysense-core" }
+rayforce-sys = { path = "../rayforce-sys", version = "0.1.0" }
+raysense-core = { path = "../raysense-core", version = "0.1.0" }
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

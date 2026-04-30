@@ -25,7 +25,8 @@
 
 Raysense is local architectural telemetry for AI coding agents.
 
-The crate exposes the owned scanner and architectural fact model.
+The crate exposes the owned scanner and architectural fact model, and installs
+the `raysense` command line tool.
 
 ```rust
 let report = raysense::scan_path(".")?;

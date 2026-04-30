@@ -31,5 +31,11 @@ readme = "README.md"
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "raysense"
+path = "src/main.rs"
+
 [dependencies]
+anyhow.workspace = true
 raysense-core = { path = "../raysense-core", version = "0.1.0" }
+raysense-cli = { path = "../raysense-cli", version = "0.1.0" }
