@@ -3,6 +3,8 @@ name = "raysense-core"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+description = "Core scanner and architectural fact model for Raysense"
+readme = "README.md"
 
 [dependencies]
 ignore.workspace = true

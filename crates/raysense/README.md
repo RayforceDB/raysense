@@ -2,5 +2,10 @@
 
 Raysense is local architectural telemetry for AI coding agents.
 
-This first crate release reserves the public package name while the scanner,
-memory bridge, and command-line surface continue to harden in the repository.
+The crate exposes the owned scanner and architectural fact model.
+
+```rust
+let report = raysense::scan_path(".")?;
+println!("files: {}", report.files.len());
+# Ok::<(), raysense::ScanError>(())
+```
