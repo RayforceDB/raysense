@@ -98,6 +98,7 @@ raysense visualize [path] [--watch] [--interval <seconds>] [--output <path>] [--
 raysense plugin list [path] [--config <path>]
 raysense plugin add <name> <extensions...> [--file-name <name>] [--path <path>] [--config <path>]
 raysense plugin add-standard [--path <path>] [--config <path>]
+raysense plugin remove <name> [--path <path>] [--config <path>]
 raysense plugin init <name> <extension> [--path <path>] [--config <path>]
 raysense policy list
 raysense policy init <preset> [path] [--config <path>]
@@ -133,7 +134,7 @@ save/diff baselines, and query saved baseline tables with projection, filters,
 sorting, and pagination. Agent session tools can save an in-memory baseline,
 rescan, end the session, check rules, inspect evolution, inspect DSM data,
 inspect test gaps, list configured language plugins, and add generic or
-standard plugin profiles.
+standard plugin profiles, or remove plugin profiles.
 
 `raysense visualize` writes a self-refreshing local HTML dashboard with file
 size blocks, module graph edges, hotspots, rules, complexity, test gaps, and an

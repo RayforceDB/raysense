@@ -279,6 +279,11 @@ fn tools_list() -> Value {
                 "inputSchema": plugin_add_standard_schema()
             },
             {
+                "name": "raysense_plugin_remove",
+                "description": "Remove a generic language plugin from project config.",
+                "inputSchema": plugin_remove_schema()
+            },
+            {
                 "name": "raysense_remediations",
                 "description": "Return suggested remediation actions for current findings and test gaps.",
                 "inputSchema": health_limit_schema("Maximum remediation actions to return. Defaults to 100.")
@@ -377,6 +382,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_standard_plugins" => standard_plugins_tool(&args),
         "raysense_plugin_add" => plugin_add_tool(&args),
         "raysense_plugin_add_standard" => plugin_add_standard_tool(&args),
+        "raysense_plugin_remove" => plugin_remove_tool(&args),
         "raysense_remediations" => remediations_tool(&args),
         "raysense_what_if" => what_if_tool(&args),
         "raysense_trend" => trend_tool(&args),
@@ -949,6 +955,30 @@ fn plugin_add_standard_tool(args: &Value) -> Result<Value> {
         "path": path,
         "plugins": config.scan.plugins,
         "total": config.scan.plugins.len()
+    }))
+}
+
+fn plugin_remove_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing plugin name"))?;
+    let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
+    let mut config = load_or_default_config(&path)?;
+    let before = config.scan.plugins.len();
+    config
+        .scan
+        .plugins
+        .retain(|plugin| !plugin.name.eq_ignore_ascii_case(name));
+    let removed = before - config.scan.plugins.len();
+    write_config_path(&path, &config)?;
+
+    Ok(json!({
+        "root": root,
+        "path": path,
+        "removed": removed,
+        "config": config
     }))
 }
 
@@ -1788,6 +1818,18 @@ fn plugin_add_standard_schema() -> Value {
     })
 }
 
+fn plugin_remove_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Destination config file. Defaults to <path>/.raysense.toml."},
+            "name": {"type": "string", "description": "Plugin name to remove."}
+        },
+        "required": ["name"]
+    })
+}
+
 fn baseline_schema(path_description: &str) -> Value {
     json!({
         "type": "object",
@@ -1914,6 +1956,7 @@ mod tests {
         assert!(names.contains(&"raysense_standard_plugins"));
         assert!(names.contains(&"raysense_plugin_add"));
         assert!(names.contains(&"raysense_plugin_add_standard"));
+        assert!(names.contains(&"raysense_plugin_remove"));
         assert!(names.contains(&"raysense_remediations"));
         assert!(names.contains(&"raysense_what_if"));
         assert!(names.contains(&"raysense_trend"));

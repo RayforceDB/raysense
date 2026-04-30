@@ -186,6 +186,13 @@ enum PluginCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    Remove {
+        name: String,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     Init {
         name: String,
         extension: String,
@@ -360,6 +367,9 @@ pub fn run() -> Result<()> {
             } => add_plugin(&path, config.as_deref(), &name, extensions, file_names)?,
             PluginCommand::AddStandard { path, config } => {
                 add_standard_plugins(&path, config.as_deref())?
+            }
+            PluginCommand::Remove { name, path, config } => {
+                remove_plugin(&path, config.as_deref(), &name)?
             }
             PluginCommand::Init {
                 name,
@@ -1052,6 +1062,28 @@ fn add_standard_plugins(root: &Path, config_path: Option<&Path>) -> Result<()> {
     let toml = toml::to_string_pretty(&config).context("failed to encode config")?;
     fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
     println!("plugins {} {}", count, path.display());
+    Ok(())
+}
+
+fn remove_plugin(root: &Path, config_path: Option<&Path>, name: &str) -> Result<()> {
+    let path = config_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join(".raysense.toml"));
+    let mut config = if path.exists() {
+        RaysenseConfig::from_path(&path)
+            .with_context(|| format!("failed to load config {}", path.display()))?
+    } else {
+        RaysenseConfig::default()
+    };
+    let before = config.scan.plugins.len();
+    config
+        .scan
+        .plugins
+        .retain(|plugin| !plugin.name.eq_ignore_ascii_case(name));
+    let removed = before - config.scan.plugins.len();
+    let toml = toml::to_string_pretty(&config).context("failed to encode config")?;
+    fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
+    println!("plugin_removed {} {} {}", name, removed, path.display());
     Ok(())
 }
 
