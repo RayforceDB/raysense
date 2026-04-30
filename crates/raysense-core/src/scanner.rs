@@ -50,6 +50,12 @@ pub enum ScanError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to parse plugin config {path}: {source}")]
+    PluginConfig {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
 }
 
 pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
@@ -67,6 +73,7 @@ pub fn scan_path_with_config(
             path: root.as_ref().to_path_buf(),
             source,
         })?;
+    let config = load_project_plugins(&root, config)?;
 
     let mut files = Vec::new();
     let mut functions = Vec::new();
@@ -92,6 +99,9 @@ pub fn scan_path_with_config(
 
         let path = entry.path();
         let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
+        if is_internal_path(&relative_path) {
+            continue;
+        }
         if is_ignored_path(&relative_path, &config.scan.ignored_paths)
             || is_ignored_path(&relative_path, &config.scan.generated_paths)
         {
@@ -99,7 +109,7 @@ pub fn scan_path_with_config(
         }
 
         let language = Language::from_path(path);
-        let plugin = matching_plugin(&relative_path, config);
+        let plugin = matching_plugin(&relative_path, &config);
         if plugin
             .as_ref()
             .is_some_and(|plugin| is_ignored_path(&relative_path, &plugin.ignored_paths))
@@ -113,7 +123,7 @@ pub fn scan_path_with_config(
             .as_ref()
             .map(|plugin| plugin.name.clone())
             .unwrap_or_else(|| language_name(language).to_string());
-        if !is_enabled_language_name(&language_label, config) {
+        if !is_enabled_language_name(&language_label, &config) {
             continue;
         }
 
@@ -179,7 +189,7 @@ pub fn scan_path_with_config(
         files.push(file_fact);
     }
 
-    resolve_imports(&files, &mut imports, config);
+    resolve_imports(&files, &mut imports, &config);
     let call_edges = resolve_call_edges(&files, &functions, &calls);
 
     let snapshot_id = snapshot_id(&files);
@@ -205,6 +215,46 @@ pub fn scan_path_with_config(
     })
 }
 
+fn load_project_plugins(root: &Path, config: &RaysenseConfig) -> Result<RaysenseConfig, ScanError> {
+    let mut config = config.clone();
+    let plugins_dir = root.join(".raysense/plugins");
+    if !plugins_dir.exists() {
+        return Ok(config);
+    }
+    let entries = fs::read_dir(&plugins_dir).map_err(|source| ScanError::Read {
+        path: plugins_dir.clone(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| ScanError::Read {
+            path: plugins_dir.clone(),
+            source,
+        })?;
+        let plugin_path = entry.path().join("plugin.toml");
+        if !plugin_path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&plugin_path).map_err(|source| ScanError::Read {
+            path: plugin_path.clone(),
+            source,
+        })?;
+        let plugin: LanguagePluginConfig =
+            toml::from_str(&content).map_err(|source| ScanError::PluginConfig {
+                path: plugin_path,
+                source,
+            })?;
+        if plugin.name.trim().is_empty() || plugin.extensions.is_empty() {
+            continue;
+        }
+        config
+            .scan
+            .plugins
+            .retain(|existing| existing.name != plugin.name);
+        config.scan.plugins.push(plugin);
+    }
+    Ok(config)
+}
+
 fn is_ignored_path(path: &Path, ignored_paths: &[String]) -> bool {
     let path = normalize_relative_path(path);
     ignored_paths
@@ -212,6 +262,10 @@ fn is_ignored_path(path: &Path, ignored_paths: &[String]) -> bool {
         .map(|pattern| pattern.trim())
         .filter(|pattern| !pattern.is_empty())
         .any(|pattern| matches_path_pattern(&path, &normalize_pattern(pattern)))
+}
+
+fn is_internal_path(path: &Path) -> bool {
+    normalize_relative_path(path).starts_with(".raysense/")
 }
 
 fn matches_path_pattern(path: &str, pattern: &str) -> bool {
@@ -2253,6 +2307,32 @@ local_import_prefixes = ["."]
             .iter()
             .any(|entry| entry.kind == EntryPointKind::Test));
         assert_eq!(report.imports[0].resolution, ImportResolution::Local);
+    }
+
+    #[test]
+    fn loads_project_local_plugin_manifests() {
+        let root = temp_scan_root("local_plugins");
+        fs::create_dir_all(root.join(".raysense/plugins/toy")).unwrap();
+        fs::write(
+            root.join(".raysense/plugins/toy/plugin.toml"),
+            r#"
+name = "toy"
+extensions = ["toy"]
+function_prefixes = ["fn "]
+import_prefixes = ["load "]
+call_suffixes = ["("]
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("main.toy"), "load core\nfn run\n").unwrap();
+
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(report.files[0].language_name, "toy");
+        assert_eq!(report.functions[0].name, "run");
+        assert_eq!(report.imports[0].target, "core");
     }
 
     #[test]

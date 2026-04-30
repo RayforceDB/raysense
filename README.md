@@ -115,6 +115,8 @@ raysense rayforce-version
 
 If `<path>/.raysense.toml` exists, health-producing commands load it
 automatically. `--config` overrides that path.
+Project-local plugin manifests under `.raysense/plugins/*/plugin.toml` are also
+loaded during scans, using the same fields as `[[scan.plugins]]`.
 
 `raysense mcp` runs a stdio MCP server for agents. It exposes tools to read and
 write config, run health, inspect scan facts, list dependency edges, read
@@ -251,6 +253,8 @@ and formats:
   function, import, and call token extraction.
 - Standard language plugin profiles can be listed through MCP or materialized
   into project config with `raysense plugin add-standard`.
+- Project-local plugin manifests can be loaded from
+  `.raysense/plugins/*/plugin.toml`.
 - Built-in generic analyzers for Go, Java, Kotlin, Scala, C#, PHP, Ruby, Swift,
   shell, SQL, Lua, Perl, Dart, Elixir, Haskell, OCaml, F#, Clojure, Solidity,
   protobuf, GraphQL, build/config formats, and other common file types.
