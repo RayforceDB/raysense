@@ -357,6 +357,9 @@ pub struct CouplingMetrics {
     pub cross_unstable_edges: usize,
     pub cross_module_ratio: f64,
     pub cross_unstable_ratio: f64,
+    pub entropy: f64,
+    pub entropy_bits: f64,
+    pub entropy_pairs: usize,
     pub max_fan_in: usize,
     pub max_fan_out: usize,
 }
@@ -649,6 +652,8 @@ fn coupling_metrics(
         })
         .count();
     let stable_foundations = stable_foundation_modules(report, config);
+    let (entropy, entropy_bits, entropy_pairs) =
+        coupling_entropy(report, config, &stable_foundations);
     let cross_unstable_edges = report
         .imports
         .iter()
@@ -677,6 +682,9 @@ fn coupling_metrics(
         cross_unstable_edges,
         cross_module_ratio: ratio(cross_module_edges, local_edges),
         cross_unstable_ratio: ratio(cross_unstable_edges, local_edges),
+        entropy,
+        entropy_bits,
+        entropy_pairs,
         max_fan_in: hotspots
             .iter()
             .map(|hotspot| hotspot.fan_in)
@@ -688,6 +696,62 @@ fn coupling_metrics(
             .max()
             .unwrap_or(0),
     }
+}
+
+fn coupling_entropy(
+    report: &ScanReport,
+    config: &RaysenseConfig,
+    stable_foundations: &HashSet<String>,
+) -> (f64, f64, usize) {
+    let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut cross_count = 0usize;
+
+    for import in &report.imports {
+        if import.resolution != ImportResolution::Local {
+            continue;
+        }
+        let Some(to_file_id) = import.resolved_file else {
+            continue;
+        };
+        if to_file_id == import.from_file {
+            continue;
+        }
+        let Some(from_file) = report.files.get(import.from_file) else {
+            continue;
+        };
+        let Some(to_file) = report.files.get(to_file_id) else {
+            continue;
+        };
+        let from = module_group(from_file, config);
+        let to = module_group(to_file, config);
+        if from == to || stable_foundations.contains(&to) {
+            continue;
+        }
+        *pair_counts.entry((from, to)).or_default() += 1;
+        cross_count += 1;
+    }
+
+    let entropy_pairs = pair_counts.len();
+    if cross_count == 0 || entropy_pairs <= 1 {
+        return (0.0, 0.0, entropy_pairs);
+    }
+
+    let total = cross_count as f64;
+    let entropy_bits = pair_counts
+        .values()
+        .map(|count| {
+            let p = *count as f64 / total;
+            -p * p.log2()
+        })
+        .sum::<f64>();
+    let max_entropy = (entropy_pairs as f64).log2();
+    let entropy = if max_entropy > 0.0 {
+        entropy_bits / max_entropy
+    } else {
+        0.0
+    };
+
+    (round3(entropy), round3(entropy_bits), entropy_pairs)
 }
 
 fn call_metrics(report: &ScanReport) -> CallMetrics {
@@ -3028,6 +3092,46 @@ mod tests {
         assert_eq!(health.metrics.architecture.attack_surface_files, 3);
         assert_eq!(health.metrics.architecture.total_graph_files, 5);
         assert_eq!(health.metrics.architecture.attack_surface_ratio, 0.6);
+    }
+
+    #[test]
+    fn computes_coupling_entropy_for_unstable_cross_module_edges() {
+        let files = vec![
+            file(0, "src/a/mod.rs"),
+            file(1, "src/b/mod.rs"),
+            file(2, "src/c/mod.rs"),
+            file(3, "src/d/mod.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(1), ImportResolution::Local),
+            import(1, 2, Some(3), ImportResolution::Local),
+        ];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+
+        let mut config = RaysenseConfig::default();
+        config.scan.module_roots = vec!["src".to_string()];
+        let health = compute_health_with_config(&report, &config);
+
+        assert_eq!(health.metrics.coupling.entropy_pairs, 2);
+        assert_eq!(health.metrics.coupling.entropy_bits, 1.0);
+        assert_eq!(health.metrics.coupling.entropy, 1.0);
     }
 
     #[test]
