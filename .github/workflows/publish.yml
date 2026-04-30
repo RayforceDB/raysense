@@ -51,7 +51,7 @@ jobs:
       - name: Test workspace
         run: cargo test
         env:
-          RAYFORCE_DIR: deps/rayforce
+          RAYFORCE_DIR: ${{ github.workspace }}/deps/rayforce
 
       - name: Package raysense-core
         run: cargo package -p raysense-core
@@ -60,7 +60,7 @@ jobs:
         run: cargo publish -p raysense-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          RAYFORCE_DIR: deps/rayforce
+          RAYFORCE_DIR: ${{ github.workspace }}/deps/rayforce
 
       - name: Wait for registry index
         run: sleep 30
@@ -72,4 +72,4 @@ jobs:
         run: cargo publish -p raysense
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          RAYFORCE_DIR: deps/rayforce
+          RAYFORCE_DIR: ${{ github.workspace }}/deps/rayforce
