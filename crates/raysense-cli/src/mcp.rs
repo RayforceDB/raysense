@@ -254,6 +254,11 @@ fn tools_list() -> Value {
                 "inputSchema": path_limit_schema("Unused.")
             },
             {
+                "name": "raysense_standard_plugins",
+                "description": "Return built-in standard language plugin profiles that can be written into config.",
+                "inputSchema": path_limit_schema("Maximum plugins to return. Defaults to all.")
+            },
+            {
                 "name": "raysense_remediations",
                 "description": "Return suggested remediation actions for current findings and test gaps.",
                 "inputSchema": health_limit_schema("Maximum remediation actions to return. Defaults to 100.")
@@ -342,6 +347,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_dsm" => dsm_tool(&args),
         "raysense_test_gaps" => test_gaps_tool(&args),
         "raysense_plugins" => plugins_tool(&args),
+        "raysense_standard_plugins" => standard_plugins_tool(&args),
         "raysense_remediations" => remediations_tool(&args),
         "raysense_what_if" => what_if_tool(&args),
         "raysense_trend" => trend_tool(&args),
@@ -782,6 +788,19 @@ fn plugins_tool(args: &Value) -> Result<Value> {
         "root": root,
         "source": source,
         "plugins": config.scan.plugins
+    }))
+}
+
+fn standard_plugins_tool(args: &Value) -> Result<Value> {
+    let limit = args
+        .get("limit")
+        .map(|_| limit_arg(args, usize::MAX))
+        .transpose()?
+        .unwrap_or(usize::MAX);
+    let plugins = raysense_core::standard_language_plugins();
+    Ok(json!({
+        "plugins": limited(&plugins, limit),
+        "total": plugins.len()
     }))
 }
 
@@ -1620,6 +1639,7 @@ mod tests {
         assert!(names.contains(&"raysense_dsm"));
         assert!(names.contains(&"raysense_test_gaps"));
         assert!(names.contains(&"raysense_plugins"));
+        assert!(names.contains(&"raysense_standard_plugins"));
         assert!(names.contains(&"raysense_remediations"));
         assert!(names.contains(&"raysense_what_if"));
         assert!(names.contains(&"raysense_trend"));

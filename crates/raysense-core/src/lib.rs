@@ -46,4 +46,4 @@ pub use health::{
 };
 pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;
-pub use scanner::{scan_path, scan_path_with_config, ScanError};
+pub use scanner::{scan_path, scan_path_with_config, standard_language_plugins, ScanError};

@@ -97,6 +97,7 @@ raysense watch [path] [--interval <seconds>] [--config <path>]
 raysense visualize [path] [--output <path>] [--config <path>]
 raysense plugin list [path] [--config <path>]
 raysense plugin add <name> <extensions...> [--path <path>] [--config <path>]
+raysense plugin add-standard [--path <path>] [--config <path>]
 raysense plugin init <name> <extension> [--path <path>] [--config <path>]
 raysense policy list
 raysense policy init <preset> [path] [--config <path>]
@@ -248,6 +249,8 @@ and formats:
 - Configurable module roots for DSM and architecture grouping.
 - Generic configured language plugins by file extension with configurable
   function, import, and call token extraction.
+- Standard language plugin profiles can be listed through MCP or materialized
+  into project config with `raysense plugin add-standard`.
 - Built-in generic analyzers for Go, Java, Kotlin, Scala, C#, PHP, Ruby, Swift,
   shell, SQL, Lua, Perl, Dart, Elixir, Haskell, OCaml, F#, Clojure, Solidity,
   protobuf, GraphQL, build/config formats, and other common file types.

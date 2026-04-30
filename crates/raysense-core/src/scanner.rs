@@ -305,7 +305,7 @@ fn plugin_by_language_name(name: &str, config: &RaysenseConfig) -> Option<Langua
         .find(|plugin| plugin.name.eq_ignore_ascii_case(name))
         .cloned()
         .or_else(|| {
-            builtin_language_catalog()
+            standard_language_plugins()
                 .into_iter()
                 .find(|plugin| plugin.name.eq_ignore_ascii_case(name))
         })
@@ -320,7 +320,7 @@ fn plugin_matches_extension(plugin: &LanguagePluginConfig, ext: &str) -> bool {
 }
 
 fn builtin_language_plugin(ext: &str) -> Option<LanguagePluginConfig> {
-    builtin_language_catalog().into_iter().find(|plugin| {
+    standard_language_plugins().into_iter().find(|plugin| {
         plugin
             .extensions
             .iter()
@@ -328,7 +328,7 @@ fn builtin_language_plugin(ext: &str) -> Option<LanguagePluginConfig> {
     })
 }
 
-fn builtin_language_catalog() -> Vec<LanguagePluginConfig> {
+pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
     let catalog = [
         ("go", &["go"][..], &["func "][..], &["import "][..]),
         (

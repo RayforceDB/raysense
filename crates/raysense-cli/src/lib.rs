@@ -171,6 +171,12 @@ enum PluginCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    AddStandard {
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     Init {
         name: String,
         extension: String,
@@ -335,6 +341,9 @@ pub fn run() -> Result<()> {
                 path,
                 config,
             } => add_plugin(&path, config.as_deref(), &name, extensions)?,
+            PluginCommand::AddStandard { path, config } => {
+                add_standard_plugins(&path, config.as_deref())?
+            }
             PluginCommand::Init {
                 name,
                 extension,
@@ -736,6 +745,35 @@ fn add_plugin(
     let toml = toml::to_string_pretty(&config).context("failed to encode config")?;
     fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
     println!("plugin {} {}", name, path.display());
+    Ok(())
+}
+
+fn add_standard_plugins(root: &Path, config_path: Option<&Path>) -> Result<()> {
+    let path = config_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join(".raysense.toml"));
+    let mut config = if path.exists() {
+        RaysenseConfig::from_path(&path)
+            .with_context(|| format!("failed to load config {}", path.display()))?
+    } else {
+        RaysenseConfig::default()
+    };
+    let standard = raysense_core::standard_language_plugins();
+    for plugin in &standard {
+        config
+            .scan
+            .plugins
+            .retain(|existing| existing.name != plugin.name);
+    }
+    config.scan.plugins.extend(standard);
+    config
+        .scan
+        .plugins
+        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    let count = config.scan.plugins.len();
+    let toml = toml::to_string_pretty(&config).context("failed to encode config")?;
+    fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
+    println!("plugins {} {}", count, path.display());
     Ok(())
 }
 
