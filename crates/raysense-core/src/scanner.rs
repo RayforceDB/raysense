@@ -531,6 +531,24 @@ pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
             &["resource ", "module "],
             &["module "],
         ),
+        (
+            "hcl",
+            &["hcl"],
+            &["resource ", "module ", "variable "],
+            &["module "],
+        ),
+        (
+            "gdscript",
+            &["gd"],
+            &["func "],
+            &["extends ", "class_name "],
+        ),
+        (
+            "glsl",
+            &["glsl", "vert", "frag", "geom", "tesc", "tese", "comp"],
+            &["void "],
+            &["#include "],
+        ),
         ("yaml", &["yaml", "yml"], &[""], &[]),
         ("toml", &["toml"], &[], &[]),
         ("json", &["json"], &[""], &[]),
@@ -551,7 +569,14 @@ pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
         ),
         ("gradle", &["gradle"], &["task "], &["apply "]),
         ("groovy", &["groovy"], &["def "], &["import "]),
+        ("cobol", &["cob", "cbl", "cpy"], &["       "], &["COPY "]),
         ("vb", &["vb"], &["Sub ", "Function "], &["Imports "]),
+        (
+            "pascal",
+            &["pas", "pp", "inc"],
+            &["function ", "procedure "],
+            &["uses "],
+        ),
         (
             "fortran",
             &["f", "f90", "f95", "for"],
@@ -563,6 +588,7 @@ pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
         ("vyper", &["vy"], &["def "], &["import "]),
         ("proto", &["proto"], &["service ", "rpc "], &["import "]),
         ("thrift", &["thrift"], &["service "], &["include "]),
+        ("vlang", &["v"], &["fn "], &["import "]),
         (
             "graphql",
             &["graphql", "gql"],
@@ -2656,6 +2682,35 @@ call_suffixes = ["("]
         assert_eq!(report.files.len(), 1);
         assert_eq!(report.files[0].language_name, "dockerfile");
         assert_eq!(report.imports[0].target, ".");
+    }
+
+    #[test]
+    fn scans_expanded_builtin_language_catalog_extensions() {
+        let root = temp_scan_root("expanded_builtin_catalog");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("main.gd"),
+            "extends Node\nfunc _ready():\n    pass\n",
+        )
+        .unwrap();
+        fs::write(root.join("shader.frag"), "void main() {}\n").unwrap();
+        fs::write(
+            root.join("main.hcl"),
+            "module \"app\" { source = \"./app\" }\n",
+        )
+        .unwrap();
+
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        let languages: std::collections::BTreeSet<_> = report
+            .files
+            .iter()
+            .map(|file| file.language_name.as_str())
+            .collect();
+
+        assert!(languages.contains("gdscript"));
+        assert!(languages.contains("glsl"));
+        assert!(languages.contains("hcl"));
     }
 
     #[test]
