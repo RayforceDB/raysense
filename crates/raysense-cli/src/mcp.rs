@@ -289,6 +289,11 @@ fn tools_list() -> Value {
                 "inputSchema": path_limit_schema("Unused.")
             },
             {
+                "name": "raysense_policy_init",
+                "description": "Apply a built-in policy preset and write the resulting config.",
+                "inputSchema": policy_init_schema()
+            },
+            {
                 "name": "raysense_memory_summary",
                 "description": "Materialize Rayforce-backed memory tables and return their row/column counts.",
                 "inputSchema": {
@@ -364,6 +369,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_what_if" => what_if_tool(&args),
         "raysense_trend" => trend_tool(&args),
         "raysense_policy_presets" => policy_presets_tool(&args),
+        "raysense_policy_init" => policy_init_tool(&args),
         "raysense_memory_summary" => memory_summary_tool(&args),
         "raysense_baseline_save" => baseline_save_tool(&args),
         "raysense_baseline_diff" => baseline_diff_tool(&args),
@@ -938,6 +944,31 @@ fn trend_tool(args: &Value) -> Result<Value> {
 fn policy_presets_tool(_args: &Value) -> Result<Value> {
     Ok(json!({
         "presets": ["rust-crate", "monorepo", "service-backend", "library"]
+    }))
+}
+
+fn policy_init_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let preset = args
+        .get("preset")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing preset"))?;
+    let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
+    let mut config = if path.exists() {
+        RaysenseConfig::from_path(&path)
+            .with_context(|| format!("failed to load config {}", path.display()))?
+    } else {
+        RaysenseConfig::default()
+    };
+    super::apply_policy_preset(&mut config, preset)?;
+    let toml = toml::to_string_pretty(&config).context("failed to encode config as TOML")?;
+    fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
+
+    Ok(json!({
+        "root": root,
+        "path": path,
+        "preset": preset,
+        "config": config
     }))
 }
 
@@ -1620,6 +1651,18 @@ fn sarif_schema() -> Value {
     })
 }
 
+fn policy_init_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Destination config file. Defaults to <path>/.raysense.toml."},
+            "preset": {"type": "string", "enum": ["rust-crate", "monorepo", "service-backend", "library"]}
+        },
+        "required": ["preset"]
+    })
+}
+
 fn baseline_schema(path_description: &str) -> Value {
     json!({
         "type": "object",
@@ -1748,6 +1791,7 @@ mod tests {
         assert!(names.contains(&"raysense_what_if"));
         assert!(names.contains(&"raysense_trend"));
         assert!(names.contains(&"raysense_policy_presets"));
+        assert!(names.contains(&"raysense_policy_init"));
         assert!(names.contains(&"raysense_memory_summary"));
         assert!(names.contains(&"raysense_baseline_save"));
         assert!(names.contains(&"raysense_baseline_diff"));
