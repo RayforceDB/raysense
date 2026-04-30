@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout raysense
+        uses: actions/checkout@v4
+
+      - name: Checkout rayforce
+        uses: actions/checkout@v4
+        with:
+          repository: RayforceDB/rayforce
+          path: deps/rayforce
+
+      - name: Build rayforce library
+        run: make -C deps/rayforce lib
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test
+        env:
+          RAYFORCE_DIR: deps/rayforce

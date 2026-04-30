@@ -2,3 +2,4 @@
 Cargo.lock
 /local/
 .codex
+/deps/rayforce/

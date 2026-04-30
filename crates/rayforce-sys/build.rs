@@ -3,9 +3,16 @@ use std::path::PathBuf;
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let rayforce_dir = env::var_os("RAYFORCE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("../../..").join("rayforce"));
+    let repo_root = manifest_dir.join("../..");
+    let checkout_dir = repo_root.join("deps/rayforce");
+    let sibling_dir = repo_root.join("../rayforce");
+    let rayforce_dir = env::var_os("RAYFORCE_DIR").map(PathBuf::from).unwrap_or({
+        if checkout_dir.exists() {
+            checkout_dir
+        } else {
+            sibling_dir
+        }
+    });
 
     let include_dir = rayforce_dir.join("include");
     let lib_dir = rayforce_dir.clone();
@@ -13,7 +20,7 @@ fn main() {
 
     if !lib_path.exists() {
         panic!(
-            "missing {}; build it with `make -C {} lib` or set RAYFORCE_DIR",
+            "missing {}; build Rayforce with `make -C {} lib` or set RAYFORCE_DIR",
             lib_path.display(),
             rayforce_dir.display()
         );
