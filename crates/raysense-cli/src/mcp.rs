@@ -304,6 +304,11 @@ fn tools_list() -> Value {
                 "inputSchema": what_if_schema()
             },
             {
+                "name": "raysense_break_cycle_recommendations",
+                "description": "Rank candidate local edges whose removal would reduce the report's cycle count.",
+                "inputSchema": break_cycle_recommendations_schema()
+            },
+            {
                 "name": "raysense_trend",
                 "description": "Return persisted trend metrics when .raysense/trends/history.json exists.",
                 "inputSchema": health_limit_schema("Unused.")
@@ -397,6 +402,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_plugin_scaffold" => plugin_scaffold_tool(&args),
         "raysense_remediations" => remediations_tool(&args),
         "raysense_what_if" => what_if_tool(&args),
+        "raysense_break_cycle_recommendations" => break_cycle_recommendations_tool(&args),
         "raysense_trend" => trend_tool(&args),
         "raysense_policy_presets" => policy_presets_tool(&args),
         "raysense_policy_init" => policy_init_tool(&args),
@@ -1237,6 +1243,30 @@ fn what_if_break_cycle_tool(args: &Value, root: &Path, config: &RaysenseConfig) 
     }))
 }
 
+fn break_cycle_recommendations_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(20);
+    let max_candidates = args
+        .get("max_candidates")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(500);
+    let report = scan_path_with_config(&root, &config)?;
+    let recommendations =
+        raysense_core::break_cycle_recommendations(&report, limit, max_candidates);
+    Ok(json!({
+        "root": report.snapshot.root,
+        "cycle_count_before": report.graph.cycle_count,
+        "considered_edges_cap": max_candidates,
+        "recommendations": recommendations,
+    }))
+}
+
 fn what_if_sequence_tool(actions: &[Value], root: &Path, config: &RaysenseConfig) -> Result<Value> {
     let before_report = scan_path_with_config(root, config)?;
     let before_health = compute_health_with_config(&before_report, config);
@@ -2029,6 +2059,19 @@ fn level_schema() -> Value {
     })
 }
 
+fn break_cycle_recommendations_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema(),
+            "limit": {"type": "integer", "description": "Maximum recommendations to return. Defaults to 20."},
+            "max_candidates": {"type": "integer", "description": "Maximum local edges to consider. Defaults to 500."}
+        }
+    })
+}
+
 fn what_if_schema() -> Value {
     json!({
         "type": "object",
@@ -2294,6 +2337,7 @@ mod tests {
         assert!(names.contains(&"raysense_plugin_scaffold"));
         assert!(names.contains(&"raysense_remediations"));
         assert!(names.contains(&"raysense_what_if"));
+        assert!(names.contains(&"raysense_break_cycle_recommendations"));
         assert!(names.contains(&"raysense_trend"));
         assert!(names.contains(&"raysense_policy_presets"));
         assert!(names.contains(&"raysense_policy_init"));

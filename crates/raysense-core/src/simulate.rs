@@ -315,6 +315,89 @@ pub fn break_cycle(
     Ok(after)
 }
 
+/// One candidate edge whose removal would reduce the report's cycle count.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CycleBreakCandidate {
+    pub from: String,
+    pub to: String,
+    pub cycle_count_before: usize,
+    pub cycle_count_after: usize,
+    pub cycle_count_reduction: usize,
+}
+
+/// Rank candidate local edges by how much each one's removal reduces the
+/// report's cycle count. Considers up to `max_candidates` distinct local edges
+/// (capped to avoid quadratic cost on large graphs); returns at most `limit`
+/// recommendations sorted by reduction (descending), then path. Returns an
+/// empty list when the report has no cycles.
+pub fn break_cycle_recommendations(
+    report: &ScanReport,
+    limit: usize,
+    max_candidates: usize,
+) -> Vec<CycleBreakCandidate> {
+    let baseline_cycles = report.graph.cycle_count;
+    if baseline_cycles == 0 {
+        return Vec::new();
+    }
+
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    let mut considered = 0usize;
+    for import in &report.imports {
+        if considered >= max_candidates {
+            break;
+        }
+        if import.resolution != ImportResolution::Local {
+            continue;
+        }
+        let Some(to_id) = import.resolved_file else {
+            continue;
+        };
+        if !seen.insert((import.from_file, to_id)) {
+            continue;
+        }
+        let Some(from_file) = report.files.get(import.from_file) else {
+            continue;
+        };
+        let Some(to_file) = report.files.get(to_id) else {
+            continue;
+        };
+        let from_path = from_file.path.to_string_lossy().into_owned();
+        let to_path = to_file.path.to_string_lossy().into_owned();
+        considered += 1;
+
+        let after_imports: Vec<ImportFact> = report
+            .imports
+            .iter()
+            .filter(|other| {
+                !(other.from_file == import.from_file
+                    && other.resolved_file == Some(to_id)
+                    && other.resolution == ImportResolution::Local)
+            })
+            .cloned()
+            .collect();
+        let after_graph = compute_graph_metrics(&report.files, &after_imports);
+        if after_graph.cycle_count < baseline_cycles {
+            candidates.push(CycleBreakCandidate {
+                from: from_path,
+                to: to_path,
+                cycle_count_before: baseline_cycles,
+                cycle_count_after: after_graph.cycle_count,
+                cycle_count_reduction: baseline_cycles - after_graph.cycle_count,
+            });
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        b.cycle_count_reduction
+            .cmp(&a.cycle_count_reduction)
+            .then_with(|| a.from.cmp(&b.from))
+            .then_with(|| a.to.cmp(&b.to))
+    });
+    candidates.truncate(limit);
+    candidates
+}
+
 fn file_id_for_path(report: &ScanReport, path: &str) -> Result<usize, SimulateError> {
     report
         .files
@@ -647,6 +730,84 @@ mod tests {
             add_edge(&after, "src/a.rs", "src/b.rs").unwrap_err(),
             SimulateError::EdgeAlreadyExists { .. }
         ));
+    }
+
+    #[test]
+    fn break_cycle_recommendations_empty_when_acyclic() {
+        let files = vec![file(0, "src/a.rs"), file(1, "src/b.rs")];
+        let imports = vec![import(0, 0, Some(1))];
+        let before = report(
+            files,
+            Vec::new(),
+            imports,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(before.graph.cycle_count, 0);
+        let recs = break_cycle_recommendations(&before, 5, 100);
+        assert!(recs.is_empty());
+    }
+
+    #[test]
+    fn break_cycle_recommendations_ranks_edges_by_reduction() {
+        // Two cycles share file b: a -> b -> a, and c -> b -> c via b -> c, c -> b.
+        // Removing edges in or out of b should reduce cycle count.
+        let files = vec![
+            file(0, "src/a.rs"),
+            file(1, "src/b.rs"),
+            file(2, "src/c.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(1)), // a -> b
+            import(1, 1, Some(0)), // b -> a (cycle 1)
+            import(2, 1, Some(2)), // b -> c
+            import(3, 2, Some(1)), // c -> b (cycle 2)
+        ];
+        let before = report(
+            files,
+            Vec::new(),
+            imports,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(before.graph.cycle_count > 0);
+
+        let recs = break_cycle_recommendations(&before, 10, 100);
+        assert!(!recs.is_empty());
+        // Highest-reduction recommendation must come first.
+        let top = &recs[0];
+        assert!(top.cycle_count_reduction >= 1);
+        assert_eq!(top.cycle_count_before, before.graph.cycle_count);
+        // Reductions must be monotonically non-increasing across the list.
+        for window in recs.windows(2) {
+            assert!(window[0].cycle_count_reduction >= window[1].cycle_count_reduction);
+        }
+    }
+
+    #[test]
+    fn break_cycle_recommendations_respects_limit() {
+        let files = vec![
+            file(0, "src/a.rs"),
+            file(1, "src/b.rs"),
+            file(2, "src/c.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(1)),
+            import(1, 1, Some(2)),
+            import(2, 2, Some(0)),
+        ];
+        let before = report(
+            files,
+            Vec::new(),
+            imports,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let recs = break_cycle_recommendations(&before, 1, 100);
+        assert_eq!(recs.len(), 1);
     }
 
     #[test]

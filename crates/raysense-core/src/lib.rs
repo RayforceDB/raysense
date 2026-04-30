@@ -50,6 +50,7 @@ pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;
 pub use scanner::{scan_path, scan_path_with_config, standard_language_plugins, ScanError};
 pub use simulate::{
-    break_cycle as simulate_break_cycle, move_file as simulate_move_file,
-    remove_file as simulate_remove_file, SimulateError,
+    break_cycle as simulate_break_cycle, break_cycle_recommendations,
+    move_file as simulate_move_file, remove_file as simulate_remove_file, CycleBreakCandidate,
+    SimulateError,
 };
