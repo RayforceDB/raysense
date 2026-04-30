@@ -28,7 +28,7 @@ Current Rayforce baseline:
 score 96
 coverage_score 100
 structural_score 92
-facts files=186 functions=5044 calls=25067 imports=1015
+facts files=186 functions=5044 calls=25067 call_edges=8191 imports=1015
 entry_points total=50 binaries=6 examples=4 tests=40
 imports local=639 external=0 system=376 unresolved=0
 graph resolved_edges=639 cycles=0
@@ -59,6 +59,7 @@ The first testable version focuses on Rust and C/C++ codebases:
 - Tree-sitter-backed Rust `use`/`mod` and C/C++ include extraction with
   lightweight fallback extraction.
 - Tree-sitter-backed Rust, C, and C++ call facts with enclosing function ids.
+- Conservative call-edge resolution for unambiguous function names.
 - Project profile inference for reusable include-root discovery.
 - Entry point facts for binaries, examples, and tests.
 - Local, external, system, and unresolved import classification.
@@ -67,7 +68,8 @@ The first testable version focuses on Rust and C/C++ codebases:
   entry point, test-gap, DSM, and evolution-availability metrics.
 - Built-in rules for high fan-in, production dependencies on test paths, and
   large-file/no-test informational findings.
-- Rayforce table materialization for scan facts, call facts, health summary,
-  hotspots, rules, module edges, and changed-file evolution metrics.
+- Rayforce table materialization for scan facts, call facts, call edges,
+  health summary, hotspots, rules, module edges, and changed-file evolution
+  metrics.
 
 CI and publish workflows are currently manual-only while the project stabilizes.

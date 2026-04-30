@@ -646,6 +646,7 @@ mod tests {
             entry_points: Vec::new(),
             imports,
             calls: Vec::new(),
+            call_edges: Vec::new(),
             graph,
         };
 
@@ -679,6 +680,7 @@ mod tests {
             entry_points: Vec::new(),
             imports,
             calls: Vec::new(),
+            call_edges: Vec::new(),
             graph,
         };
 
@@ -720,6 +722,7 @@ mod tests {
             }],
             imports,
             calls: Vec::new(),
+            call_edges: Vec::new(),
             graph,
         };
 

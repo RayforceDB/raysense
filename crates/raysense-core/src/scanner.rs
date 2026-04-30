@@ -1,6 +1,6 @@
 use crate::facts::{
-    CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact, ImportResolution,
-    Language, ScanReport, SnapshotFact,
+    CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
+    ImportResolution, Language, ScanReport, SnapshotFact,
 };
 use crate::graph::compute_graph_metrics;
 use crate::profile::ProjectProfile;
@@ -111,6 +111,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
     }
 
     resolve_imports(&files, &mut imports);
+    let call_edges = resolve_call_edges(&functions, &calls);
 
     let snapshot_id = snapshot_id(&files);
     let graph = compute_graph_metrics(&files, &imports);
@@ -130,6 +131,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         entry_points,
         imports,
         calls,
+        call_edges,
         graph,
     })
 }
@@ -795,6 +797,36 @@ fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
     }
 }
 
+fn resolve_call_edges(functions: &[FunctionFact], calls: &[CallFact]) -> Vec<CallEdgeFact> {
+    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+    for function in functions {
+        by_name
+            .entry(function.name.as_str())
+            .or_default()
+            .push(function.function_id);
+    }
+
+    let mut edges = Vec::new();
+    for call in calls {
+        let Some(caller_function) = call.caller_function else {
+            continue;
+        };
+        let Some(callees) = by_name.get(call.target.as_str()) else {
+            continue;
+        };
+        let [callee_function] = callees.as_slice() else {
+            continue;
+        };
+        edges.push(CallEdgeFact {
+            edge_id: edges.len(),
+            call_id: call.call_id,
+            caller_function,
+            callee_function: *callee_function,
+        });
+    }
+    edges
+}
+
 fn classify_import(from_file: &FileFact, import: &ImportFact) -> ImportResolution {
     if import.resolved_file.is_some() {
         return ImportResolution::Local;
@@ -1199,6 +1231,45 @@ int run(void) {
     }
 
     #[test]
+    fn resolves_unambiguous_call_edges() {
+        let functions = vec![function(0, 0, "run", 1, 3), function(1, 0, "load", 5, 7)];
+        let calls = vec![CallFact {
+            call_id: 9,
+            file_id: 0,
+            caller_function: Some(0),
+            target: "load".to_string(),
+            line: 2,
+        }];
+
+        let edges = resolve_call_edges(&functions, &calls);
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].call_id, 9);
+        assert_eq!(edges[0].caller_function, 0);
+        assert_eq!(edges[0].callee_function, 1);
+    }
+
+    #[test]
+    fn skips_ambiguous_call_edges() {
+        let functions = vec![
+            function(0, 0, "run", 1, 3),
+            function(1, 0, "load", 5, 7),
+            function(2, 1, "load", 5, 7),
+        ];
+        let calls = vec![CallFact {
+            call_id: 9,
+            file_id: 0,
+            caller_function: Some(0),
+            target: "load".to_string(),
+            line: 2,
+        }];
+
+        let edges = resolve_call_edges(&functions, &calls);
+
+        assert!(edges.is_empty());
+    }
+
+    #[test]
     fn resolves_imports_by_stem() {
         let files = vec![
             file(0, "src/main.rs", Language::Rust),
@@ -1376,6 +1447,22 @@ int run(void) {
             lines: 1,
             bytes: 1,
             content_hash: String::new(),
+        }
+    }
+
+    fn function(
+        function_id: usize,
+        file_id: usize,
+        name: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> FunctionFact {
+        FunctionFact {
+            function_id,
+            file_id,
+            name: name.to_string(),
+            start_line,
+            end_line,
         }
     }
 }

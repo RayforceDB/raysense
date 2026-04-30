@@ -26,6 +26,7 @@ pub struct MemorySummary {
     pub entry_points: TableSummary,
     pub imports: TableSummary,
     pub calls: TableSummary,
+    pub call_edges: TableSummary,
     pub health: TableSummary,
     pub hotspots: TableSummary,
     pub rules: TableSummary,
@@ -39,6 +40,7 @@ pub struct RayMemory {
     entry_points: RayObject,
     imports: RayObject,
     calls: RayObject,
+    call_edges: RayObject,
     health: RayObject,
     hotspots: RayObject,
     rules: RayObject,
@@ -57,6 +59,7 @@ impl RayMemory {
             entry_points: build_entry_points_table(report)?,
             imports: build_imports_table(report)?,
             calls: build_calls_table(report)?,
+            call_edges: build_call_edges_table(report)?,
             health: build_health_table(report, &health)?,
             hotspots: build_hotspots_table(&health)?,
             rules: build_rules_table(&health)?,
@@ -72,6 +75,7 @@ impl RayMemory {
             entry_points: table_summary(self.entry_points.as_ptr()),
             imports: table_summary(self.imports.as_ptr()),
             calls: table_summary(self.calls.as_ptr()),
+            call_edges: table_summary(self.call_edges.as_ptr()),
             health: table_summary(self.health.as_ptr()),
             hotspots: table_summary(self.hotspots.as_ptr()),
             rules: table_summary(self.rules.as_ptr()),
@@ -332,6 +336,41 @@ fn build_calls_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
             ("caller_function", caller_functions),
             ("target", targets),
             ("line", lines),
+        ],
+    )
+}
+
+fn build_call_edges_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
+    let ids = i64_vec(
+        report.call_edges.len(),
+        report.call_edges.iter().map(|edge| edge.edge_id as i64),
+    )?;
+    let call_ids = i64_vec(
+        report.call_edges.len(),
+        report.call_edges.iter().map(|edge| edge.call_id as i64),
+    )?;
+    let callers = i64_vec(
+        report.call_edges.len(),
+        report
+            .call_edges
+            .iter()
+            .map(|edge| edge.caller_function as i64),
+    )?;
+    let callees = i64_vec(
+        report.call_edges.len(),
+        report
+            .call_edges
+            .iter()
+            .map(|edge| edge.callee_function as i64),
+    )?;
+
+    table(
+        4,
+        [
+            ("edge_id", ids),
+            ("call_id", call_ids),
+            ("caller_function", callers),
+            ("callee_function", callees),
         ],
     )
 }
@@ -672,7 +711,9 @@ mod tests {
         );
         assert_eq!(summary.imports.rows as usize, report.imports.len());
         assert_eq!(summary.calls.rows as usize, report.calls.len());
+        assert_eq!(summary.call_edges.rows as usize, report.call_edges.len());
         assert_eq!(summary.calls.columns, 5);
+        assert_eq!(summary.call_edges.columns, 4);
         assert_eq!(summary.health.rows, 1);
         assert_eq!(summary.health.columns, 21);
         assert_eq!(summary.hotspots.columns, 5);

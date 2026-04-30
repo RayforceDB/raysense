@@ -100,6 +100,10 @@ fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
         summary.calls.rows, summary.calls.columns
     );
     println!(
+        "call_edges rows={} cols={}",
+        summary.call_edges.rows, summary.call_edges.columns
+    );
+    println!(
         "health rows={} cols={}",
         summary.health.rows, summary.health.columns
     );
@@ -131,6 +135,7 @@ fn print_summary(report: &raysense_core::ScanReport) {
     println!("files {}", report.snapshot.file_count);
     println!("functions {}", report.snapshot.function_count);
     println!("calls {}", report.snapshot.call_count);
+    println!("call_edges {}", report.call_edges.len());
     println!(
         "entry_points total={} binaries={} examples={} tests={}",
         report.entry_points.len(),
@@ -155,10 +160,11 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
     println!("structural_score {}", health.structural_score);
     println!("root {}", report.snapshot.root.display());
     println!(
-        "facts files={} functions={} calls={} imports={}",
+        "facts files={} functions={} calls={} call_edges={} imports={}",
         report.snapshot.file_count,
         report.snapshot.function_count,
         report.snapshot.call_count,
+        report.call_edges.len(),
         report.snapshot.import_count
     );
     println!(

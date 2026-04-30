@@ -94,6 +94,14 @@ pub struct CallFact {
     pub line: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallEdgeFact {
+    pub edge_id: usize,
+    pub call_id: usize,
+    pub caller_function: usize,
+    pub callee_function: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImportResolution {
     External,
@@ -110,5 +118,6 @@ pub struct ScanReport {
     pub entry_points: Vec<EntryPointFact>,
     pub imports: Vec<ImportFact>,
     pub calls: Vec<CallFact>,
+    pub call_edges: Vec<CallEdgeFact>,
     pub graph: crate::graph::GraphMetrics,
 }
