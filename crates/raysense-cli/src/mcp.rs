@@ -25,7 +25,7 @@ use anyhow::{anyhow, Context, Result};
 use raysense_core::graph::compute_graph_metrics;
 use raysense_core::{
     build_baseline, compute_health_with_config, diff_baselines, is_foundation_file,
-    scan_path_with_config, ImportResolution, ProjectBaseline, RaysenseConfig,
+    scan_path_with_config, ImportFact, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
 use raysense_memory::{
     BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
@@ -1054,8 +1054,11 @@ fn remediations_tool(args: &Value) -> Result<Value> {
 fn what_if_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
-    if args.get("action").and_then(Value::as_str) == Some("remove_edge") {
-        return what_if_remove_edge_tool(args, &root, &config);
+    match args.get("action").and_then(Value::as_str) {
+        Some("remove_edge") => return what_if_edge_tool(args, &root, &config, "remove_edge"),
+        Some("add_edge") => return what_if_edge_tool(args, &root, &config, "add_edge"),
+        Some(action) => return Err(anyhow!("unsupported what-if action: {action}")),
+        None => {}
     }
 
     let ignore_paths = string_array_arg(args, "ignore_paths")?;
@@ -1096,7 +1099,12 @@ fn what_if_tool(args: &Value) -> Result<Value> {
     }))
 }
 
-fn what_if_remove_edge_tool(args: &Value, root: &Path, config: &RaysenseConfig) -> Result<Value> {
+fn what_if_edge_tool(
+    args: &Value,
+    root: &Path,
+    config: &RaysenseConfig,
+    action: &str,
+) -> Result<Value> {
     let from = args
         .get("from")
         .and_then(Value::as_str)
@@ -1114,16 +1122,42 @@ fn what_if_remove_edge_tool(args: &Value, root: &Path, config: &RaysenseConfig) 
         find_file_id(&before_report, to).ok_or_else(|| anyhow!("to file not found: {to}"))?;
 
     let mut after_report = before_report.clone();
-    let before_edges = after_report.imports.len();
-    after_report.imports.retain(|import| {
-        !(import.from_file == from_file_id
-            && import.resolved_file == Some(to_file_id)
-            && import.resolution == ImportResolution::Local)
-    });
-    let removed_edges = before_edges.saturating_sub(after_report.imports.len());
-    if removed_edges == 0 {
-        return Err(anyhow!("no matching local edge found from {from} to {to}"));
-    }
+    let changed_edges = match action {
+        "remove_edge" => {
+            let before_edges = after_report.imports.len();
+            after_report.imports.retain(|import| {
+                !(import.from_file == from_file_id
+                    && import.resolved_file == Some(to_file_id)
+                    && import.resolution == ImportResolution::Local)
+            });
+            let removed_edges = before_edges.saturating_sub(after_report.imports.len());
+            if removed_edges == 0 {
+                return Err(anyhow!("no matching local edge found from {from} to {to}"));
+            }
+            removed_edges
+        }
+        "add_edge" => {
+            if after_report.imports.iter().any(|import| {
+                import.from_file == from_file_id
+                    && import.resolved_file == Some(to_file_id)
+                    && import.resolution == ImportResolution::Local
+            }) {
+                return Err(anyhow!(
+                    "matching local edge already exists from {from} to {to}"
+                ));
+            }
+            after_report.imports.push(ImportFact {
+                import_id: after_report.imports.len(),
+                from_file: from_file_id,
+                target: to.to_string(),
+                kind: "what_if".to_string(),
+                resolution: ImportResolution::Local,
+                resolved_file: Some(to_file_id),
+            });
+            1
+        }
+        _ => unreachable!("validated what-if action"),
+    };
 
     after_report.snapshot.import_count = after_report.imports.len();
     after_report.graph = compute_graph_metrics(&after_report.files, &after_report.imports);
@@ -1132,10 +1166,10 @@ fn what_if_remove_edge_tool(args: &Value, root: &Path, config: &RaysenseConfig) 
 
     Ok(json!({
         "root": before_report.snapshot.root,
-        "action": "remove_edge",
+        "action": action,
         "from": from,
         "to": to,
-        "removed_edges": removed_edges,
+        "changed_edges": changed_edges,
         "before": what_if_health_summary(&before_health),
         "after": what_if_health_summary(&after_health),
         "diff": diff_baselines(&before, &after)
@@ -1863,9 +1897,9 @@ fn what_if_schema() -> Value {
             "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
             "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
             "config": config_schema(),
-            "action": {"type": "string", "enum": ["remove_edge"], "description": "Optional graph action to simulate. When omitted, simulates config-only changes."},
-            "from": {"type": "string", "description": "Source file path for action=remove_edge."},
-            "to": {"type": "string", "description": "Target file path for action=remove_edge."},
+            "action": {"type": "string", "enum": ["remove_edge", "add_edge"], "description": "Optional graph action to simulate. When omitted, simulates config-only changes."},
+            "from": {"type": "string", "description": "Source file path for edge actions."},
+            "to": {"type": "string", "description": "Target file path for edge actions."},
             "ignore_paths": {
                 "type": "array",
                 "items": {"type": "string"},
