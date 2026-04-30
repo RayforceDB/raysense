@@ -147,6 +147,8 @@ pub struct RuleConfig {
     pub max_cycles: usize,
     pub max_coupling_ratio: f64,
     pub max_function_complexity: usize,
+    pub max_file_lines: usize,
+    pub max_function_lines: usize,
     pub no_god_files: bool,
     pub high_file_fan_in: usize,
     pub large_file_lines: usize,
@@ -172,6 +174,8 @@ impl Default for RuleConfig {
             max_cycles: 0,
             max_coupling_ratio: 1.0,
             max_function_complexity: 15,
+            max_file_lines: 0,
+            max_function_lines: 0,
             no_god_files: true,
             large_file_lines: 500,
             max_large_file_findings: 20,
@@ -1771,6 +1775,49 @@ fn rules(
         }
     }
 
+    if rules.max_file_lines > 0 && metrics.size.max_file_lines > rules.max_file_lines {
+        for file in report
+            .files
+            .iter()
+            .filter(|file| file.lines > rules.max_file_lines)
+            .take(rules.max_large_file_findings.max(1))
+        {
+            findings.push(RuleFinding {
+                severity: RuleSeverity::Error,
+                code: "max_file_lines".to_string(),
+                path: file.path.to_string_lossy().into_owned(),
+                message: format!("{} lines exceeds max {}", file.lines, rules.max_file_lines),
+            });
+        }
+    }
+
+    if rules.max_function_lines > 0 && metrics.size.max_function_lines > rules.max_function_lines {
+        for function in report
+            .functions
+            .iter()
+            .filter(|function| {
+                function.end_line.saturating_sub(function.start_line) + 1 > rules.max_function_lines
+            })
+            .take(rules.max_call_hotspot_findings.max(1))
+        {
+            let path = report
+                .files
+                .get(function.file_id)
+                .map(|file| file.path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| report.snapshot.root.to_string_lossy().into_owned());
+            let lines = function.end_line.saturating_sub(function.start_line) + 1;
+            findings.push(RuleFinding {
+                severity: RuleSeverity::Error,
+                code: "max_function_lines".to_string(),
+                path,
+                message: format!(
+                    "{} has {} lines exceeding max {}",
+                    function.name, lines, rules.max_function_lines
+                ),
+            });
+        }
+    }
+
     for hotspot in hotspots {
         if hotspot.fan_in >= rules.high_file_fan_in {
             findings.push(RuleFinding {
@@ -1945,6 +1992,8 @@ fn remediations(rules: &[RuleFinding], metrics: &MetricsSummary) -> Vec<Remediat
                 "split oversized files/functions and rebalance concentrated complexity"
             }
             "min_redundancy" => "remove dead functions or consolidate duplicated implementations",
+            "max_file_lines" => "split the file into smaller cohesive modules",
+            "max_function_lines" => "extract helpers or split the function into smaller steps",
             "max_function_complexity" => {
                 "split the function, extract decision branches, or add a local policy override"
             }
@@ -2670,6 +2719,45 @@ min_acyclicity = 0.9
 
         assert!(codes.contains(&"min_quality_signal"));
         assert!(codes.contains(&"min_acyclicity"));
+    }
+
+    #[test]
+    fn applies_hard_size_gates() {
+        let mut source = file(0, "src/a.rs");
+        source.lines = 120;
+        let mut long_function = function(0, 0, "long");
+        long_function.end_line = 80;
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: 1,
+                function_count: 1,
+                import_count: 0,
+                call_count: 0,
+            },
+            files: vec![source],
+            functions: vec![long_function],
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph: compute_graph_metrics(&[], &[]),
+        };
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[rules]
+max_file_lines = 100
+max_function_lines = 50
+"#,
+        )
+        .unwrap();
+
+        let health = compute_health_with_config(&report, &config);
+        let codes: Vec<&str> = health.rules.iter().map(|rule| rule.code.as_str()).collect();
+
+        assert!(codes.contains(&"max_file_lines"));
+        assert!(codes.contains(&"max_function_lines"));
     }
 
     #[test]
