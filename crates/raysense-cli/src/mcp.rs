@@ -31,6 +31,7 @@ use raysense_memory::{
     BaselineTableQuery, BaselineTableSort,
 };
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -183,6 +184,36 @@ fn tools_list() -> Value {
                 "inputSchema": health_limit_schema("Maximum module edges to return. Defaults to 100.")
             },
             {
+                "name": "raysense_architecture",
+                "description": "Return architecture metrics, root cause scores, cycles, levels, and unstable modules.",
+                "inputSchema": health_limit_schema("Maximum repeated architecture rows to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_coupling",
+                "description": "Return coupling metrics, dependency hotspots, and top module edges.",
+                "inputSchema": health_limit_schema("Maximum hotspot and module-edge rows to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_cycles",
+                "description": "Return detected dependency cycles.",
+                "inputSchema": health_limit_schema("Maximum cycles to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_hottest",
+                "description": "Return the hottest files and functions by dependency and call traffic.",
+                "inputSchema": health_limit_schema("Maximum hot items per list to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_blast_radius",
+                "description": "Return reachable local dependency impact for a file, or the current max blast-radius file when omitted.",
+                "inputSchema": blast_radius_schema()
+            },
+            {
+                "name": "raysense_level",
+                "description": "Return dependency level information for all modules or one requested module.",
+                "inputSchema": level_schema()
+            },
+            {
                 "name": "raysense_session_start",
                 "description": "Save an in-memory and persisted baseline for an agent session.",
                 "inputSchema": baseline_schema("Optional persisted baseline directory.")
@@ -292,6 +323,12 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_hotspots" => hotspots_tool(&args),
         "raysense_rules" => rules_tool(&args),
         "raysense_module_edges" => module_edges_tool(&args),
+        "raysense_architecture" => architecture_tool(&args),
+        "raysense_coupling" => coupling_tool(&args),
+        "raysense_cycles" => cycles_tool(&args),
+        "raysense_hottest" => hottest_tool(&args),
+        "raysense_blast_radius" => blast_radius_tool(&args),
+        "raysense_level" => level_tool(&args),
         "raysense_session_start" => session_start_tool(&args, state),
         "raysense_session_end" => session_end_tool(&args, state),
         "raysense_rescan" => rescan_tool(&args, state),
@@ -453,6 +490,133 @@ fn module_edges_tool(args: &Value) -> Result<Value> {
         "module_edges": limited(&health.metrics.dsm.top_module_edges, limit),
         "limit": limit,
         "total": health.metrics.dsm.top_module_edges.len()
+    }))
+}
+
+fn architecture_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+
+    Ok(json!({
+        "root": root,
+        "score": health.score,
+        "quality_signal": health.quality_signal,
+        "root_causes": health.root_causes,
+        "architecture": {
+            "module_depth": health.metrics.architecture.module_depth,
+            "max_blast_radius": health.metrics.architecture.max_blast_radius,
+            "max_blast_radius_file": health.metrics.architecture.max_blast_radius_file,
+            "levels": health.metrics.architecture.levels,
+            "cycles": limited(&health.metrics.architecture.cycles, limit),
+            "unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
+            "cycle_total": health.metrics.architecture.cycles.len(),
+            "unstable_module_total": health.metrics.architecture.unstable_modules.len()
+        },
+        "dsm": {
+            "module_count": health.metrics.dsm.module_count,
+            "module_edges": health.metrics.dsm.module_edges,
+            "top_module_edges": limited(&health.metrics.dsm.top_module_edges, limit)
+        }
+    }))
+}
+
+fn coupling_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+
+    Ok(json!({
+        "root": root,
+        "coupling": health.metrics.coupling,
+        "hotspots": limited(&health.hotspots, limit),
+        "module_edges": limited(&health.metrics.dsm.top_module_edges, limit),
+        "limits": {
+            "limit": limit,
+            "hotspots_total": health.hotspots.len(),
+            "module_edges_total": health.metrics.dsm.top_module_edges.len()
+        }
+    }))
+}
+
+fn cycles_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+
+    Ok(json!({
+        "root": root,
+        "cycles": limited(&health.metrics.architecture.cycles, limit),
+        "limit": limit,
+        "total": health.metrics.architecture.cycles.len()
+    }))
+}
+
+fn hottest_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+
+    Ok(json!({
+        "root": root,
+        "files": limited(&health.hotspots, limit),
+        "top_called_functions": limited(&health.metrics.calls.top_called_functions, limit),
+        "top_calling_functions": limited(&health.metrics.calls.top_calling_functions, limit),
+        "complex_functions": limited(&health.metrics.complexity.complex_functions, limit),
+        "limits": {
+            "limit": limit,
+            "file_total": health.hotspots.len(),
+            "top_called_total": health.metrics.calls.top_called_functions.len(),
+            "top_calling_total": health.metrics.calls.top_calling_functions.len(),
+            "complex_function_total": health.metrics.complexity.complex_functions.len()
+        }
+    }))
+}
+
+fn blast_radius_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
+    let limit = limit_arg(args, 100)?;
+    let requested_file = args.get("file").and_then(Value::as_str);
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let file_id = match requested_file {
+        Some(file) => {
+            find_file_id(&report, file).ok_or_else(|| anyhow!("file not found in scan: {file}"))?
+        }
+        None => find_file_id(&report, &health.metrics.architecture.max_blast_radius_file)
+            .ok_or_else(|| anyhow!("no max blast-radius file found"))?,
+    };
+    let Some(file) = report.files.get(file_id) else {
+        return Err(anyhow!("file id {file_id} is out of range"));
+    };
+    let reachable = reachable_files(&report, file_id, limit);
+    let reachable_total = reachable_count(&report, file_id);
+
+    Ok(json!({
+        "root": report.snapshot.root,
+        "file_id": file_id,
+        "file": file.path,
+        "blast_radius": reachable_total,
+        "reachable_files": reachable,
+        "limit": limit
+    }))
+}
+
+fn level_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let module = args.get("module").and_then(Value::as_str);
+    let levels = &health.metrics.architecture.levels;
+
+    if let Some(module) = module {
+        return Ok(json!({
+            "root": root,
+            "module": module,
+            "level": levels.get(module),
+            "found": levels.contains_key(module)
+        }));
+    }
+
+    Ok(json!({
+        "root": root,
+        "levels": levels,
+        "total": levels.len()
     }))
 }
 
@@ -779,6 +943,92 @@ fn baseline_dir_arg(args: &Value, root: &Path) -> Result<PathBuf> {
         })
         .transpose()
         .map(|path| path.unwrap_or_else(|| root.join(".raysense/baseline")))
+}
+
+fn find_file_id(report: &raysense_core::ScanReport, requested: &str) -> Option<usize> {
+    let requested = requested.replace('\\', "/");
+    report
+        .files
+        .iter()
+        .find(|file| normalize_path(&file.path) == requested)
+        .or_else(|| {
+            report
+                .files
+                .iter()
+                .find(|file| normalize_path(&file.path).ends_with(&requested))
+        })
+        .map(|file| file.file_id)
+}
+
+fn reachable_files(report: &raysense_core::ScanReport, start: usize, limit: usize) -> Vec<Value> {
+    let adjacency = local_adjacency(report);
+    let mut seen = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut out = Vec::new();
+    seen.insert(start);
+    queue.push_back(start);
+
+    while let Some(file_id) = queue.pop_front() {
+        let Some(next_files) = adjacency.get(&file_id) else {
+            continue;
+        };
+        for next in next_files {
+            if !seen.insert(*next) {
+                continue;
+            }
+            queue.push_back(*next);
+            if out.len() < limit {
+                if let Some(file) = report.files.get(*next) {
+                    out.push(json!({
+                        "file_id": file.file_id,
+                        "path": file.path,
+                        "module": file.module,
+                        "language": file.language_name
+                    }));
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn reachable_count(report: &raysense_core::ScanReport, start: usize) -> usize {
+    let adjacency = local_adjacency(report);
+    let mut seen = HashSet::new();
+    let mut queue = VecDeque::new();
+    seen.insert(start);
+    queue.push_back(start);
+
+    while let Some(file_id) = queue.pop_front() {
+        let Some(next_files) = adjacency.get(&file_id) else {
+            continue;
+        };
+        for next in next_files {
+            if seen.insert(*next) {
+                queue.push_back(*next);
+            }
+        }
+    }
+
+    seen.len().saturating_sub(1)
+}
+
+fn local_adjacency(report: &raysense_core::ScanReport) -> HashMap<usize, Vec<usize>> {
+    let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
+    for import in &report.imports {
+        let Some(to_file) = import.resolved_file else {
+            continue;
+        };
+        if import.resolution == ImportResolution::Local && import.from_file != to_file {
+            adjacency.entry(import.from_file).or_default().push(to_file);
+        }
+    }
+    adjacency
+}
+
+fn normalize_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn root_arg(args: &Value) -> Result<PathBuf> {
@@ -1134,6 +1384,31 @@ fn health_limit_schema(limit_description: &str) -> Value {
     })
 }
 
+fn blast_radius_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema(),
+            "file": {"type": "string", "description": "Optional scanned file path. Defaults to the current max blast-radius file."},
+            "limit": {"type": "integer", "minimum": 1, "description": "Maximum reachable files to return. Defaults to 100."}
+        }
+    })
+}
+
+fn level_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema(),
+            "module": {"type": "string", "description": "Optional module name. When omitted, all module levels are returned."}
+        }
+    })
+}
+
 fn baseline_schema(path_description: &str) -> Value {
     json!({
         "type": "object",
@@ -1241,6 +1516,12 @@ mod tests {
         assert!(names.contains(&"raysense_hotspots"));
         assert!(names.contains(&"raysense_rules"));
         assert!(names.contains(&"raysense_module_edges"));
+        assert!(names.contains(&"raysense_architecture"));
+        assert!(names.contains(&"raysense_coupling"));
+        assert!(names.contains(&"raysense_cycles"));
+        assert!(names.contains(&"raysense_hottest"));
+        assert!(names.contains(&"raysense_blast_radius"));
+        assert!(names.contains(&"raysense_level"));
         assert!(names.contains(&"raysense_session_start"));
         assert!(names.contains(&"raysense_session_end"));
         assert!(names.contains(&"raysense_rescan"));
