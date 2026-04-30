@@ -40,6 +40,8 @@ pub enum SimulateError {
     DestinationOccupied(String),
     #[error("no matching local edge from {from} to {to}")]
     EdgeNotFound { from: String, to: String },
+    #[error("matching local edge already exists from {from} to {to}")]
+    EdgeAlreadyExists { from: String, to: String },
     #[error("edge from {from} to {to} does not participate in a cycle")]
     EdgeNotInCycle { from: String, to: String },
 }
@@ -218,27 +220,16 @@ pub fn move_file(
     Ok(new_report)
 }
 
-/// Remove the local import edge from `from_path` to `to_path` and confirm the
-/// reduction lowers the report's cycle count. Returns `EdgeNotFound` if the
-/// edge does not exist, or `EdgeNotInCycle` if removal does not break a cycle
-/// (i.e., the edge is not load-bearing for any cycle).
-pub fn break_cycle(
+/// Remove the local import edge from `from_path` to `to_path`. Returns
+/// `EdgeNotFound` if no such local edge exists.
+pub fn remove_edge(
     report: &ScanReport,
     from_path: &str,
     to_path: &str,
 ) -> Result<ScanReport, SimulateError> {
-    let from_id = report
-        .files
-        .iter()
-        .position(|file| file.path.to_string_lossy() == from_path)
-        .ok_or_else(|| SimulateError::FileNotFound(from_path.to_string()))?;
-    let to_id = report
-        .files
-        .iter()
-        .position(|file| file.path.to_string_lossy() == to_path)
-        .ok_or_else(|| SimulateError::FileNotFound(to_path.to_string()))?;
+    let from_id = file_id_for_path(report, from_path)?;
+    let to_id = file_id_for_path(report, to_path)?;
 
-    let before_cycles = report.graph.cycle_count;
     let mut after = report.clone();
     let before_imports = after.imports.len();
     after.imports.retain(|import| {
@@ -254,17 +245,82 @@ pub fn break_cycle(
     }
     after.snapshot.import_count = after.imports.len();
     after.graph = compute_graph_metrics(&after.files, &after.imports);
+    after.snapshot.snapshot_id = format!(
+        "{}+remove_edge:{}->{}",
+        report.snapshot.snapshot_id, from_path, to_path
+    );
+    Ok(after)
+}
+
+/// Add a local import edge from `from_path` to `to_path`. Returns
+/// `EdgeAlreadyExists` if the same local edge is already present.
+pub fn add_edge(
+    report: &ScanReport,
+    from_path: &str,
+    to_path: &str,
+) -> Result<ScanReport, SimulateError> {
+    let from_id = file_id_for_path(report, from_path)?;
+    let to_id = file_id_for_path(report, to_path)?;
+    if report.imports.iter().any(|import| {
+        import.from_file == from_id
+            && import.resolved_file == Some(to_id)
+            && import.resolution == ImportResolution::Local
+    }) {
+        return Err(SimulateError::EdgeAlreadyExists {
+            from: from_path.to_string(),
+            to: to_path.to_string(),
+        });
+    }
+
+    let mut after = report.clone();
+    after.imports.push(ImportFact {
+        import_id: after.imports.len(),
+        from_file: from_id,
+        target: to_path.to_string(),
+        kind: "what_if".to_string(),
+        resolution: ImportResolution::Local,
+        resolved_file: Some(to_id),
+    });
+    after.snapshot.import_count = after.imports.len();
+    after.graph = compute_graph_metrics(&after.files, &after.imports);
+    after.snapshot.snapshot_id = format!(
+        "{}+add_edge:{}->{}",
+        report.snapshot.snapshot_id, from_path, to_path
+    );
+    Ok(after)
+}
+
+/// Remove the local import edge from `from_path` to `to_path` and confirm the
+/// reduction lowers the report's cycle count. Returns `EdgeNotFound` if the
+/// edge does not exist, or `EdgeNotInCycle` if removal does not break a cycle
+/// (i.e., the edge is not load-bearing for any cycle).
+pub fn break_cycle(
+    report: &ScanReport,
+    from_path: &str,
+    to_path: &str,
+) -> Result<ScanReport, SimulateError> {
+    let before_cycles = report.graph.cycle_count;
+    let after = remove_edge(report, from_path, to_path)?;
     if after.graph.cycle_count >= before_cycles {
         return Err(SimulateError::EdgeNotInCycle {
             from: from_path.to_string(),
             to: to_path.to_string(),
         });
     }
+    let mut after = after;
     after.snapshot.snapshot_id = format!(
         "{}+break_cycle:{}->{}",
         report.snapshot.snapshot_id, from_path, to_path
     );
     Ok(after)
+}
+
+fn file_id_for_path(report: &ScanReport, path: &str) -> Result<usize, SimulateError> {
+    report
+        .files
+        .iter()
+        .position(|file| file.path.to_string_lossy() == path)
+        .ok_or_else(|| SimulateError::FileNotFound(path.to_string()))
 }
 
 #[cfg(test)]
@@ -551,6 +607,46 @@ mod tests {
         );
         let err = break_cycle(&before, "src/a.rs", "src/b.rs").unwrap_err();
         assert!(matches!(err, SimulateError::EdgeNotInCycle { .. }));
+    }
+
+    #[test]
+    fn remove_edge_drops_matching_local_import() {
+        let files = vec![file(0, "src/a.rs"), file(1, "src/b.rs")];
+        let imports = vec![import(0, 0, Some(1))];
+        let before = report(
+            files,
+            Vec::new(),
+            imports,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let after = remove_edge(&before, "src/a.rs", "src/b.rs").unwrap();
+        assert_eq!(after.imports.len(), 0);
+        assert!(after.snapshot.snapshot_id.contains("remove_edge"));
+    }
+
+    #[test]
+    fn add_edge_creates_local_import() {
+        let files = vec![file(0, "src/a.rs"), file(1, "src/b.rs")];
+        let before = report(
+            files,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let after = add_edge(&before, "src/a.rs", "src/b.rs").unwrap();
+        assert_eq!(after.imports.len(), 1);
+        let edge = &after.imports[0];
+        assert_eq!(edge.from_file, 0);
+        assert_eq!(edge.resolved_file, Some(1));
+        assert_eq!(edge.kind, "what_if");
+        assert!(matches!(
+            add_edge(&after, "src/a.rs", "src/b.rs").unwrap_err(),
+            SimulateError::EdgeAlreadyExists { .. }
+        ));
     }
 
     #[test]

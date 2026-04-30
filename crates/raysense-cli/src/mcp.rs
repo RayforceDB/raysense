@@ -22,10 +22,9 @@
  */
 
 use anyhow::{anyhow, Context, Result};
-use raysense_core::graph::compute_graph_metrics;
 use raysense_core::{
     build_baseline, compute_health_with_config, diff_baselines, is_foundation_file,
-    scan_path_with_config, ImportFact, ImportResolution, ProjectBaseline, RaysenseConfig,
+    scan_path_with_config, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
 use raysense_memory::{
     BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
@@ -1054,6 +1053,11 @@ fn remediations_tool(args: &Value) -> Result<Value> {
 fn what_if_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
+    if let Some(actions) = args.get("actions").and_then(Value::as_array) {
+        if !actions.is_empty() {
+            return what_if_sequence_tool(actions, &root, &config);
+        }
+    }
     match args.get("action").and_then(Value::as_str) {
         Some("remove_edge") => return what_if_edge_tool(args, &root, &config, "remove_edge"),
         Some("add_edge") => return what_if_edge_tool(args, &root, &config, "add_edge"),
@@ -1119,51 +1123,26 @@ fn what_if_edge_tool(
     let before_report = scan_path_with_config(root, config)?;
     let before_health = compute_health_with_config(&before_report, config);
     let before = build_baseline(&before_report, &before_health);
-    let from_file_id =
-        find_file_id(&before_report, from).ok_or_else(|| anyhow!("from file not found: {from}"))?;
-    let to_file_id =
-        find_file_id(&before_report, to).ok_or_else(|| anyhow!("to file not found: {to}"))?;
 
-    let mut after_report = before_report.clone();
+    let after_report = match action {
+        "remove_edge" => raysense_core::simulate::remove_edge(&before_report, from, to),
+        "add_edge" => raysense_core::simulate::add_edge(&before_report, from, to),
+        _ => unreachable!("validated what-if action"),
+    }
+    .map_err(|err| anyhow!(err.to_string()))?;
+
     let changed_edges = match action {
-        "remove_edge" => {
-            let before_edges = after_report.imports.len();
-            after_report.imports.retain(|import| {
-                !(import.from_file == from_file_id
-                    && import.resolved_file == Some(to_file_id)
-                    && import.resolution == ImportResolution::Local)
-            });
-            let removed_edges = before_edges.saturating_sub(after_report.imports.len());
-            if removed_edges == 0 {
-                return Err(anyhow!("no matching local edge found from {from} to {to}"));
-            }
-            removed_edges
-        }
-        "add_edge" => {
-            if after_report.imports.iter().any(|import| {
-                import.from_file == from_file_id
-                    && import.resolved_file == Some(to_file_id)
-                    && import.resolution == ImportResolution::Local
-            }) {
-                return Err(anyhow!(
-                    "matching local edge already exists from {from} to {to}"
-                ));
-            }
-            after_report.imports.push(ImportFact {
-                import_id: after_report.imports.len(),
-                from_file: from_file_id,
-                target: to.to_string(),
-                kind: "what_if".to_string(),
-                resolution: ImportResolution::Local,
-                resolved_file: Some(to_file_id),
-            });
-            1
-        }
+        "remove_edge" => before_report
+            .imports
+            .len()
+            .saturating_sub(after_report.imports.len()),
+        "add_edge" => after_report
+            .imports
+            .len()
+            .saturating_sub(before_report.imports.len()),
         _ => unreachable!("validated what-if action"),
     };
 
-    after_report.snapshot.import_count = after_report.imports.len();
-    after_report.graph = compute_graph_metrics(&after_report.files, &after_report.imports);
     let after_health = compute_health_with_config(&after_report, config);
     let after = build_baseline(&after_report, &after_health);
 
@@ -1256,6 +1235,82 @@ fn what_if_break_cycle_tool(args: &Value, root: &Path, config: &RaysenseConfig) 
         "after": what_if_health_summary(&after_health),
         "diff": diff_baselines(&before, &after)
     }))
+}
+
+fn what_if_sequence_tool(actions: &[Value], root: &Path, config: &RaysenseConfig) -> Result<Value> {
+    let before_report = scan_path_with_config(root, config)?;
+    let before_health = compute_health_with_config(&before_report, config);
+    let before = build_baseline(&before_report, &before_health);
+
+    let mut current = before_report.clone();
+    let mut applied = Vec::new();
+    for (idx, step) in actions.iter().enumerate() {
+        let kind = step
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("step {idx}: missing action"))?;
+        let outcome = apply_simulate_step(&current, config, step, kind)
+            .map_err(|err| anyhow!("step {idx} ({kind}): {err}"))?;
+        current = outcome;
+        applied.push(step.clone());
+    }
+
+    let after_health = compute_health_with_config(&current, config);
+    let after = build_baseline(&current, &after_health);
+    Ok(json!({
+        "root": before_report.snapshot.root,
+        "actions": applied,
+        "before": what_if_health_summary(&before_health),
+        "after": what_if_health_summary(&after_health),
+        "diff": diff_baselines(&before, &after)
+    }))
+}
+
+fn apply_simulate_step(
+    current: &raysense_core::ScanReport,
+    config: &RaysenseConfig,
+    step: &Value,
+    kind: &str,
+) -> Result<raysense_core::ScanReport> {
+    match kind {
+        "remove_edge" => {
+            let from = required_str(step, "from")?;
+            let to = required_str(step, "to")?;
+            raysense_core::simulate::remove_edge(current, from, to)
+                .map_err(|err| anyhow!(err.to_string()))
+        }
+        "add_edge" => {
+            let from = required_str(step, "from")?;
+            let to = required_str(step, "to")?;
+            raysense_core::simulate::add_edge(current, from, to)
+                .map_err(|err| anyhow!(err.to_string()))
+        }
+        "remove_file" => {
+            let file = required_str(step, "file")?;
+            raysense_core::simulate_remove_file(current, file)
+                .map_err(|err| anyhow!(err.to_string()))
+        }
+        "move_file" => {
+            let from = required_str(step, "from")?;
+            let to = required_str(step, "to")?;
+            raysense_core::simulate_move_file(current, config, from, to)
+                .map_err(|err| anyhow!(err.to_string()))
+        }
+        "break_cycle" => {
+            let from = required_str(step, "from")?;
+            let to = required_str(step, "to")?;
+            raysense_core::simulate_break_cycle(current, from, to)
+                .map_err(|err| anyhow!(err.to_string()))
+        }
+        other => Err(anyhow!("unsupported what-if action: {other}")),
+    }
+}
+
+fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing {field}"))
 }
 
 fn what_if_health_summary(health: &raysense_core::HealthSummary) -> Value {
@@ -1985,6 +2040,11 @@ fn what_if_schema() -> Value {
             "from": {"type": "string", "description": "Source file path for edge, move_file, or break_cycle actions."},
             "to": {"type": "string", "description": "Target file path for edge, move_file, or break_cycle actions."},
             "file": {"type": "string", "description": "Target file path for remove_file."},
+            "actions": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Optional ordered list of action objects (each with the same shape as a single action) to apply in sequence. Overrides the singular action when present."
+            },
             "ignore_paths": {
                 "type": "array",
                 "items": {"type": "string"},
