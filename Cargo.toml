@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/rayforce-sys",
+    "crates/raysense",
     "crates/raysense-cli",
     "crates/raysense-core",
     "crates/raysense-memory",
