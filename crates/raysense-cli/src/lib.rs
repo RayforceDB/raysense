@@ -1872,11 +1872,13 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.metrics.calls.max_function_fan_out
     );
     println!(
-        "size max_file_lines={} max_function_lines={} large_files={} long_functions={}",
+        "size max_file_lines={} max_function_lines={} large_files={} long_functions={} file_size_entropy={:.3} file_size_entropy_bits={:.3}",
         health.metrics.size.max_file_lines,
         health.metrics.size.max_function_lines,
         health.metrics.size.large_files,
-        health.metrics.size.long_functions
+        health.metrics.size.long_functions,
+        health.metrics.size.file_size_entropy,
+        health.metrics.size.file_size_entropy_bits
     );
     println!(
         "test_gap production_files={} test_files={} files_without_nearby_tests={}",
@@ -1916,7 +1918,7 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
             .average_distance_from_main_sequence
     );
     println!(
-        "complexity max={} avg={:.3} cognitive_max={} cognitive_avg={:.3} gini={:.3} dead_functions={} duplicate_groups={} redundancy_ratio={:.3}",
+        "complexity max={} avg={:.3} cognitive_max={} cognitive_avg={:.3} gini={:.3} dead_functions={} duplicate_groups={} redundancy_ratio={:.3} entropy={:.3} entropy_bits={:.3}",
         health.metrics.complexity.max_function_complexity,
         health.metrics.complexity.average_function_complexity,
         health.metrics.complexity.max_cognitive_complexity,
@@ -1924,7 +1926,9 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.metrics.complexity.complexity_gini,
         health.metrics.complexity.dead_functions.len(),
         health.metrics.complexity.duplicate_groups.len(),
-        health.metrics.complexity.redundancy_ratio
+        health.metrics.complexity.redundancy_ratio,
+        health.metrics.complexity.complexity_entropy,
+        health.metrics.complexity.complexity_entropy_bits
     );
     if health.metrics.evolution.available {
         println!(

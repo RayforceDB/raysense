@@ -343,6 +343,8 @@ pub struct ComplexityMetrics {
     pub average_function_complexity: f64,
     pub average_cognitive_complexity: f64,
     pub complexity_gini: f64,
+    pub complexity_entropy: f64,
+    pub complexity_entropy_bits: f64,
     pub all_functions: Vec<FunctionComplexityMetric>,
     pub complex_functions: Vec<FunctionComplexityMetric>,
     pub dead_functions: Vec<FunctionComplexityMetric>,
@@ -431,6 +433,8 @@ pub struct SizeMetrics {
     pub max_function_lines: usize,
     pub large_files: usize,
     pub long_functions: usize,
+    pub file_size_entropy: f64,
+    pub file_size_entropy_bits: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1227,12 +1231,17 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
         report.functions.len(),
     );
 
+    let (complexity_entropy, complexity_entropy_bits) =
+        complexity_distribution_entropy(&all_functions);
+
     ComplexityMetrics {
         max_function_complexity,
         max_cognitive_complexity,
         average_function_complexity,
         average_cognitive_complexity,
         complexity_gini: gini(&values),
+        complexity_entropy,
+        complexity_entropy_bits,
         all_functions,
         complex_functions,
         dead_functions,
@@ -1764,6 +1773,61 @@ fn cycle_components(
     cycles
 }
 
+fn distribution_entropy(counts: &[usize]) -> (f64, f64) {
+    let total: usize = counts.iter().sum();
+    if total == 0 {
+        return (0.0, 0.0);
+    }
+    let distinct = counts.iter().filter(|count| **count > 0).count();
+    if distinct <= 1 {
+        return (0.0, 0.0);
+    }
+    let total = total as f64;
+    let entropy_bits: f64 = counts
+        .iter()
+        .filter(|count| **count > 0)
+        .map(|count| {
+            let p = *count as f64 / total;
+            -p * p.log2()
+        })
+        .sum();
+    let max_entropy = (distinct as f64).log2();
+    let entropy = if max_entropy > 0.0 {
+        entropy_bits / max_entropy
+    } else {
+        0.0
+    };
+    (round3(entropy), round3(entropy_bits))
+}
+
+// Log-scale buckets so wildly different file sizes spread across distinct bins
+// (e.g. 1000-line and 1100-line files share a bucket; 100 and 1000 do not).
+fn file_lines_bucket(lines: usize) -> usize {
+    if lines == 0 {
+        0
+    } else {
+        (usize::BITS - lines.leading_zeros()) as usize
+    }
+}
+
+fn file_size_distribution_entropy(report: &ScanReport) -> (f64, f64) {
+    let mut buckets: BTreeMap<usize, usize> = BTreeMap::new();
+    for file in &report.files {
+        *buckets.entry(file_lines_bucket(file.lines)).or_default() += 1;
+    }
+    let counts: Vec<usize> = buckets.into_values().collect();
+    distribution_entropy(&counts)
+}
+
+fn complexity_distribution_entropy(functions: &[FunctionComplexityMetric]) -> (f64, f64) {
+    let mut buckets: BTreeMap<usize, usize> = BTreeMap::new();
+    for function in functions {
+        *buckets.entry(function.value).or_default() += 1;
+    }
+    let counts: Vec<usize> = buckets.into_values().collect();
+    distribution_entropy(&counts)
+}
+
 fn gini(values: &[f64]) -> f64 {
     if values.len() < 2 {
         return 0.0;
@@ -2092,6 +2156,8 @@ fn size_metrics(report: &ScanReport) -> SizeMetrics {
         .max()
         .unwrap_or(0);
 
+    let (file_size_entropy, file_size_entropy_bits) = file_size_distribution_entropy(report);
+
     SizeMetrics {
         max_file_lines,
         max_function_lines,
@@ -2101,6 +2167,8 @@ fn size_metrics(report: &ScanReport) -> SizeMetrics {
             .iter()
             .filter(|function| function.end_line.saturating_sub(function.start_line) + 1 >= 80)
             .count(),
+        file_size_entropy,
+        file_size_entropy_bits,
     }
 }
 
@@ -3500,6 +3568,109 @@ mod tests {
         assert_eq!(health.metrics.coupling.entropy_pairs, 2);
         assert_eq!(health.metrics.coupling.entropy_bits, 1.0);
         assert_eq!(health.metrics.coupling.entropy, 1.0);
+    }
+
+    #[test]
+    fn distribution_entropy_handles_uniform_and_concentrated() {
+        assert_eq!(distribution_entropy(&[]), (0.0, 0.0));
+        assert_eq!(distribution_entropy(&[0, 0, 0]), (0.0, 0.0));
+        assert_eq!(distribution_entropy(&[10]), (0.0, 0.0));
+        assert_eq!(distribution_entropy(&[10, 0]), (0.0, 0.0));
+        assert_eq!(distribution_entropy(&[5, 5]), (1.0, 1.0));
+        assert_eq!(distribution_entropy(&[3, 3, 3, 3]), (1.0, 2.0));
+    }
+
+    #[test]
+    fn file_lines_bucket_separates_orders_of_magnitude() {
+        assert_eq!(file_lines_bucket(0), 0);
+        assert_eq!(file_lines_bucket(1), 1);
+        assert_eq!(file_lines_bucket(2), 2);
+        assert_eq!(file_lines_bucket(3), 2);
+        assert_eq!(file_lines_bucket(4), 3);
+        assert_eq!(file_lines_bucket(7), 3);
+        assert_eq!(file_lines_bucket(1000), file_lines_bucket(1023));
+        assert_ne!(file_lines_bucket(100), file_lines_bucket(1000));
+    }
+
+    fn report_with_file_lines(lines: &[usize]) -> ScanReport {
+        let files: Vec<FileFact> = lines
+            .iter()
+            .enumerate()
+            .map(|(idx, count)| {
+                let mut f = file(idx, &format!("src/m{idx}.rs"));
+                f.lines = *count;
+                f
+            })
+            .collect();
+        let imports = Vec::new();
+        let graph = compute_graph_metrics(&files, &imports);
+        ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: 0,
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        }
+    }
+
+    #[test]
+    fn file_size_entropy_zero_for_identical_sizes() {
+        let report = report_with_file_lines(&[100, 100, 100, 100]);
+        let metrics = size_metrics(&report);
+        assert_eq!(metrics.file_size_entropy, 0.0);
+        assert_eq!(metrics.file_size_entropy_bits, 0.0);
+    }
+
+    #[test]
+    fn file_size_entropy_uniform_for_distinct_buckets() {
+        // Two files at ~1 line, two files at ~1024 lines: two equally-populated
+        // log2 buckets, so normalized entropy is 1.0 and absolute is log2(2) = 1.0 bits.
+        let report = report_with_file_lines(&[1, 1, 1024, 1024]);
+        let metrics = size_metrics(&report);
+        assert_eq!(metrics.file_size_entropy, 1.0);
+        assert_eq!(metrics.file_size_entropy_bits, 1.0);
+    }
+
+    #[test]
+    fn quality_signal_preserved_when_file_size_distribution_varies() {
+        // Same file count, same large_files/long_functions, but very different
+        // size distributions. If structural entropy were folded into root_causes,
+        // the two reports would diverge in score / quality_signal. They must not.
+        let uniform = report_with_file_lines(&[100, 100, 100, 100]);
+        let spread = report_with_file_lines(&[1, 8, 64, 1024]);
+
+        let config = RaysenseConfig::default();
+        let h_uniform = compute_health_with_config(&uniform, &config);
+        let h_spread = compute_health_with_config(&spread, &config);
+
+        assert_ne!(
+            h_uniform.metrics.size.file_size_entropy,
+            h_spread.metrics.size.file_size_entropy
+        );
+        assert_eq!(h_uniform.score, h_spread.score);
+        assert_eq!(h_uniform.quality_signal, h_spread.quality_signal);
+        assert_eq!(
+            h_uniform.root_causes.modularity,
+            h_spread.root_causes.modularity
+        );
+        assert_eq!(
+            h_uniform.root_causes.equality,
+            h_spread.root_causes.equality
+        );
+        assert_eq!(
+            h_uniform.root_causes.redundancy,
+            h_spread.root_causes.redundancy
+        );
     }
 
     #[test]

@@ -992,7 +992,7 @@ fn build_health_table(
     health: &HealthSummary,
 ) -> Result<RayObject, MemoryError> {
     table(
-        36,
+        40,
         [
             ("score", i64_vec(1, [health.score as i64])?),
             (
@@ -1149,6 +1149,34 @@ fn build_health_table(
             (
                 "commits_sampled",
                 i64_vec(1, [health.metrics.evolution.commits_sampled as i64])?,
+            ),
+            (
+                "file_size_entropy_per_1000",
+                i64_vec(
+                    1,
+                    [(health.metrics.size.file_size_entropy * 1000.0).round() as i64],
+                )?,
+            ),
+            (
+                "file_size_entropy_bits_per_1000",
+                i64_vec(
+                    1,
+                    [(health.metrics.size.file_size_entropy_bits * 1000.0).round() as i64],
+                )?,
+            ),
+            (
+                "complexity_entropy_per_1000",
+                i64_vec(
+                    1,
+                    [(health.metrics.complexity.complexity_entropy * 1000.0).round() as i64],
+                )?,
+            ),
+            (
+                "complexity_entropy_bits_per_1000",
+                i64_vec(
+                    1,
+                    [(health.metrics.complexity.complexity_entropy_bits * 1000.0).round() as i64],
+                )?,
             ),
         ],
     )
@@ -1402,7 +1430,7 @@ mod tests {
         assert_eq!(summary.calls.columns, 5);
         assert_eq!(summary.call_edges.columns, 4);
         assert_eq!(summary.health.rows, 1);
-        assert_eq!(summary.health.columns, 36);
+        assert_eq!(summary.health.columns, 40);
         assert_eq!(summary.hotspots.columns, 5);
         assert_eq!(summary.rules.columns, 4);
         assert_eq!(summary.module_edges.columns, 3);
