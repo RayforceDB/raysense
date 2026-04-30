@@ -64,6 +64,7 @@ The first testable version focuses on Rust and C/C++ codebases:
   entry point, test-gap, DSM, and evolution-availability metrics.
 - Built-in rules for high fan-in, production dependencies on test paths, and
   large-file/no-test informational findings.
-- Rayforce table materialization for files, functions, and imports.
+- Rayforce table materialization for scan facts, health summary, hotspots,
+  rules, module edges, and changed-file evolution metrics.
 
 CI and publish workflows are currently manual-only while the project stabilizes.

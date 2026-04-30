@@ -95,6 +95,26 @@ fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
         "imports rows={} cols={}",
         summary.imports.rows, summary.imports.columns
     );
+    println!(
+        "health rows={} cols={}",
+        summary.health.rows, summary.health.columns
+    );
+    println!(
+        "hotspots rows={} cols={}",
+        summary.hotspots.rows, summary.hotspots.columns
+    );
+    println!(
+        "rules rows={} cols={}",
+        summary.rules.rows, summary.rules.columns
+    );
+    println!(
+        "module_edges rows={} cols={}",
+        summary.module_edges.rows, summary.module_edges.columns
+    );
+    println!(
+        "changed_files rows={} cols={}",
+        summary.changed_files.rows, summary.changed_files.columns
+    );
 }
 
 fn print_summary(report: &raysense_core::ScanReport) {

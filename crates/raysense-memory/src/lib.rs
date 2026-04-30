@@ -1,4 +1,4 @@
-use raysense_core::ScanReport;
+use raysense_core::{compute_health, HealthSummary, ScanReport};
 use std::ffi::CString;
 use std::ptr::NonNull;
 use thiserror::Error;
@@ -25,6 +25,11 @@ pub struct MemorySummary {
     pub functions: TableSummary,
     pub entry_points: TableSummary,
     pub imports: TableSummary,
+    pub health: TableSummary,
+    pub hotspots: TableSummary,
+    pub rules: TableSummary,
+    pub module_edges: TableSummary,
+    pub changed_files: TableSummary,
 }
 
 pub struct RayMemory {
@@ -32,17 +37,28 @@ pub struct RayMemory {
     functions: RayObject,
     entry_points: RayObject,
     imports: RayObject,
+    health: RayObject,
+    hotspots: RayObject,
+    rules: RayObject,
+    module_edges: RayObject,
+    changed_files: RayObject,
 }
 
 impl RayMemory {
     pub fn from_report(report: &ScanReport) -> Result<Self, MemoryError> {
         init_symbols()?;
+        let health = compute_health(report);
 
         Ok(Self {
             files: build_files_table(report)?,
             functions: build_functions_table(report)?,
             entry_points: build_entry_points_table(report)?,
             imports: build_imports_table(report)?,
+            health: build_health_table(report, &health)?,
+            hotspots: build_hotspots_table(&health)?,
+            rules: build_rules_table(&health)?,
+            module_edges: build_module_edges_table(&health)?,
+            changed_files: build_changed_files_table(&health)?,
         })
     }
 
@@ -52,6 +68,11 @@ impl RayMemory {
             functions: table_summary(self.functions.as_ptr()),
             entry_points: table_summary(self.entry_points.as_ptr()),
             imports: table_summary(self.imports.as_ptr()),
+            health: table_summary(self.health.as_ptr()),
+            hotspots: table_summary(self.hotspots.as_ptr()),
+            rules: table_summary(self.rules.as_ptr()),
+            module_edges: table_summary(self.module_edges.as_ptr()),
+            changed_files: table_summary(self.changed_files.as_ptr()),
         }
     }
 }
@@ -274,6 +295,254 @@ fn build_imports_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
     )
 }
 
+fn build_health_table(
+    report: &ScanReport,
+    health: &HealthSummary,
+) -> Result<RayObject, MemoryError> {
+    table(
+        21,
+        [
+            ("score", i64_vec(1, [health.score as i64])?),
+            (
+                "coverage_score",
+                i64_vec(1, [health.coverage_score as i64])?,
+            ),
+            (
+                "structural_score",
+                i64_vec(1, [health.structural_score as i64])?,
+            ),
+            ("files", i64_vec(1, [report.snapshot.file_count as i64])?),
+            (
+                "functions",
+                i64_vec(1, [report.snapshot.function_count as i64])?,
+            ),
+            (
+                "imports",
+                i64_vec(1, [report.snapshot.import_count as i64])?,
+            ),
+            (
+                "local_imports",
+                i64_vec(1, [health.resolution.local as i64])?,
+            ),
+            (
+                "external_imports",
+                i64_vec(1, [health.resolution.external as i64])?,
+            ),
+            (
+                "system_imports",
+                i64_vec(1, [health.resolution.system as i64])?,
+            ),
+            (
+                "unresolved_imports",
+                i64_vec(1, [health.resolution.unresolved as i64])?,
+            ),
+            (
+                "cross_module_edges",
+                i64_vec(1, [health.metrics.coupling.cross_module_edges as i64])?,
+            ),
+            (
+                "cross_module_ratio_per_1000",
+                i64_vec(
+                    1,
+                    [(health.metrics.coupling.cross_module_ratio * 1000.0).round() as i64],
+                )?,
+            ),
+            (
+                "max_file_lines",
+                i64_vec(1, [health.metrics.size.max_file_lines as i64])?,
+            ),
+            (
+                "max_function_lines",
+                i64_vec(1, [health.metrics.size.max_function_lines as i64])?,
+            ),
+            (
+                "large_files",
+                i64_vec(1, [health.metrics.size.large_files as i64])?,
+            ),
+            (
+                "long_functions",
+                i64_vec(1, [health.metrics.size.long_functions as i64])?,
+            ),
+            (
+                "production_files",
+                i64_vec(1, [health.metrics.test_gap.production_files as i64])?,
+            ),
+            (
+                "test_files",
+                i64_vec(1, [health.metrics.test_gap.test_files as i64])?,
+            ),
+            (
+                "files_without_nearby_tests",
+                i64_vec(
+                    1,
+                    [health.metrics.test_gap.files_without_nearby_tests as i64],
+                )?,
+            ),
+            (
+                "module_edges",
+                i64_vec(1, [health.metrics.dsm.module_edges as i64])?,
+            ),
+            (
+                "commits_sampled",
+                i64_vec(1, [health.metrics.evolution.commits_sampled as i64])?,
+            ),
+        ],
+    )
+}
+
+fn build_hotspots_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = health.hotspots.len();
+    table(
+        5,
+        [
+            (
+                "file_id",
+                i64_vec(
+                    rows,
+                    health.hotspots.iter().map(|hotspot| hotspot.file_id as i64),
+                )?,
+            ),
+            (
+                "path",
+                str_vec(
+                    rows,
+                    health.hotspots.iter().map(|hotspot| hotspot.path.clone()),
+                )?,
+            ),
+            (
+                "module",
+                str_vec(
+                    rows,
+                    health.hotspots.iter().map(|hotspot| hotspot.module.clone()),
+                )?,
+            ),
+            (
+                "fan_in",
+                i64_vec(
+                    rows,
+                    health.hotspots.iter().map(|hotspot| hotspot.fan_in as i64),
+                )?,
+            ),
+            (
+                "fan_out",
+                i64_vec(
+                    rows,
+                    health.hotspots.iter().map(|hotspot| hotspot.fan_out as i64),
+                )?,
+            ),
+        ],
+    )
+}
+
+fn build_rules_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = health.rules.len();
+    table(
+        4,
+        [
+            (
+                "severity",
+                str_vec(
+                    rows,
+                    health
+                        .rules
+                        .iter()
+                        .map(|rule| format!("{:?}", rule.severity).to_lowercase()),
+                )?,
+            ),
+            (
+                "code",
+                str_vec(rows, health.rules.iter().map(|rule| rule.code.clone()))?,
+            ),
+            (
+                "path",
+                str_vec(rows, health.rules.iter().map(|rule| rule.path.clone()))?,
+            ),
+            (
+                "message",
+                str_vec(rows, health.rules.iter().map(|rule| rule.message.clone()))?,
+            ),
+        ],
+    )
+}
+
+fn build_module_edges_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = health.metrics.dsm.top_module_edges.len();
+    table(
+        3,
+        [
+            (
+                "from_module",
+                str_vec(
+                    rows,
+                    health
+                        .metrics
+                        .dsm
+                        .top_module_edges
+                        .iter()
+                        .map(|edge| edge.from_module.clone()),
+                )?,
+            ),
+            (
+                "to_module",
+                str_vec(
+                    rows,
+                    health
+                        .metrics
+                        .dsm
+                        .top_module_edges
+                        .iter()
+                        .map(|edge| edge.to_module.clone()),
+                )?,
+            ),
+            (
+                "edges",
+                i64_vec(
+                    rows,
+                    health
+                        .metrics
+                        .dsm
+                        .top_module_edges
+                        .iter()
+                        .map(|edge| edge.edges as i64),
+                )?,
+            ),
+        ],
+    )
+}
+
+fn build_changed_files_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = health.metrics.evolution.top_changed_files.len();
+    table(
+        2,
+        [
+            (
+                "path",
+                str_vec(
+                    rows,
+                    health
+                        .metrics
+                        .evolution
+                        .top_changed_files
+                        .iter()
+                        .map(|file| file.path.clone()),
+                )?,
+            ),
+            (
+                "commits",
+                i64_vec(
+                    rows,
+                    health
+                        .metrics
+                        .evolution
+                        .top_changed_files
+                        .iter()
+                        .map(|file| file.commits as i64),
+                )?,
+            ),
+        ],
+    )
+}
+
 fn i64_vec(
     capacity: usize,
     values: impl IntoIterator<Item = i64>,
@@ -361,5 +630,11 @@ mod tests {
             report.entry_points.len()
         );
         assert_eq!(summary.imports.rows as usize, report.imports.len());
+        assert_eq!(summary.health.rows, 1);
+        assert_eq!(summary.health.columns, 21);
+        assert_eq!(summary.hotspots.columns, 5);
+        assert_eq!(summary.rules.columns, 4);
+        assert_eq!(summary.module_edges.columns, 3);
+        assert_eq!(summary.changed_files.columns, 2);
     }
 }
