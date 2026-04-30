@@ -5,6 +5,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthSummary {
     pub score: u8,
+    pub coverage_score: u8,
+    pub structural_score: u8,
     pub resolution: ResolutionBreakdown,
     pub hotspots: Vec<FileHotspot>,
 }
@@ -32,6 +34,8 @@ pub fn compute_health(report: &ScanReport) -> HealthSummary {
 
     HealthSummary {
         score: health_score(report, &resolution),
+        coverage_score: coverage_score(report, &resolution),
+        structural_score: structural_score(report),
         resolution,
         hotspots,
     }
@@ -51,9 +55,23 @@ fn resolution_breakdown(report: &ScanReport) -> ResolutionBreakdown {
 }
 
 fn health_score(report: &ScanReport, resolution: &ResolutionBreakdown) -> u8 {
+    coverage_score(report, resolution).saturating_add(structural_score(report)) / 2
+}
+
+fn coverage_score(report: &ScanReport, resolution: &ResolutionBreakdown) -> u8 {
     let mut score = 100i32;
-    score -= (report.graph.cycle_count as i32 * 20).min(60);
-    score -= (resolution.unresolved as i32 * 3).min(45);
+    if report.snapshot.import_count > 0 {
+        let unresolved_pct = (resolution.unresolved as f64 / report.snapshot.import_count as f64
+            * 100.0)
+            .round() as i32;
+        score -= unresolved_pct.min(70);
+    }
+    score.clamp(0, 100) as u8
+}
+
+fn structural_score(report: &ScanReport) -> u8 {
+    let mut score = 100i32;
+    score -= (report.graph.cycle_count as i32 * 20).min(80);
     score.clamp(0, 100) as u8
 }
 
@@ -129,6 +147,8 @@ mod tests {
         assert_eq!(health.resolution.external, 1);
         assert_eq!(health.resolution.unresolved, 1);
         assert_eq!(health.hotspots[0].path, "b.rs");
+        assert!(health.coverage_score < 100);
+        assert_eq!(health.structural_score, 100);
         assert!(health.score < 100);
     }
 

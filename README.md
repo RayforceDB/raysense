@@ -26,6 +26,8 @@ Current Rayforce baseline:
 
 ```text
 score 100
+coverage_score 100
+structural_score 100
 facts files=186 functions=8233 imports=1010
 imports local=639 external=0 system=371 unresolved=0
 graph resolved_edges=639 cycles=0

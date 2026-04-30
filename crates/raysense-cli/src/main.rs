@@ -98,6 +98,8 @@ fn print_summary(report: &raysense_core::ScanReport) {
     println!("snapshot {}", report.snapshot.snapshot_id);
     println!("root {}", report.snapshot.root.display());
     println!("score {}", health.score);
+    println!("coverage_score {}", health.coverage_score);
+    println!("structural_score {}", health.structural_score);
     println!("files {}", report.snapshot.file_count);
     println!("functions {}", report.snapshot.function_count);
     println!("imports {}", report.snapshot.import_count);
@@ -113,6 +115,8 @@ fn print_summary(report: &raysense_core::ScanReport) {
 
 fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::HealthSummary) {
     println!("score {}", health.score);
+    println!("coverage_score {}", health.coverage_score);
+    println!("structural_score {}", health.structural_score);
     println!("root {}", report.snapshot.root.display());
     println!(
         "facts files={} functions={} imports={}",
