@@ -27,6 +27,7 @@ use thiserror::Error;
 
 use crate::facts::{
     CallEdgeFact, CallFact, EntryPointFact, ImportFact, ImportResolution, ScanReport, SnapshotFact,
+    TypeFact,
 };
 use crate::graph::compute_graph_metrics;
 use crate::health::RaysenseConfig;
@@ -162,6 +163,20 @@ pub fn remove_file(report: &ScanReport, file_path: &str) -> Result<ScanReport, S
         });
     }
 
+    let mut new_types = Vec::new();
+    for type_fact in &report.types {
+        let Some(new_file_id) = file_remap[type_fact.file_id] else {
+            continue;
+        };
+        new_types.push(TypeFact {
+            type_id: new_types.len(),
+            file_id: new_file_id,
+            name: type_fact.name.clone(),
+            is_abstract: type_fact.is_abstract,
+            line: type_fact.line,
+        });
+    }
+
     let graph = compute_graph_metrics(&new_files, &new_imports);
 
     Ok(ScanReport {
@@ -179,6 +194,7 @@ pub fn remove_file(report: &ScanReport, file_path: &str) -> Result<ScanReport, S
         imports: new_imports,
         calls: new_calls,
         call_edges: new_call_edges,
+        types: new_types,
         graph,
     })
 }
@@ -473,6 +489,7 @@ mod tests {
             imports,
             calls,
             call_edges,
+            types: Vec::new(),
             graph,
         }
     }

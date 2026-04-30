@@ -143,5 +143,16 @@ pub struct ScanReport {
     pub imports: Vec<ImportFact>,
     pub calls: Vec<CallFact>,
     pub call_edges: Vec<CallEdgeFact>,
+    #[serde(default)]
+    pub types: Vec<TypeFact>,
     pub graph: crate::graph::GraphMetrics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeFact {
+    pub type_id: usize,
+    pub file_id: usize,
+    pub name: String,
+    pub is_abstract: bool,
+    pub line: usize,
 }

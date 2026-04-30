@@ -23,7 +23,7 @@
 
 use crate::facts::{
     CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
-    ImportResolution, Language, ScanReport, SnapshotFact,
+    ImportResolution, Language, ScanReport, SnapshotFact, TypeFact,
 };
 use crate::graph::compute_graph_metrics;
 use crate::health::{LanguagePluginConfig, RaysenseConfig};
@@ -84,6 +84,7 @@ pub fn scan_path_with_config(
     let mut entry_points = Vec::new();
     let mut imports = Vec::new();
     let mut calls = Vec::new();
+    let mut types: Vec<TypeFact> = Vec::new();
 
     for entry in WalkBuilder::new(&root)
         .hidden(false)
@@ -190,6 +191,11 @@ pub fn scan_path_with_config(
             calls.push(call.clone());
         }
 
+        for mut type_fact in extract_types(file_id, &file_fact, &content, plugin.as_ref()) {
+            type_fact.type_id = types.len();
+            types.push(type_fact);
+        }
+
         files.push(file_fact);
     }
 
@@ -217,6 +223,7 @@ pub fn scan_path_with_config(
         imports,
         calls,
         call_edges,
+        types,
         graph,
     })
 }
@@ -1891,6 +1898,80 @@ fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
     }
 }
 
+/// Emit `TypeFact`s for type/class/interface declarations. Uses the plugin's
+/// `abstract_type_prefixes` and `concrete_type_prefixes` for line matching, and
+/// falls back to built-in heuristics for Rust/TS/Python/C-like languages.
+fn extract_types(
+    file_id: usize,
+    file: &FileFact,
+    content: &str,
+    plugin: Option<&LanguagePluginConfig>,
+) -> Vec<TypeFact> {
+    let mut out = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let clean = line.split("//").next().unwrap_or(line).trim();
+        if clean.is_empty()
+            || clean.starts_with('#')
+            || clean.starts_with('*')
+            || clean.starts_with("/*")
+        {
+            continue;
+        }
+        let configured_abstract = plugin.is_some_and(|plugin| {
+            plugin
+                .abstract_type_prefixes
+                .iter()
+                .any(|prefix| !prefix.is_empty() && clean.starts_with(prefix))
+        });
+        let configured_concrete = plugin.is_some_and(|plugin| {
+            plugin
+                .concrete_type_prefixes
+                .iter()
+                .any(|prefix| !prefix.is_empty() && clean.starts_with(prefix))
+        });
+        let builtin_abstract =
+            crate::health::is_abstract_type_line(clean, file.language_name.as_str());
+        let builtin_concrete =
+            crate::health::is_concrete_type_line(clean, file.language_name.as_str());
+        let is_abstract = configured_abstract || builtin_abstract;
+        let is_type = is_abstract || configured_concrete || builtin_concrete;
+        if !is_type {
+            continue;
+        }
+        let name = type_name_from_line(clean).unwrap_or_default();
+        out.push(TypeFact {
+            type_id: 0,
+            file_id,
+            name,
+            is_abstract,
+            line: idx + 1,
+        });
+    }
+    out
+}
+
+fn type_name_from_line(line: &str) -> Option<String> {
+    let mut iter = line.split_whitespace();
+    let mut leading = iter.next()?;
+    while matches!(
+        leading,
+        "pub" | "public" | "abstract" | "static" | "export" | "default"
+    ) {
+        leading = iter.next()?;
+    }
+    let _kind = leading;
+    let name = iter.next()?;
+    let name = name
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or(name);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// Build per-language alias rewrite rules by reading each plugin's
 /// `resolver_alias_files`. Supports JSON files with either a top-level
 /// `paths` object, a `compilerOptions.paths` object (tsconfig style), or a
@@ -3290,6 +3371,34 @@ int run(void) {
             module_name(Path::new("pkg/__init__.py"), Language::Python, None),
             "pkg"
         );
+    }
+
+    #[test]
+    fn extract_types_finds_rust_traits_and_structs() {
+        let file = FileFact {
+            file_id: 0,
+            path: PathBuf::from("src/lib.rs"),
+            language: Language::Rust,
+            language_name: "rust".to_string(),
+            module: "lib".to_string(),
+            lines: 4,
+            bytes: 80,
+            content_hash: String::new(),
+        };
+        let content = "trait Animal {}\npub struct Dog;\nstruct Cat;\nfn meow() {}\n";
+        let types = extract_types(0, &file, content, None);
+        assert_eq!(types.len(), 3);
+        let names: Vec<&str> = types
+            .iter()
+            .map(|type_fact| type_fact.name.as_str())
+            .collect();
+        assert!(names.contains(&"Animal"));
+        assert!(names.contains(&"Dog"));
+        assert!(names.contains(&"Cat"));
+        let animal = types.iter().find(|t| t.name == "Animal").unwrap();
+        assert!(animal.is_abstract);
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert!(!dog.is_abstract);
     }
 
     #[test]

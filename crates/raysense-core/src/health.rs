@@ -1764,7 +1764,7 @@ fn type_counts(source: &str, file: &FileFact, config: &RaysenseConfig) -> (usize
     (abstract_count, total_count)
 }
 
-fn is_abstract_type_line(line: &str, language: &str) -> bool {
+pub(crate) fn is_abstract_type_line(line: &str, language: &str) -> bool {
     match language {
         "rust" => line.starts_with("trait ") || line.starts_with("pub trait "),
         "typescript" | "tsx" | "javascript" => {
@@ -1781,7 +1781,7 @@ fn is_abstract_type_line(line: &str, language: &str) -> bool {
     }
 }
 
-fn is_concrete_type_line(line: &str, language: &str) -> bool {
+pub(crate) fn is_concrete_type_line(line: &str, language: &str) -> bool {
     match language {
         "rust" => {
             line.starts_with("struct ")
@@ -3330,6 +3330,7 @@ mod tests {
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -3374,6 +3375,7 @@ mod tests {
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -3427,6 +3429,7 @@ mod tests {
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -3477,6 +3480,7 @@ mod tests {
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -3527,6 +3531,7 @@ mod tests {
             imports: Vec::new(),
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
         let mut config = RaysenseConfig::default();
@@ -3580,6 +3585,7 @@ mod tests {
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -3618,6 +3624,7 @@ mod tests {
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -3679,6 +3686,7 @@ mod tests {
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         }
     }
@@ -3867,6 +3875,7 @@ extensions = ["min"]
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -3907,6 +3916,7 @@ extensions = ["min"]
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
         let mut config = RaysenseConfig::default();
@@ -3949,6 +3959,7 @@ extensions = ["min"]
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -3983,6 +3994,7 @@ extensions = ["min"]
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -4025,6 +4037,7 @@ extensions = ["min"]
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
 
@@ -4101,6 +4114,7 @@ fn second(input: i32) -> i32 {
             imports: Vec::new(),
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let health = compute_health(&report);
@@ -4165,6 +4179,7 @@ fn exported_surface() -> i32 {
             imports: Vec::new(),
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let mut config = RaysenseConfig::default();
@@ -4229,6 +4244,7 @@ fn exported_surface() -> i32 {
             imports: Vec::new(),
             calls,
             call_edges,
+            types: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
 
@@ -4269,6 +4285,7 @@ fn exported_surface() -> i32 {
             imports: Vec::new(),
             calls,
             call_edges,
+            types: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
 
@@ -4306,6 +4323,7 @@ fn exported_surface() -> i32 {
             imports: Vec::new(),
             calls,
             call_edges,
+            types: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let config: RaysenseConfig = toml::from_str(
@@ -4351,6 +4369,7 @@ no_tests_detected = false
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
         let config: RaysenseConfig = toml::from_str(
@@ -4390,6 +4409,7 @@ min_acyclicity = 0.9
             imports: Vec::new(),
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let config: RaysenseConfig = toml::from_str(
@@ -4429,6 +4449,7 @@ max_function_lines = 50
             imports: Vec::new(),
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let config: RaysenseConfig = toml::from_str(
@@ -4476,6 +4497,7 @@ no_tests_detected = false
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
         let config: RaysenseConfig = toml::from_str(
@@ -4527,6 +4549,7 @@ reason = "runtime code must not depend on tests"
             imports,
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph,
         };
         let config: RaysenseConfig = toml::from_str(

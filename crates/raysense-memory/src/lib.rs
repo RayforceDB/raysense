@@ -83,6 +83,7 @@ pub struct MemorySummary {
     pub imports: TableSummary,
     pub calls: TableSummary,
     pub call_edges: TableSummary,
+    pub types: TableSummary,
     pub health: TableSummary,
     pub hotspots: TableSummary,
     pub rules: TableSummary,
@@ -180,6 +181,7 @@ pub struct RayMemory {
     imports: RayObject,
     calls: RayObject,
     call_edges: RayObject,
+    types: RayObject,
     health: RayObject,
     hotspots: RayObject,
     rules: RayObject,
@@ -206,6 +208,7 @@ impl RayMemory {
             imports: build_imports_table(report)?,
             calls: build_calls_table(report)?,
             call_edges: build_call_edges_table(report)?,
+            types: build_types_table(report)?,
             health: build_health_table(report, &health)?,
             hotspots: build_hotspots_table(&health)?,
             rules: build_rules_table(&health)?,
@@ -222,6 +225,7 @@ impl RayMemory {
             imports: table_summary(self.imports.as_ptr()),
             calls: table_summary(self.calls.as_ptr()),
             call_edges: table_summary(self.call_edges.as_ptr()),
+            types: table_summary(self.types.as_ptr()),
             health: table_summary(self.health.as_ptr()),
             hotspots: table_summary(self.hotspots.as_ptr()),
             rules: table_summary(self.rules.as_ptr()),
@@ -244,6 +248,7 @@ impl RayMemory {
         self.save_table("imports", self.imports.as_ptr(), dir, &sym_path)?;
         self.save_table("calls", self.calls.as_ptr(), dir, &sym_path)?;
         self.save_table("call_edges", self.call_edges.as_ptr(), dir, &sym_path)?;
+        self.save_table("types", self.types.as_ptr(), dir, &sym_path)?;
         self.save_table("health", self.health.as_ptr(), dir, &sym_path)?;
         self.save_table("hotspots", self.hotspots.as_ptr(), dir, &sym_path)?;
         self.save_table("rules", self.rules.as_ptr(), dir, &sym_path)?;
@@ -952,6 +957,49 @@ fn build_calls_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
     )
 }
 
+fn build_types_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
+    let ids = i64_vec(
+        report.types.len(),
+        report
+            .types
+            .iter()
+            .map(|type_fact| type_fact.type_id as i64),
+    )?;
+    let file_ids = i64_vec(
+        report.types.len(),
+        report
+            .types
+            .iter()
+            .map(|type_fact| type_fact.file_id as i64),
+    )?;
+    let names = str_vec(
+        report.types.len(),
+        report.types.iter().map(|type_fact| type_fact.name.clone()),
+    )?;
+    let abstract_flags = i64_vec(
+        report.types.len(),
+        report
+            .types
+            .iter()
+            .map(|type_fact| if type_fact.is_abstract { 1 } else { 0 }),
+    )?;
+    let lines = i64_vec(
+        report.types.len(),
+        report.types.iter().map(|type_fact| type_fact.line as i64),
+    )?;
+
+    table(
+        5,
+        [
+            ("type_id", ids),
+            ("file_id", file_ids),
+            ("name", names),
+            ("is_abstract", abstract_flags),
+            ("line", lines),
+        ],
+    )
+}
+
 fn build_call_edges_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
     let ids = i64_vec(
         report.call_edges.len(),
@@ -1436,6 +1484,8 @@ mod tests {
         assert_eq!(summary.call_edges.rows as usize, report.call_edges.len());
         assert_eq!(summary.calls.columns, 5);
         assert_eq!(summary.call_edges.columns, 4);
+        assert_eq!(summary.types.rows as usize, report.types.len());
+        assert_eq!(summary.types.columns, 5);
         assert_eq!(summary.health.rows, 1);
         assert_eq!(summary.health.columns, 41);
         assert_eq!(summary.hotspots.columns, 5);
@@ -1724,6 +1774,7 @@ mod tests {
             imports: Vec::new(),
             calls: Vec::new(),
             call_edges: Vec::new(),
+            types: Vec::new(),
             graph: raysense_core::GraphMetrics::default(),
         }
     }

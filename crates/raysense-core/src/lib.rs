@@ -35,7 +35,7 @@ pub use baseline::{
 };
 pub use facts::{
     CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
-    ImportResolution, Language, ScanReport, SnapshotFact,
+    ImportResolution, Language, ScanReport, SnapshotFact, TypeFact,
 };
 pub use graph::GraphMetrics;
 pub use health::{
