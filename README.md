@@ -91,7 +91,7 @@ raysense observe <path> [--json] [--memory] [--config <path>]
 raysense health <path> [--json] [--config <path>]
 raysense edges <path> [--all] [--config <path>]
 raysense memory <path> [--config <path>]
-raysense check [path] [--json] [--config <path>]
+raysense check [path] [--json] [--sarif <path>] [--config <path>]
 raysense gate [path] [--save] [--baseline <path>] [--json] [--config <path>]
 raysense watch [path] [--interval <seconds>] [--config <path>]
 raysense visualize [path] [--watch] [--interval <seconds>] [--output <path>] [--config <path>]
@@ -128,11 +128,11 @@ write config, run health, inspect scan facts, list dependency edges, read
 hotspots, read rule findings, read DSM module edges, inspect architecture,
 coupling, cycles, hottest files/functions, blast radius, module levels, run
 what-if config simulations, and materialize memory table summaries. It can also
-write visualization dashboards, save/diff baselines, and query saved baseline
-tables with projection, filters, sorting, and pagination. Agent session tools
-can save an in-memory baseline, rescan, end the session, check rules, inspect
-evolution, inspect DSM data, inspect test gaps, and list configured language
-plugins.
+write visualization dashboards, emit SARIF reports, save/diff baselines, and
+query saved baseline tables with projection, filters, sorting, and pagination.
+Agent session tools can save an in-memory baseline, rescan, end the session,
+check rules, inspect evolution, inspect DSM data, inspect test gaps, and list
+configured language plugins.
 
 `raysense visualize` writes a self-refreshing local HTML dashboard with file
 size blocks, module graph edges, hotspots, rules, complexity, test gaps, and an

@@ -31,7 +31,7 @@ use raysense_memory::{
     BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
     BaselineTableQuery, BaselineTableSort,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
@@ -88,6 +88,8 @@ enum Command {
         config: Option<PathBuf>,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        sarif: Option<PathBuf>,
     },
     Gate {
         #[arg(default_value = ".")]
@@ -314,8 +316,13 @@ pub fn run() -> Result<()> {
             let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
             print_memory_summary(&memory.summary());
         }
-        Command::Check { path, config, json } => {
-            let exit = check_project(&path, config.as_deref(), json)?;
+        Command::Check {
+            path,
+            config,
+            json,
+            sarif,
+        } => {
+            let exit = check_project(&path, config.as_deref(), json, sarif.as_deref())?;
             process::exit(exit);
         }
         Command::Gate {
@@ -484,10 +491,26 @@ fn config_for_root(
     Ok(RaysenseConfig::default())
 }
 
-fn check_project(root: &Path, config_path: Option<&Path>, json: bool) -> Result<i32> {
+fn check_project(
+    root: &Path,
+    config_path: Option<&Path>,
+    json: bool,
+    sarif: Option<&Path>,
+) -> Result<i32> {
     let config = config_for_root(root, config_path)?;
     let report = scan_path_with_config(root, &config)?;
     let health = compute_health_with_config(&report, &config);
+    if let Some(path) = sarif {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&sarif_report(&report, &health))?,
+        )
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&health)?);
     } else {
@@ -498,6 +521,98 @@ fn check_project(root: &Path, config_path: Option<&Path>, json: bool) -> Result<
         .iter()
         .any(|rule| matches!(rule.severity, raysense_core::RuleSeverity::Error));
     Ok(if has_errors { 1 } else { 0 })
+}
+
+fn sarif_report(
+    report: &raysense_core::ScanReport,
+    health: &raysense_core::HealthSummary,
+) -> Value {
+    let mut seen_rules = BTreeSet::new();
+    let rules = health
+        .rules
+        .iter()
+        .filter(|rule| seen_rules.insert(rule.code.clone()))
+        .map(|rule| {
+            json!({
+                "id": rule.code,
+                "name": rule.code,
+                "shortDescription": {
+                    "text": rule.code
+                },
+                "fullDescription": {
+                    "text": rule.message
+                },
+                "defaultConfiguration": {
+                    "level": sarif_level(rule.severity)
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = health
+        .rules
+        .iter()
+        .map(|rule| {
+            json!({
+                "ruleId": rule.code,
+                "level": sarif_level(rule.severity),
+                "message": {
+                    "text": rule.message
+                },
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": sarif_uri(&report.snapshot.root, &rule.path)
+                            },
+                            "region": {
+                                "startLine": 1
+                            }
+                        }
+                    }
+                ]
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "version": "2.1.0",
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "raysense",
+                        "informationUri": "https://github.com/RayforceDB/raysense",
+                        "rules": rules
+                    }
+                },
+                "properties": {
+                    "snapshot_id": report.snapshot.snapshot_id,
+                    "quality_signal": health.quality_signal,
+                    "score": health.score
+                },
+                "results": results
+            }
+        ]
+    })
+}
+
+fn sarif_level(severity: raysense_core::RuleSeverity) -> &'static str {
+    match severity {
+        raysense_core::RuleSeverity::Error => "error",
+        raysense_core::RuleSeverity::Warning => "warning",
+        raysense_core::RuleSeverity::Info => "note",
+    }
+}
+
+fn sarif_uri(root: &Path, path: &str) -> String {
+    let path = Path::new(path);
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    if relative.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        relative.to_string_lossy().replace('\\', "/")
+    }
 }
 
 fn gate_project(

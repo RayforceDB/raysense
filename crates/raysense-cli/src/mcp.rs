@@ -254,6 +254,11 @@ fn tools_list() -> Value {
                 "inputSchema": visualize_schema()
             },
             {
+                "name": "raysense_sarif",
+                "description": "Write a SARIF code-scanning report for rule findings and optionally return the SARIF JSON.",
+                "inputSchema": sarif_schema()
+            },
+            {
                 "name": "raysense_plugins",
                 "description": "List configured generic language plugins.",
                 "inputSchema": path_limit_schema("Unused.")
@@ -352,6 +357,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_dsm" => dsm_tool(&args),
         "raysense_test_gaps" => test_gaps_tool(&args),
         "raysense_visualize" => visualize_tool(&args),
+        "raysense_sarif" => sarif_tool(&args),
         "raysense_plugins" => plugins_tool(&args),
         "raysense_standard_plugins" => standard_plugins_tool(&args),
         "raysense_remediations" => remediations_tool(&args),
@@ -812,6 +818,38 @@ fn visualize_tool(args: &Value) -> Result<Value> {
         "quality_signal": health.quality_signal,
         "score": health.score,
         "html": if include_html { Value::String(html) } else { Value::Null }
+    }))
+}
+
+fn sarif_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
+    let output = args
+        .get("output_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from);
+    let include_sarif = bool_arg(args, "include_sarif", false)?;
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let sarif = super::sarif_report(&report, &health);
+
+    if let Some(path) = output.as_ref() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::write(path, serde_json::to_string_pretty(&sarif)?)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+
+    Ok(json!({
+        "root": report.snapshot.root,
+        "output_path": output,
+        "snapshot_id": report.snapshot.snapshot_id,
+        "quality_signal": health.quality_signal,
+        "score": health.score,
+        "rules": health.rules.len(),
+        "sarif": if include_sarif { sarif } else { Value::Null }
     }))
 }
 
@@ -1569,6 +1607,19 @@ fn visualize_schema() -> Value {
     })
 }
 
+fn sarif_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema(),
+            "output_path": {"type": "string", "description": "Optional SARIF output path."},
+            "include_sarif": {"type": "boolean", "description": "Return generated SARIF inline. Defaults to false."}
+        }
+    })
+}
+
 fn baseline_schema(path_description: &str) -> Value {
     json!({
         "type": "object",
@@ -1690,6 +1741,7 @@ mod tests {
         assert!(names.contains(&"raysense_dsm"));
         assert!(names.contains(&"raysense_test_gaps"));
         assert!(names.contains(&"raysense_visualize"));
+        assert!(names.contains(&"raysense_sarif"));
         assert!(names.contains(&"raysense_plugins"));
         assert!(names.contains(&"raysense_standard_plugins"));
         assert!(names.contains(&"raysense_remediations"));
