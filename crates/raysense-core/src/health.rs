@@ -651,6 +651,56 @@ fn rules(
         });
     }
 
+    if metrics.calls.total_calls >= 100 && metrics.calls.resolution_ratio < 0.5 {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Info,
+            code: "low_call_resolution".to_string(),
+            path: report.snapshot.root.to_string_lossy().into_owned(),
+            message: format!(
+                "{} of {} calls resolved ({:.3})",
+                metrics.calls.resolved_edges,
+                metrics.calls.total_calls,
+                metrics.calls.resolution_ratio
+            ),
+        });
+    }
+
+    for function in metrics
+        .calls
+        .top_called_functions
+        .iter()
+        .filter(|function| function.calls >= 200)
+        .take(5)
+    {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Info,
+            code: "high_function_fan_in".to_string(),
+            path: function.path.clone(),
+            message: format!(
+                "{} has {} resolved incoming calls",
+                function.name, function.calls
+            ),
+        });
+    }
+
+    for function in metrics
+        .calls
+        .top_calling_functions
+        .iter()
+        .filter(|function| function.calls >= 100)
+        .take(5)
+    {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Info,
+            code: "high_function_fan_out".to_string(),
+            path: function.path.clone(),
+            message: format!(
+                "{} has {} resolved outgoing calls",
+                function.name, function.calls
+            ),
+        });
+    }
+
     findings
 }
 
@@ -867,6 +917,43 @@ mod tests {
         assert_eq!(health.metrics.calls.max_function_fan_out, 2);
         assert_eq!(health.metrics.calls.top_called_functions[0].name, "load");
         assert_eq!(health.metrics.calls.top_calling_functions[0].name, "run");
+    }
+
+    #[test]
+    fn reports_call_metric_findings() {
+        let files = vec![file(0, "src/a.rs")];
+        let functions = vec![function(0, 0, "run"), function(1, 0, "load")];
+        let mut calls = Vec::new();
+        let mut call_edges = Vec::new();
+        for id in 0..250 {
+            calls.push(call(id, 0, Some(0), "load"));
+            if id < 100 {
+                call_edges.push(call_edge(id, id, 0, 1));
+            }
+        }
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: functions.len(),
+                import_count: 0,
+                call_count: calls.len(),
+            },
+            files,
+            functions,
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls,
+            call_edges,
+            graph: compute_graph_metrics(&[], &[]),
+        };
+
+        let health = compute_health(&report);
+        let codes: Vec<&str> = health.rules.iter().map(|rule| rule.code.as_str()).collect();
+
+        assert!(codes.contains(&"low_call_resolution"));
+        assert!(codes.contains(&"high_function_fan_out"));
     }
 
     fn file(file_id: usize, path: &str) -> FileFact {

@@ -69,8 +69,8 @@ The first testable version focuses on Rust and C/C++ codebases:
 - Graph metrics: resolved edges, cycles, fan-in, fan-out.
 - Health summary with score, import breakdown, hotspots, coupling, size,
   entry point, test-gap, DSM, and evolution-availability metrics.
-- Built-in rules for high fan-in, production dependencies on test paths, and
-  large-file/no-test informational findings.
+- Built-in rules for high fan-in, production dependencies on test paths,
+  large-file/no-test findings, and call-resolution/function-call hotspots.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.
