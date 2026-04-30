@@ -22,6 +22,15 @@ cargo run -q -p raysense-cli -- edges ../rayforce | head
 cargo run -q -p raysense-cli -- observe ../rayforce --memory
 ```
 
+Current Rayforce baseline:
+
+```text
+score 100
+facts files=186 functions=8233 imports=1010
+imports local=639 external=0 system=371 unresolved=0
+graph resolved_edges=639 cycles=0
+```
+
 ## Commands
 
 ```text

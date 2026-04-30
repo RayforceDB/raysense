@@ -337,13 +337,22 @@ fn extract_c_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
             } else {
                 "include"
             };
-            Some(new_import(
-                file_id,
-                target.trim_matches(['<', '>', '"']),
-                kind,
-            ))
+            Some(new_import(file_id, clean_c_include_target(target), kind))
         })
         .collect()
+}
+
+fn clean_c_include_target(target: &str) -> &str {
+    target
+        .trim()
+        .trim_matches(['<', '>', '"'])
+        .split('"')
+        .next()
+        .unwrap_or(target)
+        .split('>')
+        .next()
+        .unwrap_or(target)
+        .trim()
 }
 
 fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
@@ -360,6 +369,7 @@ fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
 fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
     let mut by_path = HashMap::new();
     let mut by_module = HashMap::new();
+    let include_roots = infer_include_roots(files);
 
     for file in files {
         by_path.insert(normalize_path(&file.path), file.file_id);
@@ -373,7 +383,8 @@ fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
         let Some(from_file) = file_by_id.get(&import.from_file).copied() else {
             continue;
         };
-        import.resolved_file = resolve_import(from_file, import, &by_path, &by_module);
+        import.resolved_file =
+            resolve_import(from_file, import, &by_path, &by_module, &include_roots);
         import.resolution = classify_import(from_file, import);
     }
 }
@@ -398,8 +409,9 @@ fn resolve_import(
     import: &ImportFact,
     by_path: &HashMap<String, usize>,
     by_module: &HashMap<String, usize>,
+    include_roots: &[PathBuf],
 ) -> Option<usize> {
-    let candidates = import_candidates(from_file, import);
+    let candidates = import_candidates(from_file, import, include_roots);
     candidates
         .iter()
         .find_map(|candidate| by_path.get(candidate).copied())
@@ -408,12 +420,18 @@ fn resolve_import(
         })
 }
 
-fn import_candidates(from_file: &FileFact, import: &ImportFact) -> Vec<String> {
+fn import_candidates(
+    from_file: &FileFact,
+    import: &ImportFact,
+    include_roots: &[PathBuf],
+) -> Vec<String> {
     match from_file.language {
         Language::Rust => rust_import_candidates(&from_file.path, &import.target),
         Language::Python => python_import_candidates(&import.target),
         Language::TypeScript => typescript_import_candidates(&from_file.path, &import.target),
-        Language::C | Language::Cpp => c_import_candidates(&from_file.path, &import.target),
+        Language::C | Language::Cpp => {
+            c_import_candidates(&from_file.path, &import.target, include_roots)
+        }
         Language::Unknown => Vec::new(),
     }
 }
@@ -524,7 +542,7 @@ fn typescript_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
     candidates
 }
 
-fn c_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
+fn c_import_candidates(from_path: &Path, target: &str, include_roots: &[PathBuf]) -> Vec<String> {
     if target.starts_with('<') {
         return Vec::new();
     }
@@ -533,7 +551,22 @@ fn c_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
     let parent = from_path.parent().unwrap_or_else(|| Path::new(""));
     candidates.push(normalize_path(normalize_components(parent.join(target))));
     candidates.push(target.replace('\\', "/"));
+    candidates.extend(
+        include_roots
+            .iter()
+            .map(|root| normalize_path(normalize_components(root.join(target)))),
+    );
     candidates
+}
+
+fn infer_include_roots(files: &[FileFact]) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for candidate in ["include", "src", "test", "tests"] {
+        if files.iter().any(|file| file.path.starts_with(candidate)) {
+            roots.push(PathBuf::from(candidate));
+        }
+    }
+    roots
 }
 
 fn module_candidate(target: &str) -> Option<String> {
@@ -709,10 +742,12 @@ def run():
         let files = vec![
             file(0, "src/runtime.c", Language::C),
             file(1, "src/runtime.h", Language::C),
+            file(2, "src/core/platform.h", Language::C),
         ];
         let mut imports = vec![
             new_import(0, "stdio.h", "include_system"),
             new_import(0, "runtime.h", "include"),
+            new_import(0, "core/platform.h", "include"),
             new_import(0, "missing.h", "include"),
         ];
 
@@ -721,7 +756,18 @@ def run():
         assert_eq!(imports[0].resolution, ImportResolution::System);
         assert_eq!(imports[1].resolved_file, Some(1));
         assert_eq!(imports[1].resolution, ImportResolution::Local);
-        assert_eq!(imports[2].resolution, ImportResolution::Unresolved);
+        assert_eq!(imports[2].resolved_file, Some(2));
+        assert_eq!(imports[2].resolution, ImportResolution::Local);
+        assert_eq!(imports[3].resolution, ImportResolution::Unresolved);
+    }
+
+    #[test]
+    fn cleans_c_include_targets() {
+        assert_eq!(
+            clean_c_include_target("\"ops/ops.h\"    /* comment */"),
+            "ops/ops.h"
+        );
+        assert_eq!(clean_c_include_target("<stdio.h>"), "stdio.h");
     }
 
     #[test]
