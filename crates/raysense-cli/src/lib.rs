@@ -774,14 +774,27 @@ fn visualization_html(
         .max()
         .unwrap_or(1)
         .max(1);
+    let churn_by_path: std::collections::HashMap<String, usize> = health
+        .metrics
+        .evolution
+        .top_changed_files
+        .iter()
+        .map(|file| (file.path.clone(), file.commits))
+        .collect();
     let cells = report
         .files
         .iter()
         .map(|file| {
             let width = ((file.lines as f64 / max_lines as f64) * 100.0).max(8.0);
+            let path = file.path.to_string_lossy();
+            let churn = churn_by_path.get(path.as_ref()).copied().unwrap_or(0);
             format!(
-                "<div class=\"file\" style=\"flex-basis:{width:.1}%\"><b>{}</b><span>{} lines</span><small>{}</small></div>",
-                html_escape(&file.path.to_string_lossy()),
+                "<div class=\"file\" data-path=\"{}\" data-lines=\"{}\" data-language=\"{}\" data-churn=\"{}\" style=\"flex-basis:{width:.1}%\"><b>{}</b><span>{} lines</span><small>{}</small></div>",
+                html_escape(&path),
+                file.lines,
+                html_escape(&file.language_name),
+                churn,
+                html_escape(&path),
                 file.lines,
                 html_escape(&file.language_name)
             )
@@ -959,6 +972,13 @@ svg{{width:100%;max-width:820px;height:330px;background:#151b24;border:1px solid
 svg line{{stroke:#78a6d8;opacity:.42}}svg circle{{fill:#263b57;stroke:#9cc7ef;stroke-width:2}}
 svg text{{fill:#eee;font-size:11px}}
 table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom:1px solid #333;padding:6px;text-align:left}}
+.controls{{display:flex;gap:8px;align-items:center;margin:12px 0}}
+.controls label{{color:#aaa}}.controls select{{background:#1d2838;color:#eee;border:1px solid #31445d;padding:4px 8px}}
+.file{{cursor:pointer}}
+.file[data-language="rust"]{{background:#3b2a18}}.file[data-language="typescript"]{{background:#1f2a3a}}.file[data-language="python"]{{background:#1f3327}}.file[data-language="c"],.file[data-language="cpp"]{{background:#332238}}
+.detail{{position:fixed;top:24px;right:24px;width:320px;background:#1d2838;border:1px solid #31445d;padding:16px;z-index:5;box-shadow:0 6px 16px rgba(0,0,0,.5)}}
+.detail dt{{color:#9db5d6;font-size:12px;margin-top:8px}}.detail dd{{margin:0;color:#fff}}
+.detail button{{float:right;background:#31445d;color:#eee;border:0;padding:4px 10px;cursor:pointer}}
 </style></head><body>
 <div class="top">
 <div class="metric"><b>{}</b>quality signal</div>
@@ -972,7 +992,20 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <div class="metric"><b>{:.3}</b>redundancy<div class="bar"><span style="width:{:.1}%"></span></div></div>
 </div>
 <h2>Files</h2>
-<div class="grid">{}</div>
+<div class="controls">
+<label for="color-mode">Color by</label>
+<select id="color-mode">
+<option value="language">language</option>
+<option value="lines">lines</option>
+<option value="churn">churn</option>
+</select>
+</div>
+<div class="grid" id="files-grid">{}</div>
+<aside id="file-detail" class="detail" hidden>
+<button type="button" id="file-detail-close">close</button>
+<h3 id="file-detail-title"></h3>
+<dl id="file-detail-body"></dl>
+</aside>
 <div class="panels">
 <section><h2>Modules</h2><svg viewBox="0 0 820 330">{}{}</svg></section>
 <section><h2>Module Edges</h2><table><tr><th>from</th><th>to</th><th>edges</th></tr>{}</table></section>
@@ -982,6 +1015,50 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <section><h2>Test Gaps</h2><table><tr><th>source</th><th>expected tests</th></tr>{}</table></section>
 </div>
 <script type="application/json" id="raysense-telemetry">{}</script>
+<script>
+(function() {{
+  var grid = document.getElementById('files-grid');
+  var detail = document.getElementById('file-detail');
+  var title = document.getElementById('file-detail-title');
+  var body = document.getElementById('file-detail-body');
+  var closeBtn = document.getElementById('file-detail-close');
+  var select = document.getElementById('color-mode');
+  if (!grid || !select) return;
+  var cells = Array.prototype.slice.call(grid.querySelectorAll('.file'));
+  function maxOf(attr) {{
+    return cells.reduce(function(acc, el) {{
+      var v = parseInt(el.getAttribute(attr), 10) || 0;
+      return v > acc ? v : acc;
+    }}, 1);
+  }}
+  function recolor(mode) {{
+    if (mode === 'language') {{
+      cells.forEach(function(el) {{ el.style.background = ''; }});
+      return;
+    }}
+    var attr = mode === 'lines' ? 'data-lines' : 'data-churn';
+    var max = maxOf(attr);
+    cells.forEach(function(el) {{
+      var v = parseInt(el.getAttribute(attr), 10) || 0;
+      var ratio = max > 0 ? v / max : 0;
+      var hue = mode === 'churn' ? 12 : 210;
+      var lightness = 18 + Math.round(ratio * 32);
+      el.style.background = 'hsl(' + hue + ',60%,' + lightness + '%)';
+    }});
+  }}
+  select.addEventListener('change', function() {{ recolor(select.value); }});
+  cells.forEach(function(el) {{
+    el.addEventListener('click', function() {{
+      title.textContent = el.getAttribute('data-path');
+      body.innerHTML = '<dt>language</dt><dd>' + el.getAttribute('data-language') +
+        '</dd><dt>lines</dt><dd>' + el.getAttribute('data-lines') +
+        '</dd><dt>churn (commits)</dt><dd>' + el.getAttribute('data-churn') + '</dd>';
+      detail.hidden = false;
+    }});
+  }});
+  if (closeBtn) closeBtn.addEventListener('click', function() {{ detail.hidden = true; }});
+}})();
+</script>
 </body></html>"#,
         health.quality_signal,
         health.score,
@@ -2139,6 +2216,17 @@ mod tests {
         assert!(forced.skipped.is_empty());
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn visualization_html_includes_color_mode_and_detail_panel() {
+        let report = raysense_core::scan_path(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let health = raysense_core::compute_health(&report);
+        let html = visualization_html(&report, &health);
+        assert!(html.contains("id=\"color-mode\""));
+        assert!(html.contains("data-churn"));
+        assert!(html.contains("id=\"file-detail\""));
+        assert!(html.contains("id=\"raysense-telemetry\""));
     }
 
     #[test]
