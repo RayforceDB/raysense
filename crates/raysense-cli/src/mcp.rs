@@ -1641,7 +1641,10 @@ fn config_schema() -> Value {
                                 "test_path_patterns": {"type": "array", "items": {"type": "string"}},
                                 "source_roots": {"type": "array", "items": {"type": "string"}},
                                 "ignored_paths": {"type": "array", "items": {"type": "string"}},
-                                "local_import_prefixes": {"type": "array", "items": {"type": "string"}}
+                                "local_import_prefixes": {"type": "array", "items": {"type": "string"}},
+                                "max_function_complexity": {"type": ["integer", "null"], "minimum": 0},
+                                "max_file_lines": {"type": ["integer", "null"], "minimum": 0},
+                                "max_function_lines": {"type": ["integer", "null"], "minimum": 0}
                             },
                             "required": ["name"]
                         }

@@ -1263,6 +1263,7 @@ import_prefixes = ["import ", "use ", "require "]
 call_suffixes = ["("]
 test_path_patterns = ["tests/*", "test/*"]
 local_import_prefixes = ["."]
+max_function_complexity = 15
 "#
     );
     fs::write(plugin_dir.join("plugin.toml"), manifest).with_context(|| {

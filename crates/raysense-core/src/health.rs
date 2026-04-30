@@ -21,7 +21,7 @@
  *   SOFTWARE.
  */
 
-use crate::facts::{EntryPointKind, ImportResolution, ScanReport};
+use crate::facts::{EntryPointKind, FileFact, ImportResolution, ScanReport};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
@@ -105,6 +105,9 @@ pub struct LanguagePluginConfig {
     pub source_roots: Vec<String>,
     pub ignored_paths: Vec<String>,
     pub local_import_prefixes: Vec<String>,
+    pub max_function_complexity: Option<usize>,
+    pub max_file_lines: Option<usize>,
+    pub max_function_lines: Option<usize>,
 }
 
 impl Default for LanguagePluginConfig {
@@ -133,6 +136,9 @@ impl Default for LanguagePluginConfig {
             source_roots: Vec::new(),
             ignored_paths: Vec::new(),
             local_import_prefixes: vec![".".to_string()],
+            max_function_complexity: None,
+            max_file_lines: None,
+            max_function_lines: None,
         }
     }
 }
@@ -291,6 +297,7 @@ pub struct ComplexityMetrics {
     pub max_function_complexity: usize,
     pub average_function_complexity: f64,
     pub complexity_gini: f64,
+    pub all_functions: Vec<FunctionComplexityMetric>,
     pub complex_functions: Vec<FunctionComplexityMetric>,
     pub dead_functions: Vec<FunctionComplexityMetric>,
     pub duplicate_groups: Vec<DuplicateFunctionGroup>,
@@ -716,6 +723,7 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
     }
 
     let mut values = Vec::new();
+    let mut all_functions = Vec::new();
     let mut complex_functions = Vec::new();
     let mut dead_functions = Vec::new();
     let mut by_name: BTreeMap<String, Vec<FunctionComplexityMetric>> = BTreeMap::new();
@@ -742,6 +750,7 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
             name: function.name.clone(),
             value,
         };
+        all_functions.push(metric.clone());
         by_name
             .entry(function.name.clone())
             .or_default()
@@ -844,6 +853,7 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
         max_function_complexity,
         average_function_complexity,
         complexity_gini: gini(&values),
+        all_functions,
         complex_functions,
         dead_functions,
         duplicate_groups,
@@ -1764,64 +1774,78 @@ fn rules(
         });
     }
 
-    if metrics.complexity.max_function_complexity > rules.max_function_complexity {
-        for function in metrics
-            .complexity
-            .complex_functions
-            .iter()
-            .filter(|function| function.value > rules.max_function_complexity)
-            .take(rules.max_call_hotspot_findings.max(1))
-        {
-            findings.push(RuleFinding {
-                severity: RuleSeverity::Warning,
-                code: "max_function_complexity".to_string(),
-                path: function.path.clone(),
-                message: format!("{} complexity {}", function.name, function.value),
-            });
-        }
-    }
-
-    if rules.max_file_lines > 0 && metrics.size.max_file_lines > rules.max_file_lines {
-        for file in report
-            .files
-            .iter()
-            .filter(|file| file.lines > rules.max_file_lines)
-            .take(rules.max_large_file_findings.max(1))
-        {
-            findings.push(RuleFinding {
-                severity: RuleSeverity::Error,
-                code: "max_file_lines".to_string(),
-                path: file.path.to_string_lossy().into_owned(),
-                message: format!("{} lines exceeds max {}", file.lines, rules.max_file_lines),
-            });
-        }
-    }
-
-    if rules.max_function_lines > 0 && metrics.size.max_function_lines > rules.max_function_lines {
-        for function in report
-            .functions
-            .iter()
-            .filter(|function| {
-                function.end_line.saturating_sub(function.start_line) + 1 > rules.max_function_lines
-            })
-            .take(rules.max_call_hotspot_findings.max(1))
-        {
-            let path = report
+    for function in metrics
+        .complexity
+        .all_functions
+        .iter()
+        .filter(|function| {
+            let threshold = report
                 .files
                 .get(function.file_id)
-                .map(|file| file.path.to_string_lossy().into_owned())
-                .unwrap_or_else(|| report.snapshot.root.to_string_lossy().into_owned());
-            let lines = function.end_line.saturating_sub(function.start_line) + 1;
-            findings.push(RuleFinding {
-                severity: RuleSeverity::Error,
-                code: "max_function_lines".to_string(),
-                path,
-                message: format!(
-                    "{} has {} lines exceeding max {}",
-                    function.name, lines, rules.max_function_lines
-                ),
-            });
-        }
+                .map(|file| function_complexity_limit(file, config))
+                .unwrap_or(rules.max_function_complexity);
+            function.value > threshold
+        })
+        .take(rules.max_call_hotspot_findings.max(1))
+    {
+        let threshold = report
+            .files
+            .get(function.file_id)
+            .map(|file| function_complexity_limit(file, config))
+            .unwrap_or(rules.max_function_complexity);
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Warning,
+            code: "max_function_complexity".to_string(),
+            path: function.path.clone(),
+            message: format!(
+                "{} complexity {} exceeds max {}",
+                function.name, function.value, threshold
+            ),
+        });
+    }
+
+    for (file, limit) in report
+        .files
+        .iter()
+        .filter_map(|file| file_line_limit(file, config).map(|limit| (file, limit)))
+        .filter(|(file, limit)| file.lines > *limit)
+        .take(rules.max_large_file_findings.max(1))
+    {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Error,
+            code: "max_file_lines".to_string(),
+            path: file.path.to_string_lossy().into_owned(),
+            message: format!("{} lines exceeds max {}", file.lines, limit),
+        });
+    }
+
+    for (function, limit) in report
+        .functions
+        .iter()
+        .filter_map(|function| {
+            let file = report.files.get(function.file_id)?;
+            function_line_limit(file, config).map(|limit| (function, limit))
+        })
+        .filter(|(function, limit)| {
+            function.end_line.saturating_sub(function.start_line) + 1 > *limit
+        })
+        .take(rules.max_call_hotspot_findings.max(1))
+    {
+        let path = report
+            .files
+            .get(function.file_id)
+            .map(|file| file.path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| report.snapshot.root.to_string_lossy().into_owned());
+        let lines = function.end_line.saturating_sub(function.start_line) + 1;
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Error,
+            code: "max_function_lines".to_string(),
+            path,
+            message: format!(
+                "{} has {} lines exceeding max {}",
+                function.name, lines, limit
+            ),
+        });
     }
 
     for hotspot in hotspots {
@@ -1979,6 +2003,37 @@ fn rules(
     findings.extend(layer_findings);
 
     findings
+}
+
+fn function_complexity_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
+    plugin_for_file(file, config)
+        .and_then(|plugin| plugin.max_function_complexity)
+        .unwrap_or(config.rules.max_function_complexity)
+}
+
+fn file_line_limit(file: &FileFact, config: &RaysenseConfig) -> Option<usize> {
+    plugin_for_file(file, config)
+        .and_then(|plugin| plugin.max_file_lines)
+        .or_else(|| (config.rules.max_file_lines > 0).then_some(config.rules.max_file_lines))
+}
+
+fn function_line_limit(file: &FileFact, config: &RaysenseConfig) -> Option<usize> {
+    plugin_for_file(file, config)
+        .and_then(|plugin| plugin.max_function_lines)
+        .or_else(|| {
+            (config.rules.max_function_lines > 0).then_some(config.rules.max_function_lines)
+        })
+}
+
+fn plugin_for_file<'a>(
+    file: &FileFact,
+    config: &'a RaysenseConfig,
+) -> Option<&'a LanguagePluginConfig> {
+    config
+        .scan
+        .plugins
+        .iter()
+        .find(|plugin| plugin.name.eq_ignore_ascii_case(&file.language_name))
 }
 
 fn push_min_score_finding(
@@ -2799,6 +2854,54 @@ max_function_lines = 50
         let health = compute_health_with_config(&report, &config);
         let codes: Vec<&str> = health.rules.iter().map(|rule| rule.code.as_str()).collect();
 
+        assert!(codes.contains(&"max_file_lines"));
+        assert!(codes.contains(&"max_function_lines"));
+    }
+
+    #[test]
+    fn applies_plugin_threshold_overrides() {
+        let mut source = file(0, "src/a.rs");
+        source.lines = 120;
+        let mut long_function = function(0, 0, "long");
+        long_function.end_line = 80;
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: 1,
+                function_count: 1,
+                import_count: 0,
+                call_count: 0,
+            },
+            files: vec![source],
+            functions: vec![long_function],
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph: compute_graph_metrics(&[], &[]),
+        };
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[[scan.plugins]]
+name = "rust"
+extensions = ["rs"]
+max_function_complexity = 0
+max_file_lines = 100
+max_function_lines = 50
+
+[rules]
+max_file_lines = 0
+max_function_lines = 0
+no_tests_detected = false
+"#,
+        )
+        .unwrap();
+
+        let health = compute_health_with_config(&report, &config);
+        let codes: Vec<&str> = health.rules.iter().map(|rule| rule.code.as_str()).collect();
+
+        assert!(codes.contains(&"max_function_complexity"));
         assert!(codes.contains(&"max_file_lines"));
         assert!(codes.contains(&"max_function_lines"));
     }

@@ -232,6 +232,9 @@ test_path_patterns = ["tests/*", "*_test.foo"]
 source_roots = ["src"]
 ignored_paths = ["build/*"]
 local_import_prefixes = ["."]
+max_function_complexity = 15
+max_file_lines = 500
+max_function_lines = 80
 
 [rules]
 min_quality_signal = 0
