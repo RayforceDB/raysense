@@ -259,6 +259,11 @@ fn tools_list() -> Value {
                 "inputSchema": health_limit_schema("Maximum remediation actions to return. Defaults to 100.")
             },
             {
+                "name": "raysense_what_if",
+                "description": "Simulate scan config changes and return score, rule, and baseline deltas without writing files.",
+                "inputSchema": what_if_schema()
+            },
+            {
                 "name": "raysense_trend",
                 "description": "Return persisted trend metrics when .raysense/trends/history.json exists.",
                 "inputSchema": health_limit_schema("Unused.")
@@ -338,6 +343,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_test_gaps" => test_gaps_tool(&args),
         "raysense_plugins" => plugins_tool(&args),
         "raysense_remediations" => remediations_tool(&args),
+        "raysense_what_if" => what_if_tool(&args),
         "raysense_trend" => trend_tool(&args),
         "raysense_policy_presets" => policy_presets_tool(&args),
         "raysense_memory_summary" => memory_summary_tool(&args),
@@ -789,6 +795,47 @@ fn remediations_tool(args: &Value) -> Result<Value> {
     }))
 }
 
+fn what_if_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
+    let ignore_paths = string_array_arg(args, "ignore_paths")?;
+    let generated_paths = string_array_arg(args, "generated_paths")?;
+    let before_report = scan_path_with_config(&root, &config)?;
+    let before_health = compute_health_with_config(&before_report, &config);
+    let before = build_baseline(&before_report, &before_health);
+    let mut simulated_config = config.clone();
+    simulated_config
+        .scan
+        .ignored_paths
+        .extend(ignore_paths.clone());
+    simulated_config
+        .scan
+        .generated_paths
+        .extend(generated_paths.clone());
+    let after_report = scan_path_with_config(&root, &simulated_config)?;
+    let after_health = compute_health_with_config(&after_report, &simulated_config);
+    let after = build_baseline(&after_report, &after_health);
+
+    Ok(json!({
+        "root": before_report.snapshot.root,
+        "ignore_paths": ignore_paths,
+        "generated_paths": generated_paths,
+        "before": {
+            "score": before_health.score,
+            "quality_signal": before_health.quality_signal,
+            "files": before_report.snapshot.file_count,
+            "rules": before_health.rules.len()
+        },
+        "after": {
+            "score": after_health.score,
+            "quality_signal": after_health.quality_signal,
+            "files": after_report.snapshot.file_count,
+            "rules": after_health.rules.len()
+        },
+        "diff": diff_baselines(&before, &after)
+    }))
+}
+
 fn trend_tool(args: &Value) -> Result<Value> {
     let (root, health) = health_from_args(args)?;
     Ok(json!({
@@ -1090,6 +1137,23 @@ fn columns_arg(args: &Value) -> Result<Option<Vec<String>>> {
                 .collect()
         })
         .transpose()
+}
+
+fn string_array_arg(args: &Value, name: &str) -> Result<Vec<String>> {
+    let Some(value) = args.get(name) else {
+        return Ok(Vec::new());
+    };
+    value
+        .as_array()
+        .ok_or_else(|| anyhow!("{name} must be an array of strings"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!("{name} must be an array of strings"))
+        })
+        .collect()
 }
 
 fn filters_arg(args: &Value) -> Result<Vec<BaselineTableFilter>> {
@@ -1414,6 +1478,27 @@ fn level_schema() -> Value {
     })
 }
 
+fn what_if_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
+            "config": config_schema(),
+            "ignore_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Extra ignored path patterns to simulate."
+            },
+            "generated_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Extra generated path patterns to simulate."
+            }
+        }
+    })
+}
+
 fn baseline_schema(path_description: &str) -> Value {
     json!({
         "type": "object",
@@ -1536,6 +1621,7 @@ mod tests {
         assert!(names.contains(&"raysense_test_gaps"));
         assert!(names.contains(&"raysense_plugins"));
         assert!(names.contains(&"raysense_remediations"));
+        assert!(names.contains(&"raysense_what_if"));
         assert!(names.contains(&"raysense_trend"));
         assert!(names.contains(&"raysense_policy_presets"));
         assert!(names.contains(&"raysense_memory_summary"));

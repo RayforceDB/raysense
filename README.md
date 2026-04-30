@@ -103,6 +103,7 @@ raysense policy init <preset> [path] [--config <path>]
 raysense trend record [path] [--config <path>]
 raysense trend show [path] [--json] [--config <path>]
 raysense remediate [path] [--json] [--config <path>]
+raysense what-if [path] [--ignore <pattern>] [--generated <pattern>] [--json] [--config <path>]
 raysense baseline save <path> [--output <path>] [--config <path>]
 raysense baseline diff <path> [--baseline <path>] [--config <path>] [--json]
 raysense baseline tables [--baseline <path>] [--json]
@@ -117,12 +118,12 @@ automatically. `--config` overrides that path.
 `raysense mcp` runs a stdio MCP server for agents. It exposes tools to read and
 write config, run health, inspect scan facts, list dependency edges, read
 hotspots, read rule findings, read DSM module edges, inspect architecture,
-coupling, cycles, hottest files/functions, blast radius, module levels, and
-materialize memory table summaries. It can also save/diff baselines and query
-saved baseline tables with projection, filters, sorting, and pagination. Agent
-session tools can save an in-memory baseline, rescan, end the session, check
-rules, inspect evolution, inspect DSM data, inspect test gaps, and list
-configured language plugins.
+coupling, cycles, hottest files/functions, blast radius, module levels, run
+what-if config simulations, and materialize memory table summaries. It can also
+save/diff baselines and query saved baseline tables with projection, filters,
+sorting, and pagination. Agent session tools can save an in-memory baseline,
+rescan, end the session, check rules, inspect evolution, inspect DSM data,
+inspect test gaps, and list configured language plugins.
 
 Baselines are stored under `<path>/.raysense/baseline` by default. The manifest
 is JSON for fast agent diffs, and baseline tables are written under `tables/`
@@ -289,10 +290,10 @@ and formats:
 - Forbidden top-level module dependencies can be configured with TOML.
 - Config read/write, health runs, scan facts, edges, hotspots, rule findings,
   module edges, architecture, coupling, cycles, hottest files/functions, blast
-  radius, module levels, session start/end, rescans, rule checks, evolution,
-  DSM, test gaps, plugin listing, remediation suggestions, trend metrics,
-  policy presets, memory summaries, and saved baseline table queries are
-  exposed through the MCP interface.
+  radius, module levels, what-if simulations, session start/end, rescans, rule
+  checks, evolution, DSM, test gaps, plugin listing, remediation suggestions,
+  trend metrics, policy presets, memory summaries, and saved baseline table
+  queries are exposed through the MCP interface.
 - Baseline save/diff is available through the CLI and MCP, with Rayforce
   splayed-table storage for baseline tables.
 - MCP session baselines are persisted by default and can be compared across

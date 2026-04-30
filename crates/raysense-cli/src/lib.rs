@@ -136,6 +136,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    WhatIf {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long = "ignore")]
+        ignore_paths: Vec<String>,
+        #[arg(long = "generated")]
+        generated_paths: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     Baseline {
         #[command(subcommand)]
         command: BaselineCommand,
@@ -347,6 +359,19 @@ pub fn run() -> Result<()> {
         Command::Remediate { path, config, json } => {
             print_remediations(&path, config.as_deref(), json)?
         }
+        Command::WhatIf {
+            path,
+            config,
+            ignore_paths,
+            generated_paths,
+            json,
+        } => print_what_if(
+            &path,
+            config.as_deref(),
+            &ignore_paths,
+            &generated_paths,
+            json,
+        )?,
         Command::Baseline { command } => match command {
             BaselineCommand::Save {
                 path,
@@ -853,6 +878,66 @@ fn print_remediations(root: &Path, config_path: Option<&Path>, json: bool) -> Re
             println!("{} {} - {}", item.code, item.path, item.action);
             println!("  {}", item.command);
         }
+    }
+    Ok(())
+}
+
+fn print_what_if(
+    root: &Path,
+    config_path: Option<&Path>,
+    ignore_paths: &[String],
+    generated_paths: &[String],
+    json: bool,
+) -> Result<()> {
+    let config = config_for_root(root, config_path)?;
+    let before_report = scan_path_with_config(root, &config)?;
+    let before_health = compute_health_with_config(&before_report, &config);
+    let before = build_baseline(&before_report, &before_health);
+    let mut simulated_config = config.clone();
+    simulated_config
+        .scan
+        .ignored_paths
+        .extend(ignore_paths.iter().cloned());
+    simulated_config
+        .scan
+        .generated_paths
+        .extend(generated_paths.iter().cloned());
+    let after_report = scan_path_with_config(root, &simulated_config)?;
+    let after_health = compute_health_with_config(&after_report, &simulated_config);
+    let after = build_baseline(&after_report, &after_health);
+    let diff = diff_baselines(&before, &after);
+    let output = serde_json::json!({
+        "ignored_paths": ignore_paths,
+        "generated_paths": generated_paths,
+        "before": {
+            "score": before_health.score,
+            "quality_signal": before_health.quality_signal,
+            "files": before_report.snapshot.file_count,
+            "rules": before_health.rules.len()
+        },
+        "after": {
+            "score": after_health.score,
+            "quality_signal": after_health.quality_signal,
+            "files": after_report.snapshot.file_count,
+            "rules": after_health.rules.len()
+        },
+        "diff": diff.clone()
+    });
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "what_if score {} -> {} quality_signal {} -> {} files {} -> {} rules {} -> {}",
+            before_health.score,
+            after_health.score,
+            before_health.quality_signal,
+            after_health.quality_signal,
+            before_report.snapshot.file_count,
+            after_report.snapshot.file_count,
+            before_health.rules.len(),
+            after_health.rules.len()
+        );
+        print_baseline_diff(&diff);
     }
     Ok(())
 }
