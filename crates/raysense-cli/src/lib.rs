@@ -1891,12 +1891,13 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.metrics.dsm.module_count, health.metrics.dsm.module_edges
     );
     println!(
-        "root_causes modularity={:.3} acyclicity={:.3} depth={:.3} equality={:.3} redundancy={:.3}",
+        "root_causes modularity={:.3} acyclicity={:.3} depth={:.3} equality={:.3} redundancy={:.3} structural_uniformity={:.3}",
         health.root_causes.modularity,
         health.root_causes.acyclicity,
         health.root_causes.depth,
         health.root_causes.equality,
-        health.root_causes.redundancy
+        health.root_causes.redundancy,
+        health.root_causes.structural_uniformity
     );
     println!(
         "architecture depth={} max_blast_radius={} max_blast_radius_file={} max_non_foundation_blast_radius={} max_non_foundation_blast_radius_file={} attack_surface_files={} attack_surface_ratio={:.3} upward_violations={} upward_violation_ratio={:.3} average_distance_from_main_sequence={:.3}",

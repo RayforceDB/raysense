@@ -73,6 +73,7 @@ pub struct ScoreConfig {
     pub depth_weight: f64,
     pub equality_weight: f64,
     pub redundancy_weight: f64,
+    pub structural_uniformity_weight: f64,
 }
 
 impl Default for ScoreConfig {
@@ -83,6 +84,9 @@ impl Default for ScoreConfig {
             depth_weight: 1.0,
             equality_weight: 1.0,
             redundancy_weight: 1.0,
+            // Default 0.0 keeps existing scores byte-exact; raise to opt the
+            // structural-distribution dimension into quality_signal.
+            structural_uniformity_weight: 0.0,
         }
     }
 }
@@ -282,6 +286,7 @@ pub struct RootCauseScores {
     pub depth: f64,
     pub equality: f64,
     pub redundancy: f64,
+    pub structural_uniformity: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1253,12 +1258,22 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
 }
 
 fn root_causes(report: &ScanReport, metrics: &MetricsSummary) -> RootCauseScores {
+    // Combined structural-distribution health: average of file-size and
+    // function-complexity normalized entropy. Higher = more variety across
+    // log-buckets / complexity values, lower = monoculture or pathological
+    // concentration. Treated as 0..1 so it composes with the other dimensions
+    // when its weight is set.
+    let structural_uniformity = round3(
+        ((metrics.size.file_size_entropy + metrics.complexity.complexity_entropy) / 2.0)
+            .clamp(0.0, 1.0),
+    );
     RootCauseScores {
         modularity: (1.0 - metrics.coupling.cross_unstable_ratio).clamp(0.0, 1.0),
         acyclicity: 1.0 / (1.0 + report.graph.cycle_count as f64),
         depth: 1.0 / (1.0 + metrics.architecture.module_depth.saturating_sub(4) as f64),
         equality: (1.0 - metrics.complexity.complexity_gini).clamp(0.0, 1.0),
         redundancy: (1.0 - metrics.complexity.redundancy_ratio).clamp(0.0, 1.0),
+        structural_uniformity,
     }
 }
 
@@ -1269,6 +1284,10 @@ fn quality_signal(scores: &RootCauseScores, weights: &ScoreConfig) -> u32 {
         (scores.depth, weights.depth_weight),
         (scores.equality, weights.equality_weight),
         (scores.redundancy, weights.redundancy_weight),
+        (
+            scores.structural_uniformity,
+            weights.structural_uniformity_weight,
+        ),
     ];
     let weight_sum = values
         .iter()
@@ -3644,8 +3663,8 @@ mod tests {
     #[test]
     fn quality_signal_preserved_when_file_size_distribution_varies() {
         // Same file count, same large_files/long_functions, but very different
-        // size distributions. If structural entropy were folded into root_causes,
-        // the two reports would diverge in score / quality_signal. They must not.
+        // size distributions. With the default ScoreConfig (structural_uniformity_weight = 0),
+        // the two reports must produce byte-identical score / quality_signal.
         let uniform = report_with_file_lines(&[100, 100, 100, 100]);
         let spread = report_with_file_lines(&[1, 8, 64, 1024]);
 
@@ -3670,6 +3689,43 @@ mod tests {
         assert_eq!(
             h_uniform.root_causes.redundancy,
             h_spread.root_causes.redundancy
+        );
+    }
+
+    #[test]
+    fn structural_uniformity_averages_size_and_complexity_entropy() {
+        let report = report_with_file_lines(&[1, 1, 1024, 1024]);
+        let health = compute_health_with_config(&report, &RaysenseConfig::default());
+        // No functions in this synthetic report, so complexity_entropy is 0.
+        // file_size_entropy is 1.0 (two equally-populated log buckets).
+        assert_eq!(health.metrics.size.file_size_entropy, 1.0);
+        assert_eq!(health.metrics.complexity.complexity_entropy, 0.0);
+        assert_eq!(health.root_causes.structural_uniformity, 0.5);
+    }
+
+    #[test]
+    fn quality_signal_shifts_when_structural_uniformity_weight_set() {
+        // Two reports with different structural uniformity values. With the
+        // default weight (0.0) their quality_signal must match. With a non-zero
+        // weight the score must shift in the direction of the higher-uniformity
+        // report — that is the explicit opt-in behavior change.
+        let monoculture = report_with_file_lines(&[100, 100, 100, 100]);
+        let diverse = report_with_file_lines(&[1, 1, 1024, 1024]);
+
+        let mut config = RaysenseConfig::default();
+        let baseline_mono = compute_health_with_config(&monoculture, &config).quality_signal;
+        let baseline_div = compute_health_with_config(&diverse, &config).quality_signal;
+        assert_eq!(baseline_mono, baseline_div);
+
+        config.score.structural_uniformity_weight = 1.0;
+        let weighted_mono = compute_health_with_config(&monoculture, &config).quality_signal;
+        let weighted_div = compute_health_with_config(&diverse, &config).quality_signal;
+
+        assert_ne!(weighted_mono, baseline_mono);
+        assert_ne!(weighted_div, baseline_div);
+        assert!(
+            weighted_div > weighted_mono,
+            "diverse distribution should outscore monoculture once weighted in"
         );
     }
 

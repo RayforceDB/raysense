@@ -281,6 +281,7 @@ acyclicity_weight = 1.0
 depth_weight = 1.0
 equality_weight = 1.0
 redundancy_weight = 1.0
+structural_uniformity_weight = 0.0
 ```
 
 ## Status
