@@ -532,10 +532,10 @@ fn metrics(
         coupling: coupling_metrics(report, hotspots, config),
         calls: call_metrics(report),
         architecture: architecture_metrics(report, config),
-        complexity: complexity_metrics(report),
+        complexity: complexity_metrics(report, config),
         size: size_metrics(report),
         entry_points: entry_point_metrics(report),
-        test_gap: test_gap_metrics(report),
+        test_gap: test_gap_metrics(report, config),
         dsm: dsm_metrics(report, config),
         evolution: evolution_metrics(report),
         trend: trend_metrics(report),
@@ -666,7 +666,7 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
     }
 }
 
-fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
+fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> ComplexityMetrics {
     let mut incoming_by_function: HashMap<usize, usize> = HashMap::new();
     let sources = source_cache(report);
     for edge in &report.call_edges {
@@ -706,7 +706,7 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
             .entry(function.name.clone())
             .or_default()
             .push(metric.clone());
-        let public_api_like = is_public_api_like(file, function, &body);
+        let public_api_like = is_public_api_like(file, function, &body, config);
         if public_api_like {
             public_api_functions += 1;
         }
@@ -1231,10 +1231,12 @@ fn is_public_api_like(
     file: &crate::facts::FileFact,
     function: &crate::facts::FunctionFact,
     body: &str,
+    config: &RaysenseConfig,
 ) -> bool {
     let name = function.name.as_str();
-    let path = file.path.to_string_lossy();
-    is_test_path(&path)
+    let path = normalize_rule_path(&file.path);
+    is_test_path_configured(&path, config)
+        || matches_configured_path(&path, &config.scan.public_api_paths)
         || matches!(name, "main" | "init" | "start" | "run" | "new")
         || name.starts_with("test_")
         || name.ends_with("_test")
@@ -1311,11 +1313,11 @@ fn entry_point_metrics(report: &ScanReport) -> EntryPointMetrics {
     metrics
 }
 
-fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
+fn test_gap_metrics(report: &ScanReport, config: &RaysenseConfig) -> TestGapMetrics {
     let test_paths: HashSet<String> = report
         .files
         .iter()
-        .filter(|file| is_test_path(&file.path.to_string_lossy()))
+        .filter(|file| is_test_path_configured(&normalize_rule_path(&file.path), config))
         .map(|file| file.path.to_string_lossy().replace('\\', "/"))
         .collect();
 
@@ -1324,8 +1326,8 @@ fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
     let mut candidates = Vec::new();
 
     for file in &report.files {
-        let path = file.path.to_string_lossy();
-        if is_test_path(&path) {
+        let path = normalize_rule_path(&file.path);
+        if is_test_path_configured(&path, config) {
             continue;
         }
         if !report
@@ -1337,7 +1339,7 @@ fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
         }
         production_files += 1;
         let framework = test_framework(file);
-        let expected_tests = expected_test_paths(&path, &framework);
+        let expected_tests = expected_test_paths(&path, &framework, config);
         let matched_tests = expected_tests
             .iter()
             .filter(|path| test_paths.contains(*path))
@@ -1347,7 +1349,7 @@ fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
             files_without_nearby_tests += 1;
             candidates.push(TestGapCandidate {
                 file_id: file.file_id,
-                path: path.into_owned(),
+                path,
                 framework,
                 expected_tests,
                 matched_tests,
@@ -1362,14 +1364,14 @@ fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
         test_files: report
             .files
             .iter()
-            .filter(|file| is_test_path(&file.path.to_string_lossy()))
+            .filter(|file| is_test_path_configured(&normalize_rule_path(&file.path), config))
             .count(),
         files_without_nearby_tests,
         candidates,
     }
 }
 
-fn expected_test_paths(path: &str, framework: &str) -> Vec<String> {
+fn expected_test_paths(path: &str, framework: &str, config: &RaysenseConfig) -> Vec<String> {
     let normalized = path.replace('\\', "/");
     let path = Path::new(&normalized);
     let stem = path
@@ -1383,6 +1385,10 @@ fn expected_test_paths(path: &str, framework: &str) -> Vec<String> {
     if !stem.is_empty() && !ext.is_empty() {
         out.push(format!("tests/{stem}_test.{ext}"));
         out.push(format!("tests/test_{stem}.{ext}"));
+        for root in configured_test_roots(config) {
+            out.push(format!("{root}/{stem}_test.{ext}"));
+            out.push(format!("{root}/test_{stem}.{ext}"));
+        }
         out.push(
             format!("{parent}/{stem}_test.{ext}")
                 .trim_start_matches('/')
@@ -1396,6 +1402,9 @@ fn expected_test_paths(path: &str, framework: &str) -> Vec<String> {
     }
     if normalized.starts_with("src/") {
         out.push(normalized.replacen("src/", "tests/", 1));
+        for root in configured_test_roots(config) {
+            out.push(normalized.replacen("src/", &format!("{root}/"), 1));
+        }
     }
     match framework {
         "rust" => {
@@ -2056,6 +2065,35 @@ fn round3(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0
 }
 
+fn is_test_path_configured(path: &str, config: &RaysenseConfig) -> bool {
+    is_test_path(path) || matches_configured_path(path, &config.scan.test_roots)
+}
+
+fn matches_configured_path(path: &str, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .map(|pattern| pattern.trim())
+        .filter(|pattern| !pattern.is_empty())
+        .any(|pattern| path_matches_rule(path, pattern))
+}
+
+fn configured_test_roots(config: &RaysenseConfig) -> Vec<String> {
+    let mut roots = if config.scan.test_roots.is_empty() {
+        vec!["tests".to_string()]
+    } else {
+        config
+            .scan
+            .test_roots
+            .iter()
+            .map(|root| root.trim().trim_matches('/').to_string())
+            .filter(|root| !root.is_empty())
+            .collect()
+    };
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 fn is_test_path(path: &str) -> bool {
     path.starts_with("test/")
         || path.starts_with("tests/")
@@ -2276,6 +2314,60 @@ fn second(input: i32) -> i32 {
             .expected_tests
             .iter()
             .any(|path| path == "tests/lib_test.rs"));
+    }
+
+    #[test]
+    fn applies_configured_public_api_paths_and_test_roots() {
+        let root = temp_health_root("configured_paths");
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::create_dir_all(root.join("spec")).unwrap();
+        fs::write(
+            root.join("app/service.rs"),
+            r#"
+fn exported_surface() -> i32 {
+    1
+}
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("spec/service_test.rs"), "fn service_test() {}\n").unwrap();
+
+        let files = vec![file(0, "app/service.rs"), file(1, "spec/service_test.rs")];
+        let functions = vec![FunctionFact {
+            function_id: 0,
+            file_id: 0,
+            name: "exported_surface".to_string(),
+            start_line: 2,
+            end_line: 4,
+        }];
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: root.clone(),
+                file_count: files.len(),
+                function_count: functions.len(),
+                import_count: 0,
+                call_count: 0,
+            },
+            files,
+            functions,
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph: compute_graph_metrics(&[], &[]),
+        };
+        let mut config = RaysenseConfig::default();
+        config.scan.public_api_paths = vec!["app/*".to_string()];
+        config.scan.test_roots = vec!["spec".to_string()];
+
+        let health = compute_health_with_config(&report, &config);
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(health.metrics.complexity.public_api_functions, 1);
+        assert!(health.metrics.complexity.dead_functions.is_empty());
+        assert_eq!(health.metrics.test_gap.test_files, 1);
+        assert_eq!(health.metrics.test_gap.files_without_nearby_tests, 0);
     }
 
     #[test]
