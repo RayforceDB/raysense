@@ -1,15 +1,77 @@
-use crate::facts::{ImportResolution, ScanReport};
+use crate::facts::{EntryPointKind, ImportResolution, ScanReport};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthSummary {
     pub score: u8,
     pub coverage_score: u8,
     pub structural_score: u8,
+    pub metrics: MetricsSummary,
     pub resolution: ResolutionBreakdown,
     pub hotspots: Vec<FileHotspot>,
     pub rules: Vec<RuleFinding>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MetricsSummary {
+    pub coupling: CouplingMetrics,
+    pub size: SizeMetrics,
+    pub entry_points: EntryPointMetrics,
+    pub test_gap: TestGapMetrics,
+    pub dsm: DsmMetrics,
+    pub evolution: EvolutionMetrics,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CouplingMetrics {
+    pub local_edges: usize,
+    pub cross_module_edges: usize,
+    pub cross_module_ratio: f64,
+    pub max_fan_in: usize,
+    pub max_fan_out: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SizeMetrics {
+    pub max_file_lines: usize,
+    pub max_function_lines: usize,
+    pub large_files: usize,
+    pub long_functions: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntryPointMetrics {
+    pub binaries: usize,
+    pub examples: usize,
+    pub tests: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TestGapMetrics {
+    pub production_files: usize,
+    pub test_files: usize,
+    pub files_without_nearby_tests: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DsmMetrics {
+    pub module_count: usize,
+    pub module_edges: usize,
+    pub top_module_edges: Vec<ModuleEdgeMetric>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleEdgeMetric {
+    pub from_module: String,
+    pub to_module: String,
+    pub edges: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EvolutionMetrics {
+    pub available: bool,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -47,12 +109,14 @@ pub enum RuleSeverity {
 pub fn compute_health(report: &ScanReport) -> HealthSummary {
     let resolution = resolution_breakdown(report);
     let hotspots = hotspots(report);
-    let rules = rules(report, &hotspots);
+    let metrics = metrics(report, &hotspots);
+    let rules = rules(report, &hotspots, &metrics);
 
     HealthSummary {
         score: health_score(report, &resolution, &rules),
         coverage_score: coverage_score(report, &resolution),
         structural_score: structural_score(report, &rules),
+        metrics,
         resolution,
         hotspots,
         rules,
@@ -102,7 +166,7 @@ fn rule_penalty(rules: &[RuleFinding]) -> i32 {
     rules
         .iter()
         .map(|rule| match rule.severity {
-            RuleSeverity::Info => 1,
+            RuleSeverity::Info => 0,
             RuleSeverity::Warning => 4,
             RuleSeverity::Error => 10,
         })
@@ -146,7 +210,184 @@ fn hotspots(report: &ScanReport) -> Vec<FileHotspot> {
     hotspots
 }
 
-fn rules(report: &ScanReport, hotspots: &[FileHotspot]) -> Vec<RuleFinding> {
+fn metrics(report: &ScanReport, hotspots: &[FileHotspot]) -> MetricsSummary {
+    MetricsSummary {
+        coupling: coupling_metrics(report, hotspots),
+        size: size_metrics(report),
+        entry_points: entry_point_metrics(report),
+        test_gap: test_gap_metrics(report),
+        dsm: dsm_metrics(report),
+        evolution: EvolutionMetrics {
+            available: false,
+            reason: "git history ingestion is not implemented yet".to_string(),
+        },
+    }
+}
+
+fn coupling_metrics(report: &ScanReport, hotspots: &[FileHotspot]) -> CouplingMetrics {
+    let local_edges = report
+        .imports
+        .iter()
+        .filter(|import| import.resolution == ImportResolution::Local)
+        .count();
+    let cross_module_edges = report
+        .imports
+        .iter()
+        .filter(|import| {
+            let Some(to_file_id) = import.resolved_file else {
+                return false;
+            };
+            let Some(from_file) = report.files.get(import.from_file) else {
+                return false;
+            };
+            let Some(to_file) = report.files.get(to_file_id) else {
+                return false;
+            };
+            top_module(&from_file.module) != top_module(&to_file.module)
+        })
+        .count();
+
+    CouplingMetrics {
+        local_edges,
+        cross_module_edges,
+        cross_module_ratio: ratio(cross_module_edges, local_edges),
+        max_fan_in: hotspots
+            .iter()
+            .map(|hotspot| hotspot.fan_in)
+            .max()
+            .unwrap_or(0),
+        max_fan_out: hotspots
+            .iter()
+            .map(|hotspot| hotspot.fan_out)
+            .max()
+            .unwrap_or(0),
+    }
+}
+
+fn size_metrics(report: &ScanReport) -> SizeMetrics {
+    let max_file_lines = report
+        .files
+        .iter()
+        .map(|file| file.lines)
+        .max()
+        .unwrap_or(0);
+    let max_function_lines = report
+        .functions
+        .iter()
+        .map(|function| function.end_line.saturating_sub(function.start_line) + 1)
+        .max()
+        .unwrap_or(0);
+
+    SizeMetrics {
+        max_file_lines,
+        max_function_lines,
+        large_files: report.files.iter().filter(|file| file.lines >= 500).count(),
+        long_functions: report
+            .functions
+            .iter()
+            .filter(|function| function.end_line.saturating_sub(function.start_line) + 1 >= 80)
+            .count(),
+    }
+}
+
+fn entry_point_metrics(report: &ScanReport) -> EntryPointMetrics {
+    let mut metrics = EntryPointMetrics::default();
+    for entry in &report.entry_points {
+        match entry.kind {
+            EntryPointKind::Binary => metrics.binaries += 1,
+            EntryPointKind::Example => metrics.examples += 1,
+            EntryPointKind::Test => metrics.tests += 1,
+        }
+    }
+    metrics
+}
+
+fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
+    let test_modules: HashSet<String> = report
+        .files
+        .iter()
+        .filter(|file| is_test_path(&file.path.to_string_lossy()))
+        .map(|file| normalized_test_subject(&file.module))
+        .collect();
+
+    let mut production_files = 0;
+    let mut files_without_nearby_tests = 0;
+
+    for file in &report.files {
+        let path = file.path.to_string_lossy();
+        if is_test_path(&path) {
+            continue;
+        }
+        production_files += 1;
+        if !test_modules.contains(&normalized_test_subject(&file.module)) {
+            files_without_nearby_tests += 1;
+        }
+    }
+
+    TestGapMetrics {
+        production_files,
+        test_files: report
+            .files
+            .iter()
+            .filter(|file| is_test_path(&file.path.to_string_lossy()))
+            .count(),
+        files_without_nearby_tests,
+    }
+}
+
+fn dsm_metrics(report: &ScanReport) -> DsmMetrics {
+    let mut edges: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut modules = HashSet::new();
+
+    for file in &report.files {
+        modules.insert(top_module(&file.module).to_string());
+    }
+
+    for import in &report.imports {
+        let Some(to_file_id) = import.resolved_file else {
+            continue;
+        };
+        let Some(from_file) = report.files.get(import.from_file) else {
+            continue;
+        };
+        let Some(to_file) = report.files.get(to_file_id) else {
+            continue;
+        };
+        let from_module = top_module(&from_file.module).to_string();
+        let to_module = top_module(&to_file.module).to_string();
+        if from_module != to_module {
+            *edges.entry((from_module, to_module)).or_default() += 1;
+        }
+    }
+
+    let mut top_module_edges: Vec<ModuleEdgeMetric> = edges
+        .iter()
+        .map(|((from_module, to_module), edges)| ModuleEdgeMetric {
+            from_module: from_module.clone(),
+            to_module: to_module.clone(),
+            edges: *edges,
+        })
+        .collect();
+    top_module_edges.sort_by(|a, b| {
+        b.edges
+            .cmp(&a.edges)
+            .then_with(|| a.from_module.cmp(&b.from_module))
+            .then_with(|| a.to_module.cmp(&b.to_module))
+    });
+    top_module_edges.truncate(10);
+
+    DsmMetrics {
+        module_count: modules.len(),
+        module_edges: edges.values().sum(),
+        top_module_edges,
+    }
+}
+
+fn rules(
+    report: &ScanReport,
+    hotspots: &[FileHotspot],
+    metrics: &MetricsSummary,
+) -> Vec<RuleFinding> {
     let mut findings = Vec::new();
 
     for hotspot in hotspots {
@@ -183,7 +424,65 @@ fn rules(report: &ScanReport, hotspots: &[FileHotspot]) -> Vec<RuleFinding> {
         }
     }
 
+    let mut large_files: Vec<_> = report
+        .files
+        .iter()
+        .filter(|file| file.lines >= 500)
+        .collect();
+    large_files.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.path.cmp(&b.path)));
+
+    for file in large_files.iter().take(20) {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Info,
+            code: "large_file".to_string(),
+            path: file.path.to_string_lossy().into_owned(),
+            message: format!("{} lines", file.lines),
+        });
+    }
+    if large_files.len() > 20 {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Info,
+            code: "large_file_summary".to_string(),
+            path: report.snapshot.root.to_string_lossy().into_owned(),
+            message: format!("{} additional large files", large_files.len() - 20),
+        });
+    }
+
+    if metrics.test_gap.production_files > 0 && metrics.test_gap.test_files == 0 {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Info,
+            code: "no_tests_detected".to_string(),
+            path: report.snapshot.root.to_string_lossy().into_owned(),
+            message: format!(
+                "{} production files and no test files detected",
+                metrics.test_gap.production_files
+            ),
+        });
+    }
+
     findings
+}
+
+fn top_module(module: &str) -> &str {
+    module.split('.').next().unwrap_or(module)
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        return 0.0;
+    }
+    (numerator as f64 / denominator as f64 * 1000.0).round() / 1000.0
+}
+
+fn normalized_test_subject(module: &str) -> String {
+    module
+        .replace(".tests.", ".")
+        .replace(".test.", ".")
+        .replace("_tests", "")
+        .replace("_test", "")
+        .trim_start_matches("tests.")
+        .trim_start_matches("test.")
+        .to_string()
 }
 
 fn is_test_path(path: &str) -> bool {
@@ -198,7 +497,9 @@ fn is_test_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::{FileFact, ImportFact, Language, SnapshotFact};
+    use crate::facts::{
+        EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact, Language, SnapshotFact,
+    };
     use crate::graph::compute_graph_metrics;
     use std::path::PathBuf;
 
@@ -262,6 +563,48 @@ mod tests {
         assert_eq!(health.rules.len(), 1);
         assert_eq!(health.rules[0].code, "production_depends_on_test");
         assert!(health.structural_score < 100);
+    }
+
+    #[test]
+    fn computes_metric_families() {
+        let mut files = vec![file(0, "src/core/a.rs"), file(1, "src/io/b.rs")];
+        files[0].lines = 600;
+        let imports = vec![import(0, 0, Some(1), ImportResolution::Local)];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 1,
+                import_count: imports.len(),
+            },
+            files,
+            functions: vec![FunctionFact {
+                function_id: 0,
+                file_id: 0,
+                name: "large".to_string(),
+                start_line: 10,
+                end_line: 95,
+            }],
+            entry_points: vec![EntryPointFact {
+                entry_id: 0,
+                file_id: 0,
+                kind: EntryPointKind::Binary,
+                symbol: "main".to_string(),
+            }],
+            imports,
+            graph,
+        };
+
+        let health = compute_health(&report);
+
+        assert_eq!(health.metrics.coupling.cross_module_edges, 1);
+        assert_eq!(health.metrics.size.large_files, 1);
+        assert_eq!(health.metrics.size.long_functions, 1);
+        assert_eq!(health.metrics.entry_points.binaries, 1);
+        assert_eq!(health.metrics.dsm.module_edges, 1);
+        assert!(!health.metrics.evolution.available);
     }
 
     fn file(file_id: usize, path: &str) -> FileFact {

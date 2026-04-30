@@ -223,6 +223,7 @@ fn path_symbol(path: &Path) -> String {
 }
 
 fn extract_token_functions(file_id: usize, content: &str, token: &str) -> Vec<FunctionFact> {
+    let lines: Vec<&str> = content.lines().collect();
     content
         .lines()
         .enumerate()
@@ -237,13 +238,14 @@ fn extract_token_functions(file_id: usize, content: &str, token: &str) -> Vec<Fu
                 file_id,
                 name: name.to_string(),
                 start_line: idx + 1,
-                end_line: idx + 1,
+                end_line: block_end_line(&lines, idx),
             })
         })
         .collect()
 }
 
 fn extract_prefixed_functions(file_id: usize, content: &str, prefix: &str) -> Vec<FunctionFact> {
+    let lines: Vec<&str> = content.lines().collect();
     content
         .lines()
         .enumerate()
@@ -259,14 +261,15 @@ fn extract_prefixed_functions(file_id: usize, content: &str, prefix: &str) -> Ve
                 file_id,
                 name: name.to_string(),
                 start_line: idx + 1,
-                end_line: idx + 1,
+                end_line: indented_block_end_line(&lines, idx),
             })
         })
         .collect()
 }
 
 fn extract_typescript_functions(file_id: usize, content: &str) -> Vec<FunctionFact> {
-    let mut functions = extract_prefixed_functions(file_id, content, "function ");
+    let mut functions = extract_token_functions(file_id, content, "function ");
+    let lines: Vec<&str> = content.lines().collect();
     for (idx, line) in content.lines().enumerate() {
         let trimmed = line.trim_start();
         if let Some((name, _)) = trimmed.split_once("=>") {
@@ -277,7 +280,7 @@ fn extract_typescript_functions(file_id: usize, content: &str) -> Vec<FunctionFa
                     file_id,
                     name: name.to_string(),
                     start_line: idx + 1,
-                    end_line: idx + 1,
+                    end_line: block_end_line(&lines, idx),
                 });
             }
         }
@@ -286,6 +289,7 @@ fn extract_typescript_functions(file_id: usize, content: &str) -> Vec<FunctionFa
 }
 
 fn extract_c_like_functions(file_id: usize, content: &str) -> Vec<FunctionFact> {
+    let lines: Vec<&str> = content.lines().collect();
     content
         .lines()
         .enumerate()
@@ -304,10 +308,57 @@ fn extract_c_like_functions(file_id: usize, content: &str) -> Vec<FunctionFact> 
                 file_id,
                 name: name.to_string(),
                 start_line: idx + 1,
-                end_line: idx + 1,
+                end_line: block_end_line(&lines, idx),
             })
         })
         .collect()
+}
+
+fn block_end_line(lines: &[&str], start_idx: usize) -> usize {
+    let mut depth = 0isize;
+    let mut saw_open = false;
+
+    for (idx, line) in lines.iter().enumerate().skip(start_idx) {
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    saw_open = true;
+                }
+                '}' if saw_open => {
+                    depth -= 1;
+                    if depth <= 0 {
+                        return idx + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    start_idx + 1
+}
+
+fn indented_block_end_line(lines: &[&str], start_idx: usize) -> usize {
+    let base_indent = leading_spaces(lines[start_idx]);
+    let mut end_idx = start_idx;
+
+    for (idx, line) in lines.iter().enumerate().skip(start_idx + 1) {
+        if line.trim().is_empty() {
+            end_idx = idx;
+            continue;
+        }
+        if leading_spaces(line) <= base_indent {
+            break;
+        }
+        end_idx = idx;
+    }
+
+    end_idx + 1
+}
+
+fn leading_spaces(line: &str) -> usize {
+    line.chars().take_while(|ch| ch.is_whitespace()).count()
 }
 
 fn extract_imports(file_id: usize, language: Language, content: &str) -> Vec<ImportFact> {
@@ -332,6 +383,9 @@ fn extract_rust_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
             ));
         }
         if let Some(rest) = trimmed.strip_prefix("mod ") {
+            if rest.contains('{') {
+                continue;
+            }
             if let Some(target) = rest
                 .trim_end_matches(';')
                 .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
@@ -459,6 +513,11 @@ fn classify_import(from_file: &FileFact, import: &ImportFact) -> ImportResolutio
 
     match from_file.language {
         Language::C | Language::Cpp if import.kind == "include_system" => ImportResolution::System,
+        Language::Rust
+            if import.target.starts_with("super::") || import.target.starts_with("self::") =>
+        {
+            ImportResolution::Local
+        }
         Language::Rust if rust_target_is_local(&import.target) => ImportResolution::Unresolved,
         Language::TypeScript if import.target.starts_with('.') => ImportResolution::Unresolved,
         Language::Python if import.target.starts_with('.') => ImportResolution::Unresolved,
@@ -741,6 +800,22 @@ def run():
     }
 
     #[test]
+    fn captures_function_extents() {
+        let content = r#"
+int add(int a, int b) {
+    int sum = a + b;
+    return sum;
+}
+"#;
+
+        let functions = extract_functions(0, Language::C, content);
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].start_line, 2);
+        assert_eq!(functions[0].end_line, 5);
+    }
+
+    #[test]
     fn resolves_imports_by_stem() {
         let files = vec![
             file(0, "src/main.rs", Language::Rust),
@@ -834,7 +909,11 @@ def run():
 
     #[test]
     fn extracts_rust_mod_declarations() {
-        let imports = extract_imports(0, Language::Rust, "mod scanner;\nuse crate::facts;\n");
+        let imports = extract_imports(
+            0,
+            Language::Rust,
+            "mod scanner;\nmod tests {\n}\nuse crate::facts;\n",
+        );
 
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].target, "scanner");

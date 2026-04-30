@@ -106,7 +106,13 @@ fn print_summary(report: &raysense_core::ScanReport) {
     println!("structural_score {}", health.structural_score);
     println!("files {}", report.snapshot.file_count);
     println!("functions {}", report.snapshot.function_count);
-    println!("entry_points {}", report.entry_points.len());
+    println!(
+        "entry_points total={} binaries={} examples={} tests={}",
+        report.entry_points.len(),
+        health.metrics.entry_points.binaries,
+        health.metrics.entry_points.examples,
+        health.metrics.entry_points.tests
+    );
     println!("imports {}", report.snapshot.import_count);
     println!("local_imports {}", health.resolution.local);
     println!("external_imports {}", health.resolution.external);
@@ -127,7 +133,13 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         "facts files={} functions={} imports={}",
         report.snapshot.file_count, report.snapshot.function_count, report.snapshot.import_count
     );
-    println!("entry_points {}", report.entry_points.len());
+    println!(
+        "entry_points total={} binaries={} examples={} tests={}",
+        report.entry_points.len(),
+        health.metrics.entry_points.binaries,
+        health.metrics.entry_points.examples,
+        health.metrics.entry_points.tests
+    );
     println!(
         "imports local={} external={} system={} unresolved={}",
         health.resolution.local,
@@ -142,6 +154,43 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         report.graph.max_fan_in,
         report.graph.max_fan_out
     );
+    println!(
+        "coupling local_edges={} cross_module_edges={} cross_module_ratio={:.3}",
+        health.metrics.coupling.local_edges,
+        health.metrics.coupling.cross_module_edges,
+        health.metrics.coupling.cross_module_ratio
+    );
+    println!(
+        "size max_file_lines={} max_function_lines={} large_files={} long_functions={}",
+        health.metrics.size.max_file_lines,
+        health.metrics.size.max_function_lines,
+        health.metrics.size.large_files,
+        health.metrics.size.long_functions
+    );
+    println!(
+        "test_gap production_files={} test_files={} files_without_nearby_tests={}",
+        health.metrics.test_gap.production_files,
+        health.metrics.test_gap.test_files,
+        health.metrics.test_gap.files_without_nearby_tests
+    );
+    println!(
+        "dsm modules={} module_edges={}",
+        health.metrics.dsm.module_count, health.metrics.dsm.module_edges
+    );
+    println!(
+        "evolution available={} reason={}",
+        health.metrics.evolution.available, health.metrics.evolution.reason
+    );
+
+    if !health.metrics.dsm.top_module_edges.is_empty() {
+        println!("module_edges");
+        for edge in &health.metrics.dsm.top_module_edges {
+            println!(
+                "  {} -> {} edges={}",
+                edge.from_module, edge.to_module, edge.edges
+            );
+        }
+    }
 
     if !health.hotspots.is_empty() {
         println!("hotspots");
