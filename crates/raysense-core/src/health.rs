@@ -95,6 +95,7 @@ pub struct LanguagePluginConfig {
     pub grammar_path: Option<String>,
     pub grammar_symbol: Option<String>,
     pub extensions: Vec<String>,
+    pub file_names: Vec<String>,
     pub function_prefixes: Vec<String>,
     pub import_prefixes: Vec<String>,
     pub call_suffixes: Vec<String>,
@@ -114,6 +115,7 @@ impl Default for LanguagePluginConfig {
             grammar_path: None,
             grammar_symbol: None,
             extensions: Vec::new(),
+            file_names: Vec::new(),
             function_prefixes: vec![
                 "function ".to_string(),
                 "def ".to_string(),

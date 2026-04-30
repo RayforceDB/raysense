@@ -173,6 +173,8 @@ enum PluginCommand {
     Add {
         name: String,
         extensions: Vec<String>,
+        #[arg(long = "file-name")]
+        file_names: Vec<String>,
         #[arg(long, default_value = ".")]
         path: PathBuf,
         #[arg(long)]
@@ -352,9 +354,10 @@ pub fn run() -> Result<()> {
             PluginCommand::Add {
                 name,
                 extensions,
+                file_names,
                 path,
                 config,
-            } => add_plugin(&path, config.as_deref(), &name, extensions)?,
+            } => add_plugin(&path, config.as_deref(), &name, extensions, file_names)?,
             PluginCommand::AddStandard { path, config } => {
                 add_standard_plugins(&path, config.as_deref())?
             }
@@ -363,7 +366,7 @@ pub fn run() -> Result<()> {
                 extension,
                 path,
                 config,
-            } => add_plugin(&path, config.as_deref(), &name, vec![extension])?,
+            } => add_plugin(&path, config.as_deref(), &name, vec![extension], Vec::new())?,
         },
         Command::Policy { command } => match command {
             PolicyCommand::List => list_policies(),
@@ -978,7 +981,12 @@ fn list_plugins(root: &Path, config_path: Option<&Path>) -> Result<()> {
         return Ok(());
     }
     for plugin in config.scan.plugins {
-        println!("{}\t{}", plugin.name, plugin.extensions.join(","));
+        println!(
+            "{}\texts={}\tfiles={}",
+            plugin.name,
+            plugin.extensions.join(","),
+            plugin.file_names.join(",")
+        );
     }
     Ok(())
 }
@@ -988,7 +996,11 @@ fn add_plugin(
     config_path: Option<&Path>,
     name: &str,
     extensions: Vec<String>,
+    file_names: Vec<String>,
 ) -> Result<()> {
+    if extensions.is_empty() && file_names.is_empty() {
+        return Err(anyhow!("extensions or file names must not be empty"));
+    }
     let path = config_path
         .map(Path::to_path_buf)
         .unwrap_or_else(|| root.join(".raysense.toml"));
@@ -1005,6 +1017,7 @@ fn add_plugin(
         .push(raysense_core::LanguagePluginConfig {
             name: name.to_string(),
             extensions,
+            file_names,
             ..raysense_core::LanguagePluginConfig::default()
         });
     let toml = toml::to_string_pretty(&config).context("failed to encode config")?;

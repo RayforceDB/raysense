@@ -96,7 +96,7 @@ raysense gate [path] [--save] [--baseline <path>] [--json] [--config <path>]
 raysense watch [path] [--interval <seconds>] [--config <path>]
 raysense visualize [path] [--watch] [--interval <seconds>] [--output <path>] [--config <path>]
 raysense plugin list [path] [--config <path>]
-raysense plugin add <name> <extensions...> [--path <path>] [--config <path>]
+raysense plugin add <name> <extensions...> [--file-name <name>] [--path <path>] [--config <path>]
 raysense plugin add-standard [--path <path>] [--config <path>]
 raysense plugin init <name> <extension> [--path <path>] [--config <path>]
 raysense policy list
@@ -215,6 +215,7 @@ grammar = "rust"
 grammar_path = "grammars/foo.so"
 grammar_symbol = "tree_sitter_foo"
 extensions = ["foo"]
+file_names = ["Foofile"]
 function_prefixes = ["function "]
 import_prefixes = ["load "]
 call_suffixes = ["("]

@@ -264,7 +264,9 @@ fn load_project_plugins(root: &Path, config: &RaysenseConfig) -> Result<Raysense
                     Some(entry.path().join(path).to_string_lossy().replace('\\', "/"));
             }
         }
-        if plugin.name.trim().is_empty() || plugin.extensions.is_empty() {
+        if plugin.name.trim().is_empty()
+            || (plugin.extensions.is_empty() && plugin.file_names.is_empty())
+        {
             continue;
         }
         config
@@ -362,14 +364,13 @@ fn is_enabled_language_name(language: &str, config: &RaysenseConfig) -> bool {
 }
 
 fn matching_plugin(path: &Path, config: &RaysenseConfig) -> Option<LanguagePluginConfig> {
-    let ext = path.extension().and_then(|ext| ext.to_str())?;
     config
         .scan
         .plugins
         .iter()
-        .find(|plugin| plugin_matches_extension(plugin, ext))
+        .find(|plugin| plugin_matches_path(plugin, path))
         .cloned()
-        .or_else(|| builtin_language_plugin(ext))
+        .or_else(|| builtin_language_plugin(path))
 }
 
 fn plugin_by_language_name(name: &str, config: &RaysenseConfig) -> Option<LanguagePluginConfig> {
@@ -394,13 +395,30 @@ fn plugin_matches_extension(plugin: &LanguagePluginConfig, ext: &str) -> bool {
             .any(|candidate| candidate.trim_start_matches('.').eq_ignore_ascii_case(ext))
 }
 
-fn builtin_language_plugin(ext: &str) -> Option<LanguagePluginConfig> {
-    standard_language_plugins().into_iter().find(|plugin| {
-        plugin
-            .extensions
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(ext))
-    })
+fn plugin_matches_path(plugin: &LanguagePluginConfig, path: &Path) -> bool {
+    if plugin.name.trim().is_empty() {
+        return false;
+    }
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| plugin_matches_extension(plugin, ext))
+    {
+        return true;
+    }
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    plugin
+        .file_names
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(file_name))
+}
+
+fn builtin_language_plugin(path: &Path) -> Option<LanguagePluginConfig> {
+    standard_language_plugins()
+        .into_iter()
+        .find(|plugin| plugin_matches_path(plugin, path))
 }
 
 pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
@@ -586,6 +604,12 @@ pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
 }
 
 fn apply_builtin_profile_defaults(plugin: &mut LanguagePluginConfig) {
+    plugin.file_names = match plugin.name.as_str() {
+        "dockerfile" => vec!["Dockerfile".to_string(), "Containerfile".to_string()],
+        "make" => vec!["Makefile".to_string(), "GNUmakefile".to_string()],
+        "cmake" => vec!["CMakeLists.txt".to_string()],
+        _ => Vec::new(),
+    };
     plugin.package_index_files = match plugin.name.as_str() {
         "python" => vec!["__init__.py".to_string()],
         "typescript" | "javascript" | "vue" | "svelte" => {
@@ -2614,6 +2638,24 @@ call_suffixes = ["("]
         assert_eq!(report.files[0].language_name, "go");
         assert_eq!(report.functions[0].name, "run");
         assert_eq!(report.imports[0].target, "fmt");
+    }
+
+    #[test]
+    fn scans_builtin_language_catalog_file_names() {
+        let root = temp_scan_root("builtin_catalog_files");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Dockerfile"),
+            "FROM alpine\nCOPY . /app\nRUN echo ok\n",
+        )
+        .unwrap();
+
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(report.files[0].language_name, "dockerfile");
+        assert_eq!(report.imports[0].target, ".");
     }
 
     #[test]

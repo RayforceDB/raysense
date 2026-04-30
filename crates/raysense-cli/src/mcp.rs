@@ -901,8 +901,9 @@ fn plugin_add_tool(args: &Value) -> Result<Value> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing plugin name"))?;
     let extensions = string_array_arg(args, "extensions")?;
-    if extensions.is_empty() {
-        return Err(anyhow!("extensions must not be empty"));
+    let file_names = string_array_arg(args, "file_names")?;
+    if extensions.is_empty() && file_names.is_empty() {
+        return Err(anyhow!("extensions or file_names must not be empty"));
     }
     let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
     let mut config = load_or_default_config(&path)?;
@@ -913,6 +914,7 @@ fn plugin_add_tool(args: &Value) -> Result<Value> {
         .push(raysense_core::LanguagePluginConfig {
             name: name.to_string(),
             extensions,
+            file_names,
             ..raysense_core::LanguagePluginConfig::default()
         });
     write_config_path(&path, &config)?;
@@ -1560,6 +1562,7 @@ fn config_schema() -> Value {
                                 "grammar_path": {"type": ["string", "null"]},
                                 "grammar_symbol": {"type": ["string", "null"]},
                                 "extensions": {"type": "array", "items": {"type": "string"}},
+                                "file_names": {"type": "array", "items": {"type": "string"}},
                                 "function_prefixes": {"type": "array", "items": {"type": "string"}},
                                 "import_prefixes": {"type": "array", "items": {"type": "string"}},
                                 "call_suffixes": {"type": "array", "items": {"type": "string"}},
@@ -1570,7 +1573,7 @@ fn config_schema() -> Value {
                                 "ignored_paths": {"type": "array", "items": {"type": "string"}},
                                 "local_import_prefixes": {"type": "array", "items": {"type": "string"}}
                             },
-                            "required": ["name", "extensions"]
+                            "required": ["name"]
                         }
                     }
                 }
@@ -1764,9 +1767,14 @@ fn plugin_add_schema() -> Value {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "File extensions handled by the plugin."
+            },
+            "file_names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Exact extensionless or special file names handled by the plugin."
             }
         },
-        "required": ["name", "extensions"]
+        "required": ["name"]
     })
 }
 
