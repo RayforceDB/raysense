@@ -99,6 +99,8 @@ pub struct LanguagePluginConfig {
     pub function_prefixes: Vec<String>,
     pub import_prefixes: Vec<String>,
     pub call_suffixes: Vec<String>,
+    pub abstract_type_prefixes: Vec<String>,
+    pub concrete_type_prefixes: Vec<String>,
     pub tags_query: Option<String>,
     pub package_index_files: Vec<String>,
     pub test_path_patterns: Vec<String>,
@@ -131,6 +133,8 @@ impl Default for LanguagePluginConfig {
                 "require ".to_string(),
             ],
             call_suffixes: vec!["(".to_string()],
+            abstract_type_prefixes: Vec::new(),
+            concrete_type_prefixes: Vec::new(),
             tags_query: None,
             package_index_files: Vec::new(),
             test_path_patterns: Vec::new(),
@@ -1597,7 +1601,7 @@ fn module_distance_metrics(
         let Some(source) = sources.get(&file.file_id) else {
             continue;
         };
-        let (abstract_count, total_count) = type_counts(source, &file.language_name);
+        let (abstract_count, total_count) = type_counts(source, file, config);
         if total_count == 0 {
             continue;
         }
@@ -1651,9 +1655,10 @@ fn module_distance_metrics(
     metrics
 }
 
-fn type_counts(source: &str, language: &str) -> (usize, usize) {
+fn type_counts(source: &str, file: &FileFact, config: &RaysenseConfig) -> (usize, usize) {
     let mut abstract_count = 0usize;
     let mut total_count = 0usize;
+    let plugin = plugin_for_file(file, config);
     for line in source.lines() {
         let clean = line.split("//").next().unwrap_or(line).trim();
         if clean.is_empty()
@@ -1663,8 +1668,23 @@ fn type_counts(source: &str, language: &str) -> (usize, usize) {
         {
             continue;
         }
-        let is_abstract = is_abstract_type_line(clean, language);
-        let is_type = is_abstract || is_concrete_type_line(clean, language);
+        let is_configured_abstract = plugin.is_some_and(|plugin| {
+            plugin
+                .abstract_type_prefixes
+                .iter()
+                .any(|prefix| clean.starts_with(prefix))
+        });
+        let is_configured_concrete = plugin.is_some_and(|plugin| {
+            plugin
+                .concrete_type_prefixes
+                .iter()
+                .any(|prefix| clean.starts_with(prefix))
+        });
+        let is_abstract =
+            is_configured_abstract || is_abstract_type_line(clean, &file.language_name);
+        let is_type = is_abstract
+            || is_configured_concrete
+            || is_concrete_type_line(clean, &file.language_name);
         if is_type {
             total_count += 1;
             if is_abstract {
@@ -3348,6 +3368,53 @@ mod tests {
         assert_eq!(api.abstractness, 1.0);
         assert_eq!(api.instability, 0.0);
         assert_eq!(api.distance, 0.0);
+    }
+
+    #[test]
+    fn applies_plugin_type_prefixes_to_main_sequence_distance() {
+        let root = temp_health_root("plugin_distance");
+        fs::create_dir_all(root.join("src/api")).unwrap();
+        fs::write(
+            root.join("src/api/contract.foo"),
+            "contract Store\nrecord Disk\n",
+        )
+        .unwrap();
+
+        let mut files = vec![file(0, "src/api/contract.foo")];
+        files[0].language = Language::Unknown;
+        files[0].language_name = "foo".to_string();
+        let graph = compute_graph_metrics(&files, &[]);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root,
+                file_count: files.len(),
+                function_count: 0,
+                import_count: 0,
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+        let mut config = RaysenseConfig::default();
+        config.scan.plugins.push(LanguagePluginConfig {
+            name: "foo".to_string(),
+            abstract_type_prefixes: vec!["contract ".to_string()],
+            concrete_type_prefixes: vec!["record ".to_string()],
+            ..LanguagePluginConfig::default()
+        });
+        config.scan.module_roots = vec!["src".to_string()];
+        let health = compute_health_with_config(&report, &config);
+        let metric = &health.metrics.architecture.distance_metrics[0];
+
+        assert_eq!(metric.abstract_count, 1);
+        assert_eq!(metric.total_types, 2);
+        assert_eq!(metric.abstractness, 0.5);
     }
 
     #[test]

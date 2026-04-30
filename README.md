@@ -223,6 +223,8 @@ file_names = ["Foofile"]
 function_prefixes = ["function "]
 import_prefixes = ["load "]
 call_suffixes = ["("]
+abstract_type_prefixes = ["interface "]
+concrete_type_prefixes = ["class ", "type "]
 tags_query = """
 (function_item
   name: (identifier) @name) @definition.function
