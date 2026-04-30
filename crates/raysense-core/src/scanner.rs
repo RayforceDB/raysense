@@ -193,6 +193,8 @@ pub fn scan_path_with_config(
         files.push(file_fact);
     }
 
+    let alias_map = build_alias_map(&root, &config);
+    apply_alias_rewrites(&mut imports, &files, &alias_map);
     resolve_imports(&files, &mut imports, &config);
     let call_edges = resolve_call_edges(&files, &functions, &calls);
 
@@ -1889,6 +1891,127 @@ fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
     }
 }
 
+/// Build per-language alias rewrite rules by reading each plugin's
+/// `resolver_alias_files`. Supports JSON files with either a top-level
+/// `paths` object, a `compilerOptions.paths` object (tsconfig style), or a
+/// flat string-to-string map. Files that fail to read or parse are silently
+/// skipped — alias support is best-effort and never aborts a scan.
+fn build_alias_map(root: &Path, config: &RaysenseConfig) -> HashMap<String, Vec<(String, String)>> {
+    let mut map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for plugin in &config.scan.plugins {
+        if plugin.resolver_alias_files.is_empty() {
+            continue;
+        }
+        let mut rules = Vec::new();
+        for alias_file in &plugin.resolver_alias_files {
+            rules.extend(read_alias_file(&root.join(alias_file)));
+        }
+        if !rules.is_empty() {
+            map.entry(plugin.name.clone()).or_default().extend(rules);
+        }
+    }
+    map
+}
+
+fn read_alias_file(path: &Path) -> Vec<(String, String)> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    if let Some(paths) = value.get("compilerOptions").and_then(|v| v.get("paths")) {
+        return extract_alias_paths(paths);
+    }
+    if let Some(paths) = value.get("paths") {
+        return extract_alias_paths(paths);
+    }
+    if let Some(obj) = value.as_object() {
+        return obj
+            .iter()
+            .filter_map(|(key, value)| value.as_str().map(|s| (key.clone(), s.to_string())))
+            .collect();
+    }
+    Vec::new()
+}
+
+fn extract_alias_paths(value: &serde_json::Value) -> Vec<(String, String)> {
+    let Some(obj) = value.as_object() else {
+        return Vec::new();
+    };
+    obj.iter()
+        .filter_map(|(key, value)| {
+            let target = if let Some(arr) = value.as_array() {
+                arr.iter().find_map(|item| item.as_str())?.to_string()
+            } else if let Some(s) = value.as_str() {
+                s.to_string()
+            } else {
+                return None;
+            };
+            Some((key.clone(), target))
+        })
+        .collect()
+}
+
+fn apply_alias_rewrites(
+    imports: &mut [ImportFact],
+    files: &[FileFact],
+    aliases: &HashMap<String, Vec<(String, String)>>,
+) {
+    if aliases.is_empty() {
+        return;
+    }
+    let lang_by_file: HashMap<usize, &str> = files
+        .iter()
+        .map(|file| (file.file_id, file.language_name.as_str()))
+        .collect();
+    for import in imports {
+        let Some(language) = lang_by_file.get(&import.from_file) else {
+            continue;
+        };
+        let Some(rules) = aliases.get(*language) else {
+            continue;
+        };
+        if let Some(rewritten) = rewrite_alias(&import.target, rules) {
+            import.target = rewritten;
+        }
+    }
+}
+
+fn rewrite_alias(target: &str, rules: &[(String, String)]) -> Option<String> {
+    for (pattern, replacement) in rules {
+        if let Some(rest) = match_alias(target, pattern) {
+            return Some(apply_alias_replacement(replacement, &rest));
+        }
+    }
+    None
+}
+
+fn match_alias(target: &str, pattern: &str) -> Option<String> {
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        if let Some(rest) = target.strip_prefix(prefix) {
+            return Some(rest.trim_start_matches('/').to_string());
+        }
+        return None;
+    }
+    if pattern == target {
+        return Some(String::new());
+    }
+    None
+}
+
+fn apply_alias_replacement(replacement: &str, suffix: &str) -> String {
+    if let Some(prefix) = replacement.strip_suffix("/*") {
+        if suffix.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{}/{}", prefix.trim_end_matches('/'), suffix)
+        }
+    } else {
+        replacement.to_string()
+    }
+}
+
 fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact], config: &RaysenseConfig) {
     let mut by_path = HashMap::new();
     let mut by_module = HashMap::new();
@@ -2073,11 +2196,13 @@ fn plugin_import_candidates(
     let Some(plugin) = plugin_by_language_name(&from_file.language_name, config) else {
         return Vec::new();
     };
-    let target = import
-        .target
-        .trim()
-        .trim_matches(['"', '\'', ';'])
-        .replace('.', "/");
+    let separator = plugin.namespace_separator.as_deref().unwrap_or(".");
+    let raw = import.target.trim().trim_matches(['"', '\'', ';']);
+    let target: String = if separator.is_empty() {
+        raw.to_string()
+    } else {
+        raw.split(separator).collect::<Vec<_>>().join("/")
+    };
     if target.is_empty() {
         return Vec::new();
     }
@@ -2112,6 +2237,12 @@ fn plugin_import_candidates(
                 .package_index_files
                 .iter()
                 .map(|index| format!("{base}/{index}")),
+        );
+        candidates.extend(
+            plugin
+                .module_prefix_files
+                .iter()
+                .map(|prefix| format!("{base}/{prefix}")),
         );
     }
     candidates
@@ -3159,6 +3290,50 @@ int run(void) {
             module_name(Path::new("pkg/__init__.py"), Language::Python, None),
             "pkg"
         );
+    }
+
+    #[test]
+    fn alias_rewrites_replace_prefix_pattern() {
+        let rules = vec![("@app/*".to_string(), "src/app/*".to_string())];
+        assert_eq!(
+            rewrite_alias("@app/widgets/button", &rules).as_deref(),
+            Some("src/app/widgets/button")
+        );
+        assert_eq!(rewrite_alias("@other/x", &rules), None);
+    }
+
+    #[test]
+    fn alias_rewrites_handle_exact_match() {
+        let rules = vec![("@root".to_string(), "src/index".to_string())];
+        assert_eq!(rewrite_alias("@root", &rules).as_deref(), Some("src/index"));
+    }
+
+    #[test]
+    fn read_alias_file_supports_tsconfig_and_flat_layouts() {
+        let dir = std::env::temp_dir().join(format!(
+            "raysense-alias-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let tsconfig = dir.join("tsconfig.json");
+        fs::write(
+            &tsconfig,
+            r#"{"compilerOptions":{"paths":{"@app/*":["src/app/*"]}}}"#,
+        )
+        .unwrap();
+        let parsed = read_alias_file(&tsconfig);
+        assert!(parsed
+            .iter()
+            .any(|(k, v)| k == "@app/*" && v == "src/app/*"));
+
+        let flat = dir.join("flat.json");
+        fs::write(&flat, r#"{"@root":"src/index"}"#).unwrap();
+        let parsed = read_alias_file(&flat);
+        assert!(parsed.iter().any(|(k, v)| k == "@root" && v == "src/index"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn file(file_id: usize, path: &str, language: Language) -> FileFact {
