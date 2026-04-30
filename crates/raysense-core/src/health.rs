@@ -285,9 +285,11 @@ pub struct ArchitectureMetrics {
     pub max_blast_radius_file: String,
     pub max_non_foundation_blast_radius: usize,
     pub max_non_foundation_blast_radius_file: String,
+    pub average_distance_from_main_sequence: f64,
     pub levels: BTreeMap<String, usize>,
     pub unstable_modules: Vec<ModuleStabilityMetric>,
     pub stable_foundations: Vec<ModuleStabilityMetric>,
+    pub distance_metrics: Vec<ModuleDistanceMetric>,
     pub cycles: Vec<Vec<String>>,
 }
 
@@ -297,6 +299,19 @@ pub struct ModuleStabilityMetric {
     pub fan_in: usize,
     pub fan_out: usize,
     pub instability: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModuleDistanceMetric {
+    pub module: String,
+    pub abstractness: f64,
+    pub instability: f64,
+    pub distance: f64,
+    pub abstract_count: usize,
+    pub total_types: usize,
+    pub fan_in: usize,
+    pub fan_out: usize,
+    pub is_foundation: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -725,6 +740,12 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
     let adjacency = file_adjacency(report);
     let reverse = reverse_adjacency(&adjacency);
     let foundation_files = foundation_file_ids(report, config);
+    let distance_metrics = module_distance_metrics(report, config);
+    let non_foundation_distance: Vec<f64> = distance_metrics
+        .iter()
+        .filter(|metric| !metric.is_foundation)
+        .map(|metric| metric.distance)
+        .collect();
     let mut max_blast_radius = 0usize;
     let mut max_blast_radius_file = String::new();
     let mut max_non_foundation_blast_radius = 0usize;
@@ -752,9 +773,17 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
         max_blast_radius_file,
         max_non_foundation_blast_radius,
         max_non_foundation_blast_radius_file,
+        average_distance_from_main_sequence: if non_foundation_distance.is_empty() {
+            0.0
+        } else {
+            round3(
+                non_foundation_distance.iter().sum::<f64>() / non_foundation_distance.len() as f64,
+            )
+        },
         levels: dependency_levels(report, &adjacency, &reverse),
         unstable_modules: module_stability(report, config),
         stable_foundations: stable_foundation_metrics(report, config),
+        distance_metrics,
         cycles: cycle_components(report, &adjacency),
     }
 }
@@ -1160,6 +1189,141 @@ fn module_stability_all(
             .then_with(|| a.module.cmp(&b.module))
     });
     metrics
+}
+
+fn module_distance_metrics(
+    report: &ScanReport,
+    config: &RaysenseConfig,
+) -> Vec<ModuleDistanceMetric> {
+    let mut abstract_by_module: HashMap<String, usize> = HashMap::new();
+    let mut total_by_module: HashMap<String, usize> = HashMap::new();
+    let sources = source_cache(report);
+
+    for file in &report.files {
+        let Some(source) = sources.get(&file.file_id) else {
+            continue;
+        };
+        let (abstract_count, total_count) = type_counts(source, &file.language_name);
+        if total_count == 0 {
+            continue;
+        }
+        let module = module_group(file, config);
+        *abstract_by_module.entry(module.clone()).or_default() += abstract_count;
+        *total_by_module.entry(module).or_default() += total_count;
+    }
+
+    let stability_by_module: HashMap<String, ModuleStabilityMetric> =
+        module_stability_all(report, config)
+            .into_iter()
+            .map(|metric| (metric.module.clone(), metric))
+            .collect();
+    let stable_modules = stable_foundation_modules(report, config);
+
+    let mut metrics: Vec<ModuleDistanceMetric> = total_by_module
+        .into_iter()
+        .map(|(module, total_types)| {
+            let abstract_count = abstract_by_module.get(&module).copied().unwrap_or(0);
+            let stability = stability_by_module.get(&module);
+            let fan_in = stability.map(|metric| metric.fan_in).unwrap_or(0);
+            let fan_out = stability.map(|metric| metric.fan_out).unwrap_or(0);
+            let instability = if fan_in + fan_out == 0 {
+                0.5
+            } else {
+                ratio(fan_out, fan_in + fan_out)
+            };
+            let abstractness = ratio(abstract_count, total_types);
+            let distance = (abstractness + instability - 1.0).abs();
+            ModuleDistanceMetric {
+                module: module.clone(),
+                abstractness: round3(abstractness),
+                instability: round3(instability),
+                distance: round3(distance),
+                abstract_count,
+                total_types,
+                fan_in,
+                fan_out,
+                is_foundation: instability <= 0.30 || stable_modules.contains(&module),
+            }
+        })
+        .collect();
+
+    metrics.sort_by(|a, b| {
+        b.distance
+            .partial_cmp(&a.distance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.module.cmp(&b.module))
+    });
+    metrics.truncate(20);
+    metrics
+}
+
+fn type_counts(source: &str, language: &str) -> (usize, usize) {
+    let mut abstract_count = 0usize;
+    let mut total_count = 0usize;
+    for line in source.lines() {
+        let clean = line.split("//").next().unwrap_or(line).trim();
+        if clean.is_empty()
+            || clean.starts_with('#')
+            || clean.starts_with('*')
+            || clean.starts_with("/*")
+        {
+            continue;
+        }
+        let is_abstract = is_abstract_type_line(clean, language);
+        let is_type = is_abstract || is_concrete_type_line(clean, language);
+        if is_type {
+            total_count += 1;
+            if is_abstract {
+                abstract_count += 1;
+            }
+        }
+    }
+    (abstract_count, total_count)
+}
+
+fn is_abstract_type_line(line: &str, language: &str) -> bool {
+    match language {
+        "rust" => line.starts_with("trait ") || line.starts_with("pub trait "),
+        "typescript" | "tsx" | "javascript" => {
+            line.starts_with("interface ")
+                || line.starts_with("export interface ")
+                || line.starts_with("abstract class ")
+                || line.starts_with("export abstract class ")
+        }
+        "python" => {
+            line.starts_with("class ") && (line.contains("Protocol") || line.contains("ABC"))
+        }
+        "c++" | "cpp" => line.starts_with("class ") && line.contains("= 0"),
+        _ => false,
+    }
+}
+
+fn is_concrete_type_line(line: &str, language: &str) -> bool {
+    match language {
+        "rust" => {
+            line.starts_with("struct ")
+                || line.starts_with("pub struct ")
+                || line.starts_with("enum ")
+                || line.starts_with("pub enum ")
+                || line.starts_with("type ")
+                || line.starts_with("pub type ")
+        }
+        "typescript" | "tsx" | "javascript" => {
+            line.starts_with("class ")
+                || line.starts_with("export class ")
+                || line.starts_with("type ")
+                || line.starts_with("export type ")
+        }
+        "python" => line.starts_with("class "),
+        "c" | "c++" | "cpp" => {
+            line.starts_with("struct ")
+                || line.starts_with("typedef struct")
+                || line.starts_with("enum ")
+                || line.starts_with("typedef enum")
+                || line.starts_with("class ")
+        }
+        _ => false,
+    }
 }
 
 fn cycle_components(
@@ -2732,6 +2896,53 @@ mod tests {
             .stable_foundations
             .iter()
             .any(|module| module.module == "src/core"));
+    }
+
+    #[test]
+    fn computes_distance_from_main_sequence() {
+        let root = temp_health_root("distance");
+        fs::create_dir_all(root.join("src/api")).unwrap();
+        fs::create_dir_all(root.join("src/impls")).unwrap();
+        fs::write(root.join("src/api/mod.rs"), "pub trait Store {}\n").unwrap();
+        fs::write(root.join("src/impls/store.rs"), "pub struct DiskStore;\n").unwrap();
+
+        let files = vec![file(0, "src/api/mod.rs"), file(1, "src/impls/store.rs")];
+        let imports = vec![import(0, 1, Some(0), ImportResolution::Local)];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root,
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+
+        let mut config = RaysenseConfig::default();
+        config.scan.module_roots = vec!["src".to_string()];
+        let health = compute_health_with_config(&report, &config);
+
+        let api = health
+            .metrics
+            .architecture
+            .distance_metrics
+            .iter()
+            .find(|metric| metric.module == "src/api")
+            .unwrap();
+        assert_eq!(api.abstract_count, 1);
+        assert_eq!(api.total_types, 1);
+        assert_eq!(api.abstractness, 1.0);
+        assert_eq!(api.instability, 0.0);
+        assert_eq!(api.distance, 0.0);
     }
 
     #[test]

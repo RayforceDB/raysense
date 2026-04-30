@@ -1883,7 +1883,7 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.root_causes.redundancy
     );
     println!(
-        "architecture depth={} max_blast_radius={} max_blast_radius_file={} max_non_foundation_blast_radius={} max_non_foundation_blast_radius_file={}",
+        "architecture depth={} max_blast_radius={} max_blast_radius_file={} max_non_foundation_blast_radius={} max_non_foundation_blast_radius_file={} average_distance_from_main_sequence={:.3}",
         health.metrics.architecture.module_depth,
         health.metrics.architecture.max_blast_radius,
         health.metrics.architecture.max_blast_radius_file,
@@ -1891,7 +1891,11 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health
             .metrics
             .architecture
-            .max_non_foundation_blast_radius_file
+            .max_non_foundation_blast_radius_file,
+        health
+            .metrics
+            .architecture
+            .average_distance_from_main_sequence
     );
     println!(
         "complexity max={} avg={:.3} cognitive_max={} cognitive_avg={:.3} gini={:.3} dead_functions={} duplicate_groups={} redundancy_ratio={:.3}",

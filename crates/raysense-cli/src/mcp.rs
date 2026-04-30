@@ -568,13 +568,16 @@ fn architecture_tool(args: &Value) -> Result<Value> {
             "max_blast_radius_file": health.metrics.architecture.max_blast_radius_file,
             "max_non_foundation_blast_radius": health.metrics.architecture.max_non_foundation_blast_radius,
             "max_non_foundation_blast_radius_file": health.metrics.architecture.max_non_foundation_blast_radius_file,
+            "average_distance_from_main_sequence": health.metrics.architecture.average_distance_from_main_sequence,
             "levels": health.metrics.architecture.levels,
             "cycles": limited(&health.metrics.architecture.cycles, limit),
             "unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
             "stable_foundations": limited(&health.metrics.architecture.stable_foundations, limit),
+            "distance_metrics": limited(&health.metrics.architecture.distance_metrics, limit),
             "cycle_total": health.metrics.architecture.cycles.len(),
             "unstable_module_total": health.metrics.architecture.unstable_modules.len(),
-            "stable_foundation_total": health.metrics.architecture.stable_foundations.len()
+            "stable_foundation_total": health.metrics.architecture.stable_foundations.len(),
+            "distance_metric_total": health.metrics.architecture.distance_metrics.len()
         },
         "dsm": {
             "module_count": health.metrics.dsm.module_count,
@@ -818,6 +821,7 @@ fn dsm_tool(args: &Value) -> Result<Value> {
         "levels": health.metrics.architecture.levels,
         "unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
         "stable_foundations": limited(&health.metrics.architecture.stable_foundations, limit),
+        "distance_metrics": limited(&health.metrics.architecture.distance_metrics, limit),
         "module_edges": limited(&health.metrics.dsm.top_module_edges, limit)
     }))
 }
