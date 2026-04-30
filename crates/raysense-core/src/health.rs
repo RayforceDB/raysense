@@ -285,6 +285,9 @@ pub struct ArchitectureMetrics {
     pub max_blast_radius_file: String,
     pub max_non_foundation_blast_radius: usize,
     pub max_non_foundation_blast_radius_file: String,
+    pub attack_surface_files: usize,
+    pub attack_surface_ratio: f64,
+    pub total_graph_files: usize,
     pub average_distance_from_main_sequence: f64,
     pub levels: BTreeMap<String, usize>,
     pub unstable_modules: Vec<ModuleStabilityMetric>,
@@ -741,6 +744,7 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
     let reverse = reverse_adjacency(&adjacency);
     let foundation_files = foundation_file_ids(report, config);
     let distance_metrics = module_distance_metrics(report, config);
+    let (attack_surface_files, total_graph_files) = attack_surface_metrics(report, &adjacency);
     let non_foundation_distance: Vec<f64> = distance_metrics
         .iter()
         .filter(|metric| !metric.is_foundation)
@@ -773,6 +777,9 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
         max_blast_radius_file,
         max_non_foundation_blast_radius,
         max_non_foundation_blast_radius_file,
+        attack_surface_files,
+        attack_surface_ratio: ratio(attack_surface_files, total_graph_files),
+        total_graph_files,
         average_distance_from_main_sequence: if non_foundation_distance.is_empty() {
             0.0
         } else {
@@ -1015,6 +1022,39 @@ fn reachable_count(start: usize, adjacency: &HashMap<usize, Vec<usize>>) -> usiz
     }
     seen.remove(&start);
     seen.len()
+}
+
+fn attack_surface_metrics(
+    report: &ScanReport,
+    adjacency: &HashMap<usize, Vec<usize>>,
+) -> (usize, usize) {
+    let graph_files: HashSet<usize> = adjacency
+        .iter()
+        .flat_map(|(from, targets)| std::iter::once(*from).chain(targets.iter().copied()))
+        .collect();
+    if graph_files.is_empty() || report.entry_points.is_empty() {
+        return (0, graph_files.len());
+    }
+
+    let mut seen = HashSet::new();
+    let mut queue = VecDeque::new();
+    for entry in &report.entry_points {
+        if graph_files.contains(&entry.file_id) && seen.insert(entry.file_id) {
+            queue.push_back(entry.file_id);
+        }
+    }
+    while let Some(file_id) = queue.pop_front() {
+        let Some(targets) = adjacency.get(&file_id) else {
+            continue;
+        };
+        for target in targets {
+            if seen.insert(*target) {
+                queue.push_back(*target);
+            }
+        }
+    }
+
+    (seen.len(), graph_files.len())
 }
 
 fn dependency_levels(
@@ -2943,6 +2983,51 @@ mod tests {
         assert_eq!(api.abstractness, 1.0);
         assert_eq!(api.instability, 0.0);
         assert_eq!(api.distance, 0.0);
+    }
+
+    #[test]
+    fn computes_attack_surface_from_entry_points() {
+        let files = vec![
+            file(0, "src/main.rs"),
+            file(1, "src/service.rs"),
+            file(2, "src/repo.rs"),
+            file(3, "src/orphan.rs"),
+            file(4, "src/util.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(1), ImportResolution::Local),
+            import(1, 1, Some(2), ImportResolution::Local),
+            import(2, 3, Some(4), ImportResolution::Local),
+        ];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: vec![EntryPointFact {
+                entry_id: 0,
+                file_id: 0,
+                kind: EntryPointKind::Binary,
+                symbol: "main".to_string(),
+            }],
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+
+        let health = compute_health(&report);
+
+        assert_eq!(health.metrics.architecture.attack_surface_files, 3);
+        assert_eq!(health.metrics.architecture.total_graph_files, 5);
+        assert_eq!(health.metrics.architecture.attack_surface_ratio, 0.6);
     }
 
     #[test]

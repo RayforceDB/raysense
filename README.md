@@ -64,7 +64,7 @@ size max_file_lines=6329 max_function_lines=2334 large_files=63 long_functions=2
 test_gap production_files=150 test_files=40 files_without_nearby_tests=150
 dsm modules=5 module_edges=240
 root_causes modularity=0.635 acyclicity=1.000 depth=1.000 equality=0.450 redundancy=0.952
-architecture depth=3 max_blast_radius=25 max_blast_radius_file=src/ops/query.c max_non_foundation_blast_radius=12 max_non_foundation_blast_radius_file=src/runtime/eval.c average_distance_from_main_sequence=0.214
+architecture depth=3 max_blast_radius=25 max_blast_radius_file=src/ops/query.c max_non_foundation_blast_radius=12 max_non_foundation_blast_radius_file=src/runtime/eval.c attack_surface_files=45 attack_surface_ratio=0.703 average_distance_from_main_sequence=0.214
 complexity max=131 avg=3.904 gini=0.550 dead_functions=50 duplicate_groups=20 redundancy_ratio=0.048
 evolution available=true commits_sampled=500 changed_files=190
 rules warnings=7 info=31
