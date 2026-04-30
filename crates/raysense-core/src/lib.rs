@@ -8,4 +8,5 @@ pub use facts::{
 };
 pub use graph::GraphMetrics;
 pub use health::{compute_health, FileHotspot, HealthSummary, ResolutionBreakdown};
+pub use health::{RuleFinding, RuleSeverity};
 pub use scanner::{scan_path, ScanError};

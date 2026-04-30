@@ -3,8 +3,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use raysense_core::{
     compute_health, scan_path, FileFact, FileHotspot, FunctionFact, GraphMetrics, HealthSummary,
-    ImportFact, ImportResolution, Language, ResolutionBreakdown, ScanError, ScanReport,
-    SnapshotFact,
+    ImportFact, ImportResolution, Language, ResolutionBreakdown, RuleFinding, RuleSeverity,
+    ScanError, ScanReport, SnapshotFact,
 };
 
 pub fn package_name() -> &'static str {

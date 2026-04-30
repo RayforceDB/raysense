@@ -146,6 +146,16 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
             );
         }
     }
+
+    if !health.rules.is_empty() {
+        println!("rules");
+        for rule in &health.rules {
+            println!(
+                "  {:?} {} {} - {}",
+                rule.severity, rule.code, rule.path, rule.message
+            );
+        }
+    }
 }
 
 fn print_edges(report: &raysense_core::ScanReport, all: bool) -> io::Result<()> {

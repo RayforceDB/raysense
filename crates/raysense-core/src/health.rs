@@ -9,6 +9,7 @@ pub struct HealthSummary {
     pub structural_score: u8,
     pub resolution: ResolutionBreakdown,
     pub hotspots: Vec<FileHotspot>,
+    pub rules: Vec<RuleFinding>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -28,16 +29,33 @@ pub struct FileHotspot {
     pub fan_out: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleFinding {
+    pub severity: RuleSeverity,
+    pub code: String,
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuleSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
 pub fn compute_health(report: &ScanReport) -> HealthSummary {
     let resolution = resolution_breakdown(report);
     let hotspots = hotspots(report);
+    let rules = rules(report, &hotspots);
 
     HealthSummary {
-        score: health_score(report, &resolution),
+        score: health_score(report, &resolution, &rules),
         coverage_score: coverage_score(report, &resolution),
-        structural_score: structural_score(report),
+        structural_score: structural_score(report, &rules),
         resolution,
         hotspots,
+        rules,
     }
 }
 
@@ -54,8 +72,12 @@ fn resolution_breakdown(report: &ScanReport) -> ResolutionBreakdown {
     breakdown
 }
 
-fn health_score(report: &ScanReport, resolution: &ResolutionBreakdown) -> u8 {
-    coverage_score(report, resolution).saturating_add(structural_score(report)) / 2
+fn health_score(
+    report: &ScanReport,
+    resolution: &ResolutionBreakdown,
+    rules: &[RuleFinding],
+) -> u8 {
+    coverage_score(report, resolution).saturating_add(structural_score(report, rules)) / 2
 }
 
 fn coverage_score(report: &ScanReport, resolution: &ResolutionBreakdown) -> u8 {
@@ -69,10 +91,23 @@ fn coverage_score(report: &ScanReport, resolution: &ResolutionBreakdown) -> u8 {
     score.clamp(0, 100) as u8
 }
 
-fn structural_score(report: &ScanReport) -> u8 {
+fn structural_score(report: &ScanReport, rules: &[RuleFinding]) -> u8 {
     let mut score = 100i32;
     score -= (report.graph.cycle_count as i32 * 20).min(80);
+    score -= rule_penalty(rules);
     score.clamp(0, 100) as u8
+}
+
+fn rule_penalty(rules: &[RuleFinding]) -> i32 {
+    rules
+        .iter()
+        .map(|rule| match rule.severity {
+            RuleSeverity::Info => 1,
+            RuleSeverity::Warning => 4,
+            RuleSeverity::Error => 10,
+        })
+        .sum::<i32>()
+        .min(40)
 }
 
 fn hotspots(report: &ScanReport) -> Vec<FileHotspot> {
@@ -109,6 +144,55 @@ fn hotspots(report: &ScanReport) -> Vec<FileHotspot> {
     });
     hotspots.truncate(10);
     hotspots
+}
+
+fn rules(report: &ScanReport, hotspots: &[FileHotspot]) -> Vec<RuleFinding> {
+    let mut findings = Vec::new();
+
+    for hotspot in hotspots {
+        if hotspot.fan_in >= 50 {
+            findings.push(RuleFinding {
+                severity: RuleSeverity::Warning,
+                code: "high_fan_in".to_string(),
+                path: hotspot.path.clone(),
+                message: format!("{} incoming dependency edges", hotspot.fan_in),
+            });
+        }
+    }
+
+    for import in &report.imports {
+        let Some(to_file_id) = import.resolved_file else {
+            continue;
+        };
+        let Some(from_file) = report.files.get(import.from_file) else {
+            continue;
+        };
+        let Some(to_file) = report.files.get(to_file_id) else {
+            continue;
+        };
+
+        let from_path = from_file.path.to_string_lossy();
+        let to_path = to_file.path.to_string_lossy();
+        if !is_test_path(&from_path) && is_test_path(&to_path) {
+            findings.push(RuleFinding {
+                severity: RuleSeverity::Warning,
+                code: "production_depends_on_test".to_string(),
+                path: from_path.into_owned(),
+                message: format!("depends on test path {to_path}"),
+            });
+        }
+    }
+
+    findings
+}
+
+fn is_test_path(path: &str) -> bool {
+    path.starts_with("test/")
+        || path.starts_with("tests/")
+        || path.contains("/test/")
+        || path.contains("/tests/")
+        || path.contains("_test.")
+        || path.contains("_tests.")
 }
 
 #[cfg(test)]
@@ -150,6 +234,32 @@ mod tests {
         assert!(health.coverage_score < 100);
         assert_eq!(health.structural_score, 100);
         assert!(health.score < 100);
+    }
+
+    #[test]
+    fn flags_production_dependencies_on_test_paths() {
+        let files = vec![file(0, "src/a.c"), file(1, "test/test.h")];
+        let imports = vec![import(0, 0, Some(1), ImportResolution::Local)];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+            },
+            files,
+            functions: Vec::new(),
+            imports,
+            graph,
+        };
+
+        let health = compute_health(&report);
+
+        assert_eq!(health.rules.len(), 1);
+        assert_eq!(health.rules[0].code, "production_depends_on_test");
+        assert!(health.structural_score < 100);
     }
 
     fn file(file_id: usize, path: &str) -> FileFact {

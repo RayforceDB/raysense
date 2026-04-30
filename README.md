@@ -25,12 +25,13 @@ cargo run -q -p raysense-cli -- observe ../rayforce --memory
 Current Rayforce baseline:
 
 ```text
-score 100
+score 96
 coverage_score 100
-structural_score 100
+structural_score 92
 facts files=186 functions=8233 imports=1010
 imports local=639 external=0 system=371 unresolved=0
 graph resolved_edges=639 cycles=0
+rules high_fan_in=2
 ```
 
 ## Commands
@@ -52,6 +53,7 @@ The first testable version focuses on Rust and C/C++ codebases:
 - Local, external, system, and unresolved import classification.
 - Graph metrics: resolved edges, cycles, fan-in, fan-out.
 - Health summary with score, import breakdown, and hotspots.
+- Built-in rules for high fan-in and production dependencies on test paths.
 - Rayforce table materialization for files, functions, and imports.
 
 CI and publish workflows are currently manual-only while the project stabilizes.
