@@ -126,6 +126,7 @@ fn print_summary(report: &raysense_core::ScanReport) {
     println!("structural_score {}", health.structural_score);
     println!("files {}", report.snapshot.file_count);
     println!("functions {}", report.snapshot.function_count);
+    println!("calls {}", report.snapshot.call_count);
     println!(
         "entry_points total={} binaries={} examples={} tests={}",
         report.entry_points.len(),
@@ -150,8 +151,11 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
     println!("structural_score {}", health.structural_score);
     println!("root {}", report.snapshot.root.display());
     println!(
-        "facts files={} functions={} imports={}",
-        report.snapshot.file_count, report.snapshot.function_count, report.snapshot.import_count
+        "facts files={} functions={} calls={} imports={}",
+        report.snapshot.file_count,
+        report.snapshot.function_count,
+        report.snapshot.call_count,
+        report.snapshot.import_count
     );
     println!(
         "entry_points total={} binaries={} examples={} tests={}",

@@ -28,7 +28,7 @@ Current Rayforce baseline:
 score 96
 coverage_score 100
 structural_score 92
-facts files=186 functions=5044 imports=1015
+facts files=186 functions=5044 calls=25067 imports=1015
 entry_points total=50 binaries=6 examples=4 tests=40
 imports local=639 external=0 system=376 unresolved=0
 graph resolved_edges=639 cycles=0
@@ -58,6 +58,7 @@ The first testable version focuses on Rust and C/C++ codebases:
   fallback extraction.
 - Tree-sitter-backed Rust `use`/`mod` and C/C++ include extraction with
   lightweight fallback extraction.
+- Tree-sitter-backed Rust, C, and C++ call facts with enclosing function ids.
 - Project profile inference for reusable include-root discovery.
 - Entry point facts for binaries, examples, and tests.
 - Local, external, system, and unresolved import classification.

@@ -639,11 +639,13 @@ mod tests {
                 file_count: files.len(),
                 function_count: 0,
                 import_count: imports.len(),
+                call_count: 0,
             },
             files,
             functions: Vec::new(),
             entry_points: Vec::new(),
             imports,
+            calls: Vec::new(),
             graph,
         };
 
@@ -670,11 +672,13 @@ mod tests {
                 file_count: files.len(),
                 function_count: 0,
                 import_count: imports.len(),
+                call_count: 0,
             },
             files,
             functions: Vec::new(),
             entry_points: Vec::new(),
             imports,
+            calls: Vec::new(),
             graph,
         };
 
@@ -698,6 +702,7 @@ mod tests {
                 file_count: files.len(),
                 function_count: 1,
                 import_count: imports.len(),
+                call_count: 0,
             },
             files,
             functions: vec![FunctionFact {
@@ -714,6 +719,7 @@ mod tests {
                 symbol: "main".to_string(),
             }],
             imports,
+            calls: Vec::new(),
             graph,
         };
 

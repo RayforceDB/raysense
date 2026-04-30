@@ -5,8 +5,8 @@ pub mod profile;
 pub mod scanner;
 
 pub use facts::{
-    EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact, ImportResolution, Language,
-    ScanReport, SnapshotFact,
+    CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact, ImportResolution,
+    Language, ScanReport, SnapshotFact,
 };
 pub use graph::GraphMetrics;
 pub use health::{compute_health, FileHotspot, HealthSummary, ResolutionBreakdown};

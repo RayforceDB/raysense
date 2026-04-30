@@ -37,6 +37,7 @@ pub struct SnapshotFact {
     pub file_count: usize,
     pub function_count: usize,
     pub import_count: usize,
+    pub call_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +85,15 @@ pub struct ImportFact {
     pub resolved_file: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallFact {
+    pub call_id: usize,
+    pub file_id: usize,
+    pub caller_function: Option<usize>,
+    pub target: String,
+    pub line: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImportResolution {
     External,
@@ -99,5 +109,6 @@ pub struct ScanReport {
     pub functions: Vec<FunctionFact>,
     pub entry_points: Vec<EntryPointFact>,
     pub imports: Vec<ImportFact>,
+    pub calls: Vec<CallFact>,
     pub graph: crate::graph::GraphMetrics,
 }

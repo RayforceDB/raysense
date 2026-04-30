@@ -1,6 +1,6 @@
 use crate::facts::{
-    EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact, ImportResolution, Language,
-    ScanReport, SnapshotFact,
+    CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact, ImportResolution,
+    Language, ScanReport, SnapshotFact,
 };
 use crate::graph::compute_graph_metrics;
 use crate::profile::ProjectProfile;
@@ -41,6 +41,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
     let mut functions = Vec::new();
     let mut entry_points = Vec::new();
     let mut imports = Vec::new();
+    let mut calls = Vec::new();
 
     for entry in WalkBuilder::new(&root)
         .hidden(false)
@@ -100,6 +101,12 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
             imports.push(import.clone());
         }
 
+        let mut file_calls = extract_calls(file_id, language, &content, &file_functions);
+        for call in &mut file_calls {
+            call.call_id = calls.len();
+            calls.push(call.clone());
+        }
+
         files.push(file_fact);
     }
 
@@ -113,6 +120,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         file_count: files.len(),
         function_count: functions.len(),
         import_count: imports.len(),
+        call_count: calls.len(),
     };
 
     Ok(ScanReport {
@@ -121,6 +129,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         functions,
         entry_points,
         imports,
+        calls,
         graph,
     })
 }
@@ -261,6 +270,22 @@ fn first_identifier(content: &str, node: Node<'_>) -> Option<String> {
         }
     }
     None
+}
+
+fn last_identifier(content: &str, node: Node<'_>) -> Option<String> {
+    let mut out = if node.kind() == "identifier" || node.kind() == "field_identifier" {
+        node_text(content, node)
+    } else {
+        None
+    };
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(identifier) = last_identifier(content, child) {
+            out = Some(identifier);
+        }
+    }
+    out
 }
 
 fn node_text(content: &str, node: Node<'_>) -> Option<String> {
@@ -554,6 +579,85 @@ fn c_include_target(content: &str, node: Node<'_>) -> Option<(String, &'static s
         "include"
     };
     Some((clean_c_include_target(target).to_string(), kind))
+}
+
+fn extract_calls(
+    file_id: usize,
+    language: Language,
+    content: &str,
+    functions: &[FunctionFact],
+) -> Vec<CallFact> {
+    let language = match language {
+        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
+        Language::C => tree_sitter_c::LANGUAGE.into(),
+        Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+        Language::Python | Language::TypeScript | Language::Unknown => return Vec::new(),
+    };
+
+    extract_tree_sitter_calls(file_id, content, functions, language).unwrap_or_default()
+}
+
+fn extract_tree_sitter_calls(
+    file_id: usize,
+    content: &str,
+    functions: &[FunctionFact],
+    language: tree_sitter::Language,
+) -> Option<Vec<CallFact>> {
+    let mut parser = Parser::new();
+    parser.set_language(&language).ok()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let mut calls = Vec::new();
+    collect_tree_sitter_calls(file_id, content, root, functions, &mut calls);
+    Some(calls)
+}
+
+fn collect_tree_sitter_calls(
+    file_id: usize,
+    content: &str,
+    node: Node<'_>,
+    functions: &[FunctionFact],
+    calls: &mut Vec<CallFact>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(target) = call_target(content, node) {
+            let line = node.start_position().row + 1;
+            calls.push(CallFact {
+                call_id: 0,
+                file_id,
+                caller_function: enclosing_function(functions, line),
+                target,
+                line,
+            });
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_tree_sitter_calls(file_id, content, child, functions, calls);
+    }
+}
+
+fn call_target(content: &str, node: Node<'_>) -> Option<String> {
+    let function = node.child_by_field_name("function")?;
+    match function.kind() {
+        "identifier" | "field_identifier" | "scoped_identifier" | "qualified_identifier" => {
+            node_text(content, function)
+        }
+        _ => last_identifier(content, function),
+    }
+}
+
+fn enclosing_function(functions: &[FunctionFact], line: usize) -> Option<usize> {
+    functions
+        .iter()
+        .filter(|function| function.start_line <= line && line <= function.end_line)
+        .min_by_key(|function| function.end_line.saturating_sub(function.start_line))
+        .map(|function| function.function_id)
 }
 
 fn extract_rust_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
@@ -1056,6 +1160,42 @@ class Store {
         assert_eq!(functions[0].name, "open");
         assert_eq!(functions[0].start_line, 3);
         assert_eq!(functions[0].end_line, 5);
+    }
+
+    #[test]
+    fn extracts_tree_sitter_calls_with_callers() {
+        let content = r#"
+fn run() {
+    load();
+    service.start();
+}
+"#;
+
+        let mut functions = extract_functions(0, Language::Rust, content);
+        functions[0].function_id = 42;
+        let calls = extract_calls(0, Language::Rust, content, &functions);
+
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].target, "load");
+        assert_eq!(calls[0].caller_function, Some(42));
+        assert_eq!(calls[1].target, "start");
+        assert_eq!(calls[1].line, 4);
+    }
+
+    #[test]
+    fn extracts_tree_sitter_c_calls() {
+        let content = r#"
+int run(void) {
+    return add(1, 2);
+}
+"#;
+
+        let functions = extract_functions(0, Language::C, content);
+        let calls = extract_calls(0, Language::C, content, &functions);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].target, "add");
+        assert_eq!(calls[0].line, 3);
     }
 
     #[test]
