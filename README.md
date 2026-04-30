@@ -100,6 +100,7 @@ raysense plugin add <name> <extensions...> [--file-name <name>] [--path <path>] 
 raysense plugin add-standard [--path <path>] [--config <path>]
 raysense plugin remove <name> [--path <path>] [--config <path>]
 raysense plugin validate <dir> [--json]
+raysense plugin scaffold <name> <extension> [--path <path>]
 raysense plugin init <name> <extension> [--path <path>] [--config <path>]
 raysense policy list
 raysense policy init <preset> [path] [--config <path>]
@@ -136,7 +137,7 @@ sorting, and pagination. Agent session tools can save an in-memory baseline,
 rescan, end the session, check rules, inspect evolution, inspect DSM data,
 inspect test gaps, list configured language plugins, and add generic or
 standard plugin profiles, remove plugin profiles, or validate local plugin
-directories.
+directories. It can also scaffold project-local plugin templates.
 
 `raysense visualize` writes a self-refreshing local HTML dashboard with file
 size blocks, module graph edges, hotspots, rules, complexity, test gaps, and an

@@ -289,6 +289,11 @@ fn tools_list() -> Value {
                 "inputSchema": plugin_validate_schema()
             },
             {
+                "name": "raysense_plugin_scaffold",
+                "description": "Create a project-local generic language plugin template.",
+                "inputSchema": plugin_scaffold_schema()
+            },
+            {
                 "name": "raysense_remediations",
                 "description": "Return suggested remediation actions for current findings and test gaps.",
                 "inputSchema": health_limit_schema("Maximum remediation actions to return. Defaults to 100.")
@@ -389,6 +394,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_plugin_add_standard" => plugin_add_standard_tool(&args),
         "raysense_plugin_remove" => plugin_remove_tool(&args),
         "raysense_plugin_validate" => plugin_validate_tool(&args),
+        "raysense_plugin_scaffold" => plugin_scaffold_tool(&args),
         "raysense_remediations" => remediations_tool(&args),
         "raysense_what_if" => what_if_tool(&args),
         "raysense_trend" => trend_tool(&args),
@@ -995,6 +1001,25 @@ fn plugin_validate_tool(args: &Value) -> Result<Value> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing plugin dir"))?;
     super::validate_plugin_dir(Path::new(dir))
+}
+
+fn plugin_scaffold_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing plugin name"))?;
+    let extension = args
+        .get("extension")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing plugin extension"))?;
+    let dir = super::scaffold_plugin(&root, name, extension)?;
+    let validation = super::validate_plugin_dir(&dir)?;
+    Ok(json!({
+        "root": root,
+        "dir": dir,
+        "validation": validation
+    }))
 }
 
 fn remediations_tool(args: &Value) -> Result<Value> {
@@ -1855,6 +1880,18 @@ fn plugin_validate_schema() -> Value {
     })
 }
 
+fn plugin_scaffold_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "name": {"type": "string", "description": "Plugin name."},
+            "extension": {"type": "string", "description": "File extension handled by the plugin."}
+        },
+        "required": ["name", "extension"]
+    })
+}
+
 fn baseline_schema(path_description: &str) -> Value {
     json!({
         "type": "object",
@@ -1983,6 +2020,7 @@ mod tests {
         assert!(names.contains(&"raysense_plugin_add_standard"));
         assert!(names.contains(&"raysense_plugin_remove"));
         assert!(names.contains(&"raysense_plugin_validate"));
+        assert!(names.contains(&"raysense_plugin_scaffold"));
         assert!(names.contains(&"raysense_remediations"));
         assert!(names.contains(&"raysense_what_if"));
         assert!(names.contains(&"raysense_trend"));

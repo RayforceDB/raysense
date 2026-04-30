@@ -200,6 +200,12 @@ enum PluginCommand {
         #[arg(long)]
         json: bool,
     },
+    Scaffold {
+        name: String,
+        extension: String,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     Init {
         name: String,
         extension: String,
@@ -388,6 +394,14 @@ pub fn run() -> Result<()> {
                 if !validation["valid"].as_bool().unwrap_or(false) {
                     return Err(anyhow!("plugin validation failed"));
                 }
+            }
+            PluginCommand::Scaffold {
+                name,
+                extension,
+                path,
+            } => {
+                let output = scaffold_plugin(&path, &name, &extension)?;
+                println!("plugin_scaffold {} {}", name, output.display());
             }
             PluginCommand::Init {
                 name,
@@ -1221,6 +1235,51 @@ fn print_plugin_validation(validation: &Value) {
     for warning in validation["warnings"].as_array().into_iter().flatten() {
         println!("warning {}", warning.as_str().unwrap_or(""));
     }
+}
+
+pub(crate) fn scaffold_plugin(root: &Path, name: &str, extension: &str) -> Result<PathBuf> {
+    if name.trim().is_empty() {
+        return Err(anyhow!("plugin name must not be empty"));
+    }
+    if extension.trim().is_empty() {
+        return Err(anyhow!("plugin extension must not be empty"));
+    }
+    let plugin_dir = root.join(".raysense/plugins").join(name);
+    if plugin_dir.exists() {
+        return Err(anyhow!(
+            "plugin directory already exists: {}",
+            plugin_dir.display()
+        ));
+    }
+    let query_dir = plugin_dir.join("queries");
+    fs::create_dir_all(&query_dir)
+        .with_context(|| format!("failed to create {}", query_dir.display()))?;
+    let extension = extension.trim().trim_start_matches('.');
+    let manifest = format!(
+        r#"name = "{name}"
+extensions = ["{extension}"]
+function_prefixes = ["function ", "def ", "fn "]
+import_prefixes = ["import ", "use ", "require "]
+call_suffixes = ["("]
+test_path_patterns = ["tests/*", "test/*"]
+local_import_prefixes = ["."]
+"#
+    );
+    fs::write(plugin_dir.join("plugin.toml"), manifest).with_context(|| {
+        format!(
+            "failed to write {}",
+            plugin_dir.join("plugin.toml").display()
+        )
+    })?;
+    let query = r#"; Optional tree-sitter tags query.
+; Recognized captures include:
+;   @definition.function with @name
+;   @definition.method with @name
+;   @reference.import, @import, @module, or @source
+"#;
+    fs::write(query_dir.join("tags.scm"), query)
+        .with_context(|| format!("failed to write {}", query_dir.join("tags.scm").display()))?;
+    Ok(plugin_dir)
 }
 
 fn list_policies() {
