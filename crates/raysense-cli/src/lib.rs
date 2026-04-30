@@ -502,17 +502,70 @@ fn visualization_html(
         })
         .collect::<Vec<_>>()
         .join("");
+    let complex = health
+        .metrics
+        .complexity
+        .complex_functions
+        .iter()
+        .take(12)
+        .map(|function| {
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&function.path),
+                html_escape(&function.name),
+                function.value
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let gaps = health
+        .metrics
+        .test_gap
+        .candidates
+        .iter()
+        .take(12)
+        .map(|gap| {
+            format!(
+                "<tr><td>{}</td><td>{}</td></tr>",
+                html_escape(&gap.path),
+                html_escape(&gap.expected_tests.join(", "))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let module_nodes = health
+        .metrics
+        .architecture
+        .unstable_modules
+        .iter()
+        .take(12)
+        .enumerate()
+        .map(|(idx, module)| {
+            let x = 70 + (idx % 4) * 180;
+            let y = 70 + (idx / 4) * 95;
+            format!(
+                "<g><circle cx=\"{x}\" cy=\"{y}\" r=\"28\" fill=\"#263b57\" stroke=\"#78a6d8\"/><text x=\"{x}\" y=\"{text_y}\" text-anchor=\"middle\">{}</text></g>",
+                html_escape(&module.module),
+                text_y = y + 5
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
     format!(
         r#"<!doctype html>
-<html><head><meta charset="utf-8"><title>Raysense</title>
+<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="10"><title>Raysense</title>
 <style>
-body{{font-family:system-ui,sans-serif;margin:24px;background:#111;color:#eee}}
+body{{font-family:system-ui,sans-serif;margin:24px;background:#111;color:#eee;line-height:1.4}}
 .top{{display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap}}
 .metric{{font-size:14px;color:#aaa}}.metric b{{display:block;color:#fff;font-size:28px}}
 .grid{{display:flex;flex-wrap:wrap;gap:8px;margin:24px 0}}
 .file{{min-width:120px;min-height:72px;background:#1d2838;border:1px solid #31445d;padding:8px;box-sizing:border-box}}
 .file b,.file span,.file small{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .file span{{color:#9db5d6}}.file small{{color:#7d8999}}
+.panels{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}}
+.bar{{height:8px;background:#263b57;margin-top:6px}}.bar span{{display:block;height:8px;background:#78a6d8}}
+svg{{width:100%;max-width:820px;height:330px;background:#151b24;border:1px solid #333}}
+svg text{{fill:#eee;font-size:11px}}
 table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom:1px solid #333;padding:6px;text-align:left}}
 </style></head><body>
 <div class="top">
@@ -520,16 +573,31 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <div class="metric"><b>{}</b>files</div>
 <div class="metric"><b>{}</b>functions</div>
 <div class="metric"><b>{}</b>rules</div>
+<div class="metric"><b>{:.3}</b>modularity<div class="bar"><span style="width:{:.1}%"></span></div></div>
+<div class="metric"><b>{:.3}</b>redundancy<div class="bar"><span style="width:{:.1}%"></span></div></div>
 </div>
+<h2>Files</h2>
 <div class="grid">{}</div>
-<h2>Module Edges</h2><table><tr><th>from</th><th>to</th><th>edges</th></tr>{}</table>
+<div class="panels">
+<section><h2>Modules</h2><svg viewBox="0 0 820 330">{}</svg></section>
+<section><h2>Module Edges</h2><table><tr><th>from</th><th>to</th><th>edges</th></tr>{}</table></section>
+<section><h2>Complexity</h2><table><tr><th>file</th><th>function</th><th>value</th></tr>{}</table></section>
+<section><h2>Test Gaps</h2><table><tr><th>source</th><th>expected tests</th></tr>{}</table></section>
+</div>
 </body></html>"#,
         health.quality_signal,
         report.files.len(),
         report.functions.len(),
         health.rules.len(),
+        health.root_causes.modularity,
+        health.root_causes.modularity * 100.0,
+        health.root_causes.redundancy,
+        health.root_causes.redundancy * 100.0,
         cells,
-        modules
+        module_nodes,
+        modules,
+        complex,
+        gaps
     )
 }
 

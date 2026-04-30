@@ -42,6 +42,9 @@ pub fn compute_graph_metrics(files: &[FileFact], imports: &[ImportFact]) -> Grap
 
     for import in imports {
         if let Some(to_file) = import.resolved_file {
+            if to_file == import.from_file {
+                continue;
+            }
             resolved_edge_count += 1;
             adjacency.entry(import.from_file).or_default().push(to_file);
             *fan_in.entry(to_file).or_default() += 1;

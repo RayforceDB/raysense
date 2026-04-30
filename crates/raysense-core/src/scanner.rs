@@ -102,6 +102,7 @@ pub fn scan_path_with_config(
             continue;
         }
         let language_label = plugin
+            .as_ref()
             .map(|plugin| plugin.name.clone())
             .unwrap_or_else(|| language_name(language).to_string());
         if !is_enabled_language_name(&language_label, config) {
@@ -125,7 +126,7 @@ pub fn scan_path_with_config(
             content_hash: hash_content(&content),
         };
 
-        let mut file_functions = if let Some(plugin) = plugin {
+        let mut file_functions = if let Some(plugin) = plugin.as_ref() {
             extract_plugin_functions(file_id, &content, plugin)
         } else {
             extract_functions(file_id, language, &content)
@@ -142,7 +143,7 @@ pub fn scan_path_with_config(
             entry_points.push(entry_point.clone());
         }
 
-        let mut file_imports = if let Some(plugin) = plugin {
+        let mut file_imports = if let Some(plugin) = plugin.as_ref() {
             extract_plugin_imports(file_id, &content, plugin)
         } else {
             extract_imports(file_id, language, &content)
@@ -152,7 +153,7 @@ pub fn scan_path_with_config(
             imports.push(import.clone());
         }
 
-        let mut file_calls = if let Some(plugin) = plugin {
+        let mut file_calls = if let Some(plugin) = plugin.as_ref() {
             extract_plugin_calls(file_id, &content, &file_functions, plugin)
         } else {
             extract_calls(file_id, language, &content, &file_functions)
@@ -272,18 +273,202 @@ fn is_enabled_language_name(language: &str, config: &RaysenseConfig) -> bool {
             .any(|item| item.eq_ignore_ascii_case(language))
 }
 
-fn matching_plugin<'a>(
-    path: &Path,
-    config: &'a RaysenseConfig,
-) -> Option<&'a LanguagePluginConfig> {
+fn matching_plugin(path: &Path, config: &RaysenseConfig) -> Option<LanguagePluginConfig> {
     let ext = path.extension().and_then(|ext| ext.to_str())?;
-    config.scan.plugins.iter().find(|plugin| {
-        !plugin.name.trim().is_empty()
-            && plugin
-                .extensions
+    config
+        .scan
+        .plugins
+        .iter()
+        .find(|plugin| plugin_matches_extension(plugin, ext))
+        .cloned()
+        .or_else(|| builtin_language_plugin(ext))
+}
+
+fn plugin_matches_extension(plugin: &LanguagePluginConfig, ext: &str) -> bool {
+    !plugin.name.trim().is_empty()
+        && plugin
+            .extensions
+            .iter()
+            .any(|candidate| candidate.trim_start_matches('.').eq_ignore_ascii_case(ext))
+}
+
+fn builtin_language_plugin(ext: &str) -> Option<LanguagePluginConfig> {
+    let catalog = [
+        ("go", &["go"][..], &["func "][..], &["import "][..]),
+        (
+            "java",
+            &["java"],
+            &["public ", "private ", "protected ", "static "],
+            &["import "],
+        ),
+        ("kotlin", &["kt", "kts"], &["fun "], &["import "]),
+        ("scala", &["scala"], &["def "], &["import "]),
+        (
+            "csharp",
+            &["cs"],
+            &["public ", "private ", "protected ", "static "],
+            &["using "],
+        ),
+        (
+            "php",
+            &["php"],
+            &["function "],
+            &["use ", "require ", "include "],
+        ),
+        ("ruby", &["rb"], &["def "], &["require ", "load "]),
+        ("swift", &["swift"], &["func "], &["import "]),
+        (
+            "objective-c",
+            &["m", "mm"],
+            &["- ", "+ "],
+            &["#import ", "#include "],
+        ),
+        ("zig", &["zig"], &["fn "], &["@import("]),
+        (
+            "nim",
+            &["nim"],
+            &["proc ", "func ", "method "],
+            &["import ", "include "],
+        ),
+        ("lua", &["lua"], &["function "], &["require "]),
+        ("r", &["r", "R"], &[""], &["library(", "require("]),
+        ("julia", &["jl"], &["function "], &["using ", "import "]),
+        (
+            "dart",
+            &["dart"],
+            &["void ", "Future<", "String ", "int "],
+            &["import "],
+        ),
+        (
+            "elixir",
+            &["ex", "exs"],
+            &["def ", "defp "],
+            &["alias ", "import ", "require "],
+        ),
+        ("erlang", &["erl", "hrl"], &[""], &["-include", "-import"]),
+        ("haskell", &["hs", "lhs"], &[""], &["import "]),
+        ("ocaml", &["ml", "mli"], &["let "], &["open "]),
+        ("fsharp", &["fs", "fsi", "fsx"], &["let "], &["open "]),
+        (
+            "clojure",
+            &["clj", "cljs", "cljc"],
+            &["(defn "],
+            &["(:require ", "(require "],
+        ),
+        ("lisp", &["lisp", "lsp", "el"], &["(defun "], &["(require "]),
+        ("scheme", &["scm", "ss"], &["(define "], &["(import "]),
+        ("perl", &["pl", "pm"], &["sub "], &["use ", "require "]),
+        (
+            "powershell",
+            &["ps1", "psm1"],
+            &["function "],
+            &["Import-Module "],
+        ),
+        (
+            "shell",
+            &["sh", "bash", "zsh", "fish"],
+            &["function "],
+            &["source ", ". "],
+        ),
+        (
+            "sql",
+            &["sql"],
+            &["create function ", "create procedure "],
+            &["include "],
+        ),
+        ("html", &["html", "htm"], &["function "], &["<script"]),
+        (
+            "css",
+            &["css", "scss", "sass", "less"],
+            &[""],
+            &["@import "],
+        ),
+        ("vue", &["vue"], &["function ", "const "], &["import "]),
+        (
+            "svelte",
+            &["svelte"],
+            &["function ", "const "],
+            &["import "],
+        ),
+        (
+            "jsonnet",
+            &["jsonnet", "libsonnet"],
+            &["local "],
+            &["import "],
+        ),
+        (
+            "terraform",
+            &["tf", "tfvars"],
+            &["resource ", "module "],
+            &["module "],
+        ),
+        ("yaml", &["yaml", "yml"], &[""], &[]),
+        ("toml", &["toml"], &[], &[]),
+        ("json", &["json"], &[""], &[]),
+        ("xml", &["xml"], &[""], &[]),
+        ("markdown", &["md", "mdx"], &[], &[]),
+        (
+            "dockerfile",
+            &["dockerfile"],
+            &["FROM "],
+            &["COPY ", "ADD "],
+        ),
+        ("make", &["mk", "make"], &[""], &["include "]),
+        (
+            "cmake",
+            &["cmake"],
+            &["function(", "macro("],
+            &["include(", "add_subdirectory("],
+        ),
+        ("gradle", &["gradle"], &["task "], &["apply "]),
+        ("groovy", &["groovy"], &["def "], &["import "]),
+        ("vb", &["vb"], &["Sub ", "Function "], &["Imports "]),
+        (
+            "fortran",
+            &["f", "f90", "f95", "for"],
+            &["function ", "subroutine "],
+            &["use "],
+        ),
+        ("matlab", &["m"], &["function "], &["import "]),
+        ("solidity", &["sol"], &["function "], &["import "]),
+        ("vyper", &["vy"], &["def "], &["import "]),
+        ("proto", &["proto"], &["service ", "rpc "], &["import "]),
+        ("thrift", &["thrift"], &["service "], &["include "]),
+        (
+            "graphql",
+            &["graphql", "gql"],
+            &["type ", "query ", "mutation "],
+            &["import "],
+        ),
+        ("assembly", &["s", "asm"], &[""], &["include "]),
+        ("coffeescript", &["coffee"], &[""], &["require "]),
+        ("elm", &["elm"], &[""], &["import "]),
+        ("rescript", &["res", "resi"], &["let "], &["open "]),
+        ("crystal", &["cr"], &["def "], &["require "]),
+        ("d", &["d"], &["void ", "int ", "auto "], &["import "]),
+    ];
+    catalog
+        .iter()
+        .find(|(_, extensions, _, _)| {
+            extensions
                 .iter()
-                .any(|candidate| candidate.trim_start_matches('.').eq_ignore_ascii_case(ext))
-    })
+                .any(|candidate| candidate.eq_ignore_ascii_case(ext))
+        })
+        .map(
+            |(name, extensions, function_prefixes, import_prefixes)| LanguagePluginConfig {
+                name: (*name).to_string(),
+                extensions: extensions.iter().map(|item| (*item).to_string()).collect(),
+                function_prefixes: function_prefixes
+                    .iter()
+                    .map(|item| (*item).to_string())
+                    .collect(),
+                import_prefixes: import_prefixes
+                    .iter()
+                    .map(|item| (*item).to_string())
+                    .collect(),
+                call_suffixes: vec!["(".to_string()],
+            },
+        )
 }
 
 fn language_name(language: Language) -> &'static str {
@@ -650,20 +835,15 @@ fn extract_plugin_functions(
     plugin: &LanguagePluginConfig,
 ) -> Vec<FunctionFact> {
     let lines: Vec<&str> = content.lines().collect();
-    let prefixes = if plugin.function_prefixes.is_empty() {
-        vec![
-            "function ".to_string(),
-            "def ".to_string(),
-            "fn ".to_string(),
-        ]
-    } else {
-        plugin.function_prefixes.clone()
-    };
+    let prefixes = plugin.function_prefixes.clone();
 
     let mut functions = Vec::new();
     for (idx, line) in content.lines().enumerate() {
         let trimmed = line.trim_start();
         for prefix in &prefixes {
+            if prefix.is_empty() {
+                continue;
+            }
             let Some(rest) = trimmed.strip_prefix(prefix) else {
                 continue;
             };
@@ -691,21 +871,16 @@ fn extract_plugin_imports(
     content: &str,
     plugin: &LanguagePluginConfig,
 ) -> Vec<ImportFact> {
-    let prefixes = if plugin.import_prefixes.is_empty() {
-        vec![
-            "import ".to_string(),
-            "use ".to_string(),
-            "require ".to_string(),
-        ]
-    } else {
-        plugin.import_prefixes.clone()
-    };
+    let prefixes = plugin.import_prefixes.clone();
 
     content
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim_start();
             for prefix in &prefixes {
+                if prefix.is_empty() {
+                    continue;
+                }
                 if let Some(rest) = trimmed.strip_prefix(prefix) {
                     let target = rest
                         .trim()
@@ -730,11 +905,10 @@ fn extract_plugin_calls(
     functions: &[FunctionFact],
     plugin: &LanguagePluginConfig,
 ) -> Vec<CallFact> {
-    let suffixes = if plugin.call_suffixes.is_empty() {
-        vec!["(".to_string()]
-    } else {
-        plugin.call_suffixes.clone()
-    };
+    let suffixes = plugin.call_suffixes.clone();
+    if suffixes.is_empty() {
+        return Vec::new();
+    }
     let mut calls = Vec::new();
     for (idx, line) in content.lines().enumerate() {
         for token in line.split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '-')) {
@@ -1799,6 +1973,25 @@ call_suffixes = ["("]
         assert_eq!(report.functions[0].name, "run");
         assert_eq!(report.imports[0].target, "core");
         assert_eq!(report.calls[0].target, "start");
+    }
+
+    #[test]
+    fn scans_builtin_language_catalog_extensions() {
+        let root = temp_scan_root("builtin_catalog");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/main.go"),
+            "package main\nimport \"fmt\"\nfunc run() {\n    fmt.Println(\"ok\")\n}\n",
+        )
+        .unwrap();
+
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(report.files[0].language_name, "go");
+        assert_eq!(report.functions[0].name, "run");
+        assert_eq!(report.imports[0].target, "fmt");
     }
 
     #[test]

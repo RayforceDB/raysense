@@ -184,13 +184,13 @@ fn tools_list() -> Value {
             },
             {
                 "name": "raysense_session_start",
-                "description": "Save an in-memory baseline for an agent session.",
+                "description": "Save an in-memory and persisted baseline for an agent session.",
                 "inputSchema": baseline_schema("Optional persisted baseline directory.")
             },
             {
                 "name": "raysense_session_end",
                 "description": "Compare current health to the in-memory session baseline.",
-                "inputSchema": path_limit_schema("Unused.")
+                "inputSchema": baseline_schema("Persisted session baseline directory.")
             },
             {
                 "name": "raysense_rescan",
@@ -440,10 +440,20 @@ fn module_edges_tool(args: &Value) -> Result<Value> {
 
 fn session_start_tool(args: &Value, state: &mut McpState) -> Result<Value> {
     let root = root_arg(args)?;
+    let baseline_path = baseline_dir_arg(args, &root).ok();
     let config = effective_config(args, &root)?;
     let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
     let baseline = build_baseline(&report, &health);
+    if let Some(path) = baseline_path.as_ref() {
+        fs::create_dir_all(path)
+            .with_context(|| format!("failed to create session baseline {}", path.display()))?;
+        fs::write(
+            path.join("session.json"),
+            serde_json::to_string_pretty(&baseline)?,
+        )
+        .with_context(|| format!("failed to write session baseline {}", path.display()))?;
+    }
     state.last_path = Some(root.clone());
     state.last_config = Some(config);
     state.baseline = Some(baseline.clone());
@@ -451,6 +461,7 @@ fn session_start_tool(args: &Value, state: &mut McpState) -> Result<Value> {
         "root": report.snapshot.root,
         "quality_signal": health.quality_signal,
         "score": health.score,
+        "baseline_path": baseline_path,
         "baseline": baseline
     }))
 }
@@ -467,10 +478,16 @@ fn session_end_tool(args: &Value, state: &mut McpState) -> Result<Value> {
     } else {
         state.last_config.clone().unwrap_or_default()
     };
-    let before = state
-        .baseline
-        .clone()
-        .ok_or_else(|| anyhow!("no session baseline; call raysense_session_start first"))?;
+    let before =
+        if let Some(baseline) = state.baseline.clone() {
+            baseline
+        } else {
+            let baseline_dir = baseline_dir_arg(args, &root)?;
+            let manifest = baseline_dir.join("session.json");
+            serde_json::from_str(&fs::read_to_string(&manifest).with_context(|| {
+                format!("failed to read session baseline {}", manifest.display())
+            })?)?
+        };
     let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
     let after = build_baseline(&report, &health);
@@ -563,17 +580,10 @@ fn test_gaps_tool(args: &Value) -> Result<Value> {
     let limit = limit_arg(args, 100)?;
     let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
-    let missing: Vec<Value> = report
-        .files
-        .iter()
-        .filter(|file| !file.path.to_string_lossy().contains("test"))
-        .take(limit)
-        .map(|file| json!({"file_id": file.file_id, "path": file.path}))
-        .collect();
     Ok(json!({
         "root": report.snapshot.root,
         "test_gap": health.metrics.test_gap,
-        "candidate_files": missing
+        "candidate_files": limited(&health.metrics.test_gap.candidates, limit)
     }))
 }
 
@@ -963,6 +973,10 @@ fn config_schema() -> Value {
                         "items": {"type": "string"}
                     },
                     "disabled_languages": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "module_roots": {
                         "type": "array",
                         "items": {"type": "string"}
                     },

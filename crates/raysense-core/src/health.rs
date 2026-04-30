@@ -57,6 +57,7 @@ pub struct ScanConfig {
     pub ignored_paths: Vec<String>,
     pub enabled_languages: Vec<String>,
     pub disabled_languages: Vec<String>,
+    pub module_roots: Vec<String>,
     pub plugins: Vec<LanguagePluginConfig>,
 }
 
@@ -239,6 +240,7 @@ pub struct FunctionComplexityMetric {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuplicateFunctionGroup {
+    pub fingerprint: String,
     pub name: String,
     pub functions: Vec<FunctionComplexityMetric>,
 }
@@ -292,6 +294,14 @@ pub struct TestGapMetrics {
     pub production_files: usize,
     pub test_files: usize,
     pub files_without_nearby_tests: usize,
+    pub candidates: Vec<TestGapCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestGapCandidate {
+    pub file_id: usize,
+    pub path: String,
+    pub expected_tests: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -362,7 +372,7 @@ pub fn compute_health(report: &ScanReport) -> HealthSummary {
 pub fn compute_health_with_config(report: &ScanReport, config: &RaysenseConfig) -> HealthSummary {
     let resolution = resolution_breakdown(report);
     let hotspots = hotspots(report);
-    let metrics = metrics(report, &hotspots);
+    let metrics = metrics(report, &hotspots, config);
     let rules = rules(report, &hotspots, &metrics, config);
     let root_causes = root_causes(report, &metrics);
     let quality_signal = quality_signal(&root_causes);
@@ -429,6 +439,9 @@ fn hotspots(report: &ScanReport) -> Vec<FileHotspot> {
 
     for import in &report.imports {
         if let Some(to_file) = import.resolved_file {
+            if to_file == import.from_file {
+                continue;
+            }
             *fan_in.entry(to_file).or_default() += 1;
             *fan_out.entry(import.from_file).or_default() += 1;
         }
@@ -459,21 +472,29 @@ fn hotspots(report: &ScanReport) -> Vec<FileHotspot> {
     hotspots
 }
 
-fn metrics(report: &ScanReport, hotspots: &[FileHotspot]) -> MetricsSummary {
+fn metrics(
+    report: &ScanReport,
+    hotspots: &[FileHotspot],
+    config: &RaysenseConfig,
+) -> MetricsSummary {
     MetricsSummary {
-        coupling: coupling_metrics(report, hotspots),
+        coupling: coupling_metrics(report, hotspots, config),
         calls: call_metrics(report),
-        architecture: architecture_metrics(report),
+        architecture: architecture_metrics(report, config),
         complexity: complexity_metrics(report),
         size: size_metrics(report),
         entry_points: entry_point_metrics(report),
         test_gap: test_gap_metrics(report),
-        dsm: dsm_metrics(report),
+        dsm: dsm_metrics(report, config),
         evolution: evolution_metrics(report),
     }
 }
 
-fn coupling_metrics(report: &ScanReport, hotspots: &[FileHotspot]) -> CouplingMetrics {
+fn coupling_metrics(
+    report: &ScanReport,
+    hotspots: &[FileHotspot],
+    config: &RaysenseConfig,
+) -> CouplingMetrics {
     let local_edges = report
         .imports
         .iter()
@@ -486,13 +507,16 @@ fn coupling_metrics(report: &ScanReport, hotspots: &[FileHotspot]) -> CouplingMe
             let Some(to_file_id) = import.resolved_file else {
                 return false;
             };
+            if to_file_id == import.from_file {
+                return false;
+            }
             let Some(from_file) = report.files.get(import.from_file) else {
                 return false;
             };
             let Some(to_file) = report.files.get(to_file_id) else {
                 return false;
             };
-            top_module(&from_file.module) != top_module(&to_file.module)
+            module_group(from_file, config) != module_group(to_file, config)
         })
         .count();
 
@@ -562,7 +586,7 @@ fn function_call_metrics(
     metrics
 }
 
-fn architecture_metrics(report: &ScanReport) -> ArchitectureMetrics {
+fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> ArchitectureMetrics {
     let adjacency = file_adjacency(report);
     let reverse = reverse_adjacency(&adjacency);
     let mut max_blast_radius = 0usize;
@@ -585,19 +609,14 @@ fn architecture_metrics(report: &ScanReport) -> ArchitectureMetrics {
         max_blast_radius,
         max_blast_radius_file,
         levels: dependency_levels(report, &adjacency, &reverse),
-        unstable_modules: module_stability(report),
+        unstable_modules: module_stability(report, config),
         cycles: cycle_components(report, &adjacency),
     }
 }
 
 fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
-    let mut calls_by_function: HashMap<usize, usize> = HashMap::new();
     let mut incoming_by_function: HashMap<usize, usize> = HashMap::new();
-    for call in &report.calls {
-        if let Some(function_id) = call.caller_function {
-            *calls_by_function.entry(function_id).or_default() += 1;
-        }
-    }
+    let sources = source_cache(report);
     for edge in &report.call_edges {
         *incoming_by_function
             .entry(edge.callee_function)
@@ -608,20 +627,19 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
     let mut complex_functions = Vec::new();
     let mut dead_functions = Vec::new();
     let mut by_name: BTreeMap<String, Vec<FunctionComplexityMetric>> = BTreeMap::new();
+    let mut by_fingerprint: BTreeMap<String, Vec<FunctionComplexityMetric>> = BTreeMap::new();
 
     for function in &report.functions {
-        let path = report
-            .files
-            .get(function.file_id)
-            .map(|file| file.path.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let value = 1
-            + function.end_line.saturating_sub(function.start_line) / 20
-            + calls_by_function
-                .get(&function.function_id)
-                .copied()
-                .unwrap_or(0)
-                / 5;
+        let Some(file) = report.files.get(function.file_id) else {
+            continue;
+        };
+        let path = file.path.to_string_lossy().into_owned();
+        let source = sources
+            .get(&function.file_id)
+            .map(String::as_str)
+            .unwrap_or("");
+        let body = function_body(source, function);
+        let value = lexical_complexity(&body, &file.language_name);
         values.push(value as f64);
         let metric = FunctionComplexityMetric {
             function_id: function.function_id,
@@ -634,6 +652,12 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
             .entry(function.name.clone())
             .or_default()
             .push(metric.clone());
+        if let Some(fingerprint) = normalized_body_fingerprint(&body) {
+            by_fingerprint
+                .entry(fingerprint)
+                .or_default()
+                .push(metric.clone());
+        }
         if value >= 10 {
             complex_functions.push(metric.clone());
         }
@@ -643,6 +667,7 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
             .unwrap_or(0)
             == 0
             && !is_entry_like_function(&function.name)
+            && !is_public_api_like(file, function, &body)
         {
             dead_functions.push(metric);
         }
@@ -653,11 +678,25 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
     dead_functions.sort_by(|a, b| b.value.cmp(&a.value).then_with(|| a.path.cmp(&b.path)));
     dead_functions.truncate(50);
 
-    let mut duplicate_groups: Vec<DuplicateFunctionGroup> = by_name
+    let mut duplicate_groups: Vec<DuplicateFunctionGroup> = by_fingerprint
         .into_iter()
         .filter(|(_, functions)| functions.len() > 1)
-        .map(|(name, functions)| DuplicateFunctionGroup { name, functions })
+        .map(|(fingerprint, functions)| DuplicateFunctionGroup {
+            fingerprint,
+            name: shared_duplicate_name(&functions),
+            functions,
+        })
         .collect();
+    duplicate_groups.extend(
+        by_name
+            .into_iter()
+            .filter(|(_, functions)| functions.len() > 1)
+            .map(|(name, functions)| DuplicateFunctionGroup {
+                fingerprint: format!("name:{name}"),
+                name,
+                functions,
+            }),
+    );
     duplicate_groups.sort_by(|a, b| {
         b.functions
             .len()
@@ -721,6 +760,9 @@ fn file_adjacency(report: &ScanReport) -> HashMap<usize, Vec<usize>> {
     let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
     for import in &report.imports {
         if let Some(to_file) = import.resolved_file {
+            if to_file == import.from_file {
+                continue;
+            }
             adjacency.entry(import.from_file).or_default().push(to_file);
         }
     }
@@ -805,21 +847,24 @@ fn dependency_levels(
         .collect()
 }
 
-fn module_stability(report: &ScanReport) -> Vec<ModuleStabilityMetric> {
+fn module_stability(report: &ScanReport, config: &RaysenseConfig) -> Vec<ModuleStabilityMetric> {
     let mut fan_in: HashMap<String, usize> = HashMap::new();
     let mut fan_out: HashMap<String, usize> = HashMap::new();
     for import in &report.imports {
         let Some(to_file_id) = import.resolved_file else {
             continue;
         };
+        if to_file_id == import.from_file {
+            continue;
+        }
         let Some(from_file) = report.files.get(import.from_file) else {
             continue;
         };
         let Some(to_file) = report.files.get(to_file_id) else {
             continue;
         };
-        let from = top_module(&from_file.module).to_string();
-        let to = top_module(&to_file.module).to_string();
+        let from = module_group(from_file, config);
+        let to = module_group(to_file, config);
         if from != to {
             *fan_out.entry(from).or_default() += 1;
             *fan_in.entry(to).or_default() += 1;
@@ -830,12 +875,7 @@ fn module_stability(report: &ScanReport) -> Vec<ModuleStabilityMetric> {
         .cloned()
         .chain(fan_out.keys().cloned())
         .collect();
-    modules.extend(
-        report
-            .files
-            .iter()
-            .map(|file| top_module(&file.module).to_string()),
-    );
+    modules.extend(report.files.iter().map(|file| module_group(file, config)));
     let mut metrics: Vec<ModuleStabilityMetric> = modules
         .into_iter()
         .map(|module| {
@@ -907,6 +947,226 @@ fn is_entry_like_function(name: &str) -> bool {
         || name.ends_with("_test")
 }
 
+fn source_cache(report: &ScanReport) -> HashMap<usize, String> {
+    report
+        .files
+        .iter()
+        .filter_map(|file| {
+            fs::read_to_string(report.snapshot.root.join(&file.path))
+                .ok()
+                .map(|source| (file.file_id, source))
+        })
+        .collect()
+}
+
+fn function_body(source: &str, function: &crate::facts::FunctionFact) -> String {
+    source
+        .lines()
+        .skip(function.start_line.saturating_sub(1))
+        .take(function.end_line.saturating_sub(function.start_line) + 1)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn lexical_complexity(body: &str, language: &str) -> usize {
+    let mut value = 1usize;
+    for token in normalized_tokens(body) {
+        if matches!(
+            token.as_str(),
+            "if" | "else"
+                | "elif"
+                | "for"
+                | "while"
+                | "loop"
+                | "match"
+                | "case"
+                | "catch"
+                | "except"
+                | "switch"
+                | "guard"
+                | "when"
+        ) {
+            value += 1;
+        }
+    }
+    value += body.matches("&&").count();
+    value += body.matches("||").count();
+    value += body.matches('?').count();
+    if matches!(language, "python" | "ruby" | "swift") {
+        value += body.matches(" and ").count();
+        value += body.matches(" or ").count();
+    }
+    value
+}
+
+fn normalized_body_fingerprint(body: &str) -> Option<String> {
+    let tokens = normalized_tokens(body);
+    if tokens.len() < 12 {
+        return None;
+    }
+    let normalized = tokens
+        .iter()
+        .map(|token| {
+            if token.chars().all(|ch| ch.is_ascii_digit()) {
+                "0"
+            } else if is_keyword_token(token) {
+                token.as_str()
+            } else {
+                "id"
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(short_hash(&normalized))
+}
+
+fn normalized_tokens(body: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in strip_strings_and_comments(body).chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            current.push(ch.to_ascii_lowercase());
+        } else {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            if matches!(ch, '{' | '}' | '(' | ')' | '[' | ']' | '?' | ':') {
+                tokens.push(ch.to_string());
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn strip_strings_and_comments(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    let mut in_string = None;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+                out.push('\n');
+            } else {
+                out.push(' ');
+            }
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+                out.push(' ');
+            } else {
+                out.push(if ch == '\n' { '\n' } else { ' ' });
+            }
+            continue;
+        }
+        if let Some(quote) = in_string {
+            if ch == '\\' {
+                chars.next();
+                out.push(' ');
+            } else if ch == quote {
+                in_string = None;
+                out.push(' ');
+            } else {
+                out.push(if ch == '\n' { '\n' } else { ' ' });
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            in_line_comment = true;
+            out.push(' ');
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            in_block_comment = true;
+            out.push(' ');
+        } else if ch == '"' || ch == '\'' || ch == '`' {
+            in_string = Some(ch);
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn is_keyword_token(token: &str) -> bool {
+    matches!(
+        token,
+        "if" | "else"
+            | "elif"
+            | "for"
+            | "while"
+            | "loop"
+            | "match"
+            | "case"
+            | "catch"
+            | "except"
+            | "switch"
+            | "return"
+            | "break"
+            | "continue"
+            | "async"
+            | "await"
+            | "yield"
+            | "try"
+            | "throw"
+    )
+}
+
+fn is_public_api_like(
+    file: &crate::facts::FileFact,
+    function: &crate::facts::FunctionFact,
+    body: &str,
+) -> bool {
+    let name = function.name.as_str();
+    let path = file.path.to_string_lossy();
+    is_test_path(&path)
+        || matches!(name, "main" | "init" | "start" | "run" | "new")
+        || name.starts_with("test_")
+        || name.ends_with("_test")
+        || body.lines().next().is_some_and(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("pub ")
+                || trimmed.starts_with("pub(")
+                || trimmed.starts_with("export ")
+                || trimmed.starts_with("public ")
+                || trimmed.starts_with("def __")
+        })
+        || path.ends_with("lib.rs")
+        || path.ends_with("mod.rs")
+        || path.ends_with("__init__.py")
+        || path.ends_with("index.ts")
+        || path.ends_with("index.tsx")
+        || path.ends_with("index.js")
+}
+
+fn shared_duplicate_name(functions: &[FunctionComplexityMetric]) -> String {
+    let Some(first) = functions.first() else {
+        return String::new();
+    };
+    if functions.iter().all(|function| function.name == first.name) {
+        first.name.clone()
+    } else {
+        "similar_body".to_string()
+    }
+}
+
+fn short_hash(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+    hash[..16].to_string()
+}
+
 fn size_metrics(report: &ScanReport) -> SizeMetrics {
     let max_file_lines = report
         .files
@@ -946,26 +1206,42 @@ fn entry_point_metrics(report: &ScanReport) -> EntryPointMetrics {
 }
 
 fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
-    let test_modules: HashSet<String> = report
+    let test_paths: HashSet<String> = report
         .files
         .iter()
         .filter(|file| is_test_path(&file.path.to_string_lossy()))
-        .map(|file| normalized_test_subject(&file.module))
+        .map(|file| file.path.to_string_lossy().replace('\\', "/"))
         .collect();
 
     let mut production_files = 0;
     let mut files_without_nearby_tests = 0;
+    let mut candidates = Vec::new();
 
     for file in &report.files {
         let path = file.path.to_string_lossy();
         if is_test_path(&path) {
             continue;
         }
+        if !report
+            .functions
+            .iter()
+            .any(|function| function.file_id == file.file_id)
+        {
+            continue;
+        }
         production_files += 1;
-        if !test_modules.contains(&normalized_test_subject(&file.module)) {
+        let expected_tests = expected_test_paths(&path);
+        if !expected_tests.iter().any(|path| test_paths.contains(path)) {
             files_without_nearby_tests += 1;
+            candidates.push(TestGapCandidate {
+                file_id: file.file_id,
+                path: path.into_owned(),
+                expected_tests,
+            });
         }
     }
+    candidates.sort_by(|a, b| a.path.cmp(&b.path));
+    candidates.truncate(100);
 
     TestGapMetrics {
         production_files,
@@ -975,29 +1251,66 @@ fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
             .filter(|file| is_test_path(&file.path.to_string_lossy()))
             .count(),
         files_without_nearby_tests,
+        candidates,
     }
 }
 
-fn dsm_metrics(report: &ScanReport) -> DsmMetrics {
+fn expected_test_paths(path: &str) -> Vec<String> {
+    let normalized = path.replace('\\', "/");
+    let path = Path::new(&normalized);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let parent = parent.to_string_lossy().replace('\\', "/");
+    let mut out = Vec::new();
+    if !stem.is_empty() && !ext.is_empty() {
+        out.push(format!("tests/{stem}_test.{ext}"));
+        out.push(format!("tests/test_{stem}.{ext}"));
+        out.push(
+            format!("{parent}/{stem}_test.{ext}")
+                .trim_start_matches('/')
+                .to_string(),
+        );
+        out.push(
+            format!("{parent}/{stem}.test.{ext}")
+                .trim_start_matches('/')
+                .to_string(),
+        );
+    }
+    if normalized.starts_with("src/") {
+        out.push(normalized.replacen("src/", "tests/", 1));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn dsm_metrics(report: &ScanReport, config: &RaysenseConfig) -> DsmMetrics {
     let mut edges: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut modules = HashSet::new();
 
     for file in &report.files {
-        modules.insert(top_module(&file.module).to_string());
+        modules.insert(module_group(file, config));
     }
 
     for import in &report.imports {
         let Some(to_file_id) = import.resolved_file else {
             continue;
         };
+        if to_file_id == import.from_file {
+            continue;
+        }
         let Some(from_file) = report.files.get(import.from_file) else {
             continue;
         };
         let Some(to_file) = report.files.get(to_file_id) else {
             continue;
         };
-        let from_module = top_module(&from_file.module).to_string();
-        let to_module = top_module(&to_file.module).to_string();
+        let from_module = module_group(from_file, config);
+        let to_module = module_group(to_file, config);
         if from_module != to_module {
             *edges.entry((from_module, to_module)).or_default() += 1;
         }
@@ -1207,6 +1520,9 @@ fn rules(
         let Some(to_file_id) = import.resolved_file else {
             continue;
         };
+        if to_file_id == import.from_file {
+            continue;
+        }
         let Some(from_file) = report.files.get(import.from_file) else {
             continue;
         };
@@ -1343,6 +1659,9 @@ fn boundary_findings(report: &ScanReport, config: &BoundaryConfig) -> Vec<RuleFi
         let Some(to_file_id) = import.resolved_file else {
             continue;
         };
+        if to_file_id == import.from_file {
+            continue;
+        }
         let Some(from_file) = report.files.get(import.from_file) else {
             continue;
         };
@@ -1379,6 +1698,9 @@ fn layer_findings(report: &ScanReport, config: &BoundaryConfig) -> Vec<RuleFindi
         let Some(to_file_id) = import.resolved_file else {
             continue;
         };
+        if to_file_id == import.from_file {
+            continue;
+        }
         let Some(from_file) = report.files.get(import.from_file) else {
             continue;
         };
@@ -1428,6 +1750,31 @@ fn normalize_rule_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn module_group(file: &crate::facts::FileFact, config: &RaysenseConfig) -> String {
+    let path = normalize_rule_path(&file.path);
+    for root in &config.scan.module_roots {
+        let root = root.trim_matches('/');
+        if root.is_empty() {
+            continue;
+        }
+        if path == root || path.starts_with(&format!("{root}/")) {
+            let rest = path.trim_start_matches(root).trim_start_matches('/');
+            let next = rest.split('/').next().unwrap_or("");
+            return if next.is_empty() {
+                root.to_string()
+            } else {
+                format!("{root}/{next}")
+            };
+        }
+    }
+    for layer in &config.boundaries.layers {
+        if path_matches_rule(&path, &layer.path) {
+            return layer.name.clone();
+        }
+    }
+    top_module(&file.module).to_string()
+}
+
 fn top_module(module: &str) -> &str {
     module.split(['.', '/']).next().unwrap_or(module)
 }
@@ -1441,17 +1788,6 @@ fn ratio(numerator: usize, denominator: usize) -> f64 {
 
 fn round3(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0
-}
-
-fn normalized_test_subject(module: &str) -> String {
-    module
-        .replace(".tests.", ".")
-        .replace(".test.", ".")
-        .replace("_tests", "")
-        .replace("_test", "")
-        .trim_start_matches("tests.")
-        .trim_start_matches("test.")
-        .to_string()
 }
 
 fn is_test_path(path: &str) -> bool {
@@ -1471,7 +1807,9 @@ mod tests {
         Language, SnapshotFact,
     };
     use crate::graph::compute_graph_metrics;
+    use std::fs;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn computes_resolution_breakdown_and_hotspots() {
@@ -1583,6 +1921,95 @@ mod tests {
         assert_eq!(health.metrics.size.long_functions, 1);
         assert_eq!(health.metrics.entry_points.binaries, 1);
         assert_eq!(health.metrics.dsm.module_edges, 1);
+    }
+
+    #[test]
+    fn computes_source_aware_complexity_duplicates_and_test_gaps() {
+        let root = temp_health_root("source_metrics");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let source = r#"
+pub fn exported(value: i32) -> i32 {
+    if value > 0 { value } else { 0 }
+}
+
+fn first(value: i32) -> i32 {
+    if value > 10 && value < 20 {
+        return value;
+    }
+    0
+}
+
+fn second(input: i32) -> i32 {
+    if input > 10 && input < 20 {
+        return input;
+    }
+    0
+}
+"#;
+        fs::write(root.join("src/lib.rs"), source).unwrap();
+
+        let files = vec![file(0, "src/lib.rs")];
+        let functions = vec![
+            FunctionFact {
+                function_id: 0,
+                file_id: 0,
+                name: "exported".to_string(),
+                start_line: 2,
+                end_line: 4,
+            },
+            FunctionFact {
+                function_id: 1,
+                file_id: 0,
+                name: "first".to_string(),
+                start_line: 6,
+                end_line: 11,
+            },
+            FunctionFact {
+                function_id: 2,
+                file_id: 0,
+                name: "second".to_string(),
+                start_line: 13,
+                end_line: 18,
+            },
+        ];
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: root.clone(),
+                file_count: files.len(),
+                function_count: functions.len(),
+                import_count: 0,
+                call_count: 0,
+            },
+            files,
+            functions,
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph: compute_graph_metrics(&[], &[]),
+        };
+        let health = compute_health(&report);
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(health.metrics.complexity.max_function_complexity >= 3);
+        assert!(health
+            .metrics
+            .complexity
+            .duplicate_groups
+            .iter()
+            .any(|group| group.functions.len() >= 2));
+        assert!(health
+            .metrics
+            .complexity
+            .dead_functions
+            .iter()
+            .all(|function| function.name != "exported"));
+        assert_eq!(health.metrics.test_gap.files_without_nearby_tests, 1);
+        assert!(health.metrics.test_gap.candidates[0]
+            .expected_tests
+            .iter()
+            .any(|path| path == "tests/lib_test.rs"));
     }
 
     #[test]
@@ -1783,6 +2210,14 @@ to = "test"
             bytes: 1,
             content_hash: String::new(),
         }
+    }
+
+    fn temp_health_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("raysense-health-{name}-{nanos}"))
     }
 
     fn import(

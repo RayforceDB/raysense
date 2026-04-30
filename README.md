@@ -182,6 +182,7 @@ Example config:
 ignored_paths = ["target", "fixtures/generated"]
 enabled_languages = []
 disabled_languages = []
+module_roots = ["crates", "src"]
 
 [[scan.plugins]]
 name = "foo"
@@ -217,12 +218,17 @@ order = 0
 
 ## Status
 
-The first testable version focuses on Rust, C/C++, Python, and TypeScript
-codebases:
+The first testable version has grammar-backed support for Rust, C/C++, Python,
+and TypeScript, plus a built-in generic catalog for common project languages
+and formats:
 
 - Configurable scan filtering by ignored paths and enabled/disabled languages.
+- Configurable module roots for DSM and architecture grouping.
 - Generic configured language plugins by file extension with configurable
   function, import, and call token extraction.
+- Built-in generic analyzers for Go, Java, Kotlin, Scala, C#, PHP, Ruby, Swift,
+  shell, SQL, Lua, Perl, Dart, Elixir, Haskell, OCaml, F#, Clojure, Solidity,
+  protobuf, GraphQL, build/config formats, and other common file types.
 - Tree-sitter-backed Rust, C, C++, Python, and TypeScript function discovery
   with lightweight fallback extraction.
 - Tree-sitter-backed Rust `use`/`mod`, C/C++ include, Python import, and
@@ -239,6 +245,10 @@ codebases:
 - Health summary with score, 0-10000 quality signal, root-cause scores,
   import breakdown, hotspots, coupling, size, entry point, test-gap, DSM,
   architecture, complexity, and evolution metrics.
+- Source-aware complexity, duplicate-body grouping, and public API aware
+  dead-function filtering.
+- Test-gap candidates include expected test file paths for each unmatched
+  production file.
 - Built-in rules for high fan-in, production dependencies on test paths,
   large-file/no-test findings, call-resolution/function-call hotspots, max
   cycles, max coupling, max function complexity, god-file pressure, and ordered
@@ -251,8 +261,10 @@ codebases:
   exposed through the MCP interface.
 - Baseline save/diff is available through the CLI and MCP, with Rayforce
   splayed-table storage for baseline tables.
-- CLI quality gate, watch loop, plugin management, and generated local HTML
-  architecture visualization are available.
+- MCP session baselines are persisted by default and can be compared across
+  process restarts.
+- CLI quality gate, watch loop, plugin management, and generated self-refreshing
+  local HTML architecture visualization are available.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.
