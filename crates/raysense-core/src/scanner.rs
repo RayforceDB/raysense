@@ -314,8 +314,25 @@ fn extract_functions(file_id: usize, language: Language, content: &str) -> Vec<F
             &["function_item"],
         )
         .unwrap_or_else(|| extract_token_functions(file_id, content, "fn ")),
-        Language::Python => extract_prefixed_functions(file_id, content, "def "),
-        Language::TypeScript => extract_typescript_functions(file_id, content),
+        Language::Python => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_python::LANGUAGE.into(),
+            &["function_definition"],
+        )
+        .unwrap_or_else(|| extract_prefixed_functions(file_id, content, "def ")),
+        Language::TypeScript => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            &[
+                "function_declaration",
+                "generator_function_declaration",
+                "method_definition",
+                "lexical_declaration",
+            ],
+        )
+        .unwrap_or_else(|| extract_typescript_functions(file_id, content)),
         Language::C => extract_tree_sitter_functions(
             file_id,
             content,
@@ -361,14 +378,16 @@ fn collect_tree_sitter_functions(
     functions: &mut Vec<FunctionFact>,
 ) {
     if function_kinds.contains(&node.kind()) {
-        if let Some(name) = function_name(content, node) {
-            functions.push(FunctionFact {
-                function_id: 0,
-                file_id,
-                name,
-                start_line: node.start_position().row + 1,
-                end_line: node.end_position().row + 1,
-            });
+        if is_function_node(node) {
+            if let Some(name) = function_name(content, node) {
+                functions.push(FunctionFact {
+                    function_id: 0,
+                    file_id,
+                    name,
+                    start_line: node.start_position().row + 1,
+                    end_line: node.end_position().row + 1,
+                });
+            }
         }
     }
 
@@ -376,6 +395,22 @@ fn collect_tree_sitter_functions(
     for child in node.children(&mut cursor) {
         collect_tree_sitter_functions(file_id, content, child, function_kinds, functions);
     }
+}
+
+fn is_function_node(node: Node<'_>) -> bool {
+    node.kind() != "lexical_declaration"
+        || has_descendant_kind(node, &["arrow_function", "function"])
+}
+
+fn has_descendant_kind(node: Node<'_>, kinds: &[&str]) -> bool {
+    if kinds.contains(&node.kind()) {
+        return true;
+    }
+    let mut cursor = node.walk();
+    let found = node
+        .children(&mut cursor)
+        .any(|child| has_descendant_kind(child, kinds));
+    found
 }
 
 fn function_name(content: &str, node: Node<'_>) -> Option<String> {
@@ -709,8 +744,16 @@ fn extract_imports(file_id: usize, language: Language, content: &str) -> Vec<Imp
             extract_tree_sitter_imports(file_id, content, tree_sitter_rust::LANGUAGE.into())
                 .unwrap_or_else(|| extract_rust_imports(file_id, content))
         }
-        Language::Python => extract_python_imports(file_id, content),
-        Language::TypeScript => extract_typescript_imports(file_id, content),
+        Language::Python => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_python::LANGUAGE.into())
+                .unwrap_or_else(|| extract_python_imports(file_id, content))
+        }
+        Language::TypeScript => extract_tree_sitter_imports(
+            file_id,
+            content,
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+        )
+        .unwrap_or_else(|| extract_typescript_imports(file_id, content)),
         Language::C => {
             extract_tree_sitter_imports(file_id, content, tree_sitter_c::LANGUAGE.into())
                 .unwrap_or_else(|| extract_c_imports(file_id, content))
@@ -763,6 +806,19 @@ fn collect_tree_sitter_imports(
                 imports.push(new_import(file_id, &target, kind));
             }
         }
+        "import_statement" => {
+            for target in python_import_targets(content, node) {
+                imports.push(new_import(file_id, &target, "import"));
+            }
+            if let Some(target) = typescript_import_target(content, node) {
+                imports.push(new_import(file_id, &target, "import"));
+            }
+        }
+        "import_from_statement" | "future_import_statement" => {
+            if let Some(target) = python_from_import_target(content, node) {
+                imports.push(new_import(file_id, &target, "from"));
+            }
+        }
         _ => {}
     }
 
@@ -803,20 +859,75 @@ fn c_include_target(content: &str, node: Node<'_>) -> Option<(String, &'static s
     Some((clean_c_include_target(target).to_string(), kind))
 }
 
+fn python_import_targets(content: &str, node: Node<'_>) -> Vec<String> {
+    let Some(text) = node_text(content, node) else {
+        return Vec::new();
+    };
+    let Some(rest) = text.trim().strip_prefix("import ") else {
+        return Vec::new();
+    };
+    if rest.starts_with(['"', '\'']) || rest.contains(" from ") {
+        return Vec::new();
+    }
+    rest.split(',')
+        .filter_map(|part| {
+            part.trim()
+                .split_whitespace()
+                .next()
+                .filter(|target| !target.is_empty())
+                .map(ToString::to_string)
+        })
+        .collect()
+}
+
+fn python_from_import_target(content: &str, node: Node<'_>) -> Option<String> {
+    let text = node_text(content, node)?;
+    text.trim()
+        .strip_prefix("from ")?
+        .split_whitespace()
+        .next()
+        .filter(|target| !target.is_empty())
+        .map(ToString::to_string)
+}
+
+fn typescript_import_target(content: &str, node: Node<'_>) -> Option<String> {
+    quoted_module_specifier(&node_text(content, node)?)
+}
+
+fn quoted_module_specifier(text: &str) -> Option<String> {
+    let mut quote = None;
+    let mut start = 0usize;
+    for (idx, ch) in text.char_indices() {
+        if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+            start = idx + ch.len_utf8();
+            break;
+        }
+    }
+    let quote = quote?;
+    let end = text[start..].find(quote)? + start;
+    Some(text[start..end].to_string())
+}
+
 fn extract_calls(
     file_id: usize,
     language: Language,
     content: &str,
     functions: &[FunctionFact],
 ) -> Vec<CallFact> {
-    let language = match language {
-        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-        Language::C => tree_sitter_c::LANGUAGE.into(),
-        Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-        Language::Python | Language::TypeScript | Language::Unknown => return Vec::new(),
+    let (language, call_kinds) = match language {
+        Language::Rust => (tree_sitter_rust::LANGUAGE.into(), &["call_expression"][..]),
+        Language::C => (tree_sitter_c::LANGUAGE.into(), &["call_expression"][..]),
+        Language::Cpp => (tree_sitter_cpp::LANGUAGE.into(), &["call_expression"][..]),
+        Language::Python => (tree_sitter_python::LANGUAGE.into(), &["call"][..]),
+        Language::TypeScript => (
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            &["call_expression"][..],
+        ),
+        Language::Unknown => return Vec::new(),
     };
 
-    extract_tree_sitter_calls(file_id, content, functions, language).unwrap_or_default()
+    extract_tree_sitter_calls(file_id, content, functions, language, call_kinds).unwrap_or_default()
 }
 
 fn extract_tree_sitter_calls(
@@ -824,6 +935,7 @@ fn extract_tree_sitter_calls(
     content: &str,
     functions: &[FunctionFact],
     language: tree_sitter::Language,
+    call_kinds: &[&str],
 ) -> Option<Vec<CallFact>> {
     let mut parser = Parser::new();
     parser.set_language(&language).ok()?;
@@ -834,7 +946,7 @@ fn extract_tree_sitter_calls(
     }
 
     let mut calls = Vec::new();
-    collect_tree_sitter_calls(file_id, content, root, functions, &mut calls);
+    collect_tree_sitter_calls(file_id, content, root, functions, call_kinds, &mut calls);
     Some(calls)
 }
 
@@ -843,9 +955,10 @@ fn collect_tree_sitter_calls(
     content: &str,
     node: Node<'_>,
     functions: &[FunctionFact],
+    call_kinds: &[&str],
     calls: &mut Vec<CallFact>,
 ) {
-    if node.kind() == "call_expression" {
+    if call_kinds.contains(&node.kind()) {
         if let Some(target) = call_target(content, node) {
             let line = node.start_position().row + 1;
             calls.push(CallFact {
@@ -860,7 +973,7 @@ fn collect_tree_sitter_calls(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_tree_sitter_calls(file_id, content, child, functions, calls);
+        collect_tree_sitter_calls(file_id, content, child, functions, call_kinds, calls);
     }
 }
 
@@ -1377,19 +1490,81 @@ fn helper() {}
     fn extracts_python_facts() {
         let content = r#"
 import os
+import sys, json as json_lib
 from pathlib import Path
 
 def run():
-    pass
+    Path.cwd()
+
+class Worker:
+    def start(self):
+        run()
 "#;
 
-        let functions = extract_functions(3, Language::Python, content);
+        let mut functions = extract_functions(3, Language::Python, content);
+        for (idx, function) in functions.iter_mut().enumerate() {
+            function.function_id = idx;
+        }
         let imports = extract_imports(3, Language::Python, content);
+        let calls = extract_calls(3, Language::Python, content, &functions);
 
-        assert_eq!(functions.len(), 1);
+        assert_eq!(functions.len(), 2);
         assert_eq!(functions[0].name, "run");
+        assert_eq!(functions[1].name, "start");
+        assert_eq!(imports.len(), 4);
+        assert_eq!(imports[0].target, "os");
+        assert_eq!(imports[1].target, "sys");
+        assert_eq!(imports[2].target, "json");
+        assert_eq!(imports[3].target, "pathlib");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].target, "cwd");
+        assert_eq!(calls[0].caller_function, Some(0));
+        assert_eq!(calls[1].target, "run");
+        assert_eq!(calls[1].caller_function, Some(1));
+    }
+
+    #[test]
+    fn extracts_tree_sitter_typescript_facts() {
+        let content = r#"
+import { load } from "./loader";
+import "./setup";
+
+export function run(): void {
+    load();
+}
+
+const start = async () => {
+    run();
+};
+
+class Service {
+    boot() {
+        start();
+    }
+}
+"#;
+
+        let functions = extract_functions(4, Language::TypeScript, content);
+        let imports = extract_imports(4, Language::TypeScript, content);
+        let calls = extract_calls(4, Language::TypeScript, content, &functions);
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run", "start", "boot"]
+        );
         assert_eq!(imports.len(), 2);
-        assert_eq!(imports[1].target, "pathlib");
+        assert_eq!(imports[0].target, "./loader");
+        assert_eq!(imports[1].target, "./setup");
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.target.as_str())
+                .collect::<Vec<_>>(),
+            vec!["load", "run", "start"]
+        );
     }
 
     #[test]

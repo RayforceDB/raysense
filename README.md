@@ -117,14 +117,16 @@ to = "test"
 
 ## Status
 
-The first testable version focuses on Rust and C/C++ codebases:
+The first testable version focuses on Rust, C/C++, Python, and TypeScript
+codebases:
 
 - Configurable scan filtering by ignored paths and enabled/disabled languages.
-- Tree-sitter-backed Rust, C, and C++ function discovery with lightweight
-  fallback extraction.
-- Tree-sitter-backed Rust `use`/`mod` and C/C++ include extraction with
-  lightweight fallback extraction.
-- Tree-sitter-backed Rust, C, and C++ call facts with enclosing function ids.
+- Tree-sitter-backed Rust, C, C++, Python, and TypeScript function discovery
+  with lightweight fallback extraction.
+- Tree-sitter-backed Rust `use`/`mod`, C/C++ include, Python import, and
+  TypeScript import extraction with lightweight fallback extraction.
+- Tree-sitter-backed Rust, C, C++, Python, and TypeScript call facts with
+  enclosing function ids.
 - Conservative call-edge resolution for unambiguous function names.
 - Function-level call metrics: resolution ratio, fan-in/fan-out, and top
   called/calling functions.
