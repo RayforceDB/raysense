@@ -28,12 +28,20 @@ use std::os::raw::{c_char, c_int};
 
 pub const RAY_I32: i8 = 4;
 pub const RAY_I64: i8 = 5;
+pub const RAY_F64: i8 = 8;
 pub const RAY_STR: i8 = 13;
 pub const RAY_TABLE: i8 = 98;
+pub const RAY_ERROR: i8 = 127;
 
 #[repr(C)]
 pub struct ray_t {
-    _private: [u8; 0],
+    pub header: [u8; 16],
+    pub mmod: u8,
+    pub order: u8,
+    pub type_: i8,
+    pub attrs: u8,
+    pub rc: u32,
+    pub len: i64,
 }
 
 unsafe extern "C" {
@@ -43,17 +51,24 @@ unsafe extern "C" {
     pub fn ray_version_string() -> *const c_char;
 
     pub fn ray_release(v: *mut ray_t);
+    pub fn ray_err_code(err: *mut ray_t) -> *const c_char;
 
     pub fn ray_sym_init() -> ray_err_t;
     pub fn ray_sym_destroy();
     pub fn ray_sym_intern(str: *const c_char, len: usize) -> i64;
+    pub fn ray_sym_str(id: i64) -> *mut ray_t;
 
     pub fn ray_vec_new(type_: i8, capacity: i64) -> *mut ray_t;
     pub fn ray_vec_append(vec: *mut ray_t, elem: *const std::ffi::c_void) -> *mut ray_t;
     pub fn ray_str_vec_append(vec: *mut ray_t, s: *const c_char, len: usize) -> *mut ray_t;
+    pub fn ray_str_vec_get(vec: *mut ray_t, idx: i64, out_len: *mut usize) -> *const c_char;
+    pub fn ray_str_ptr(s: *mut ray_t) -> *const c_char;
+    pub fn ray_str_len(s: *mut ray_t) -> usize;
 
     pub fn ray_table_new(ncols: i64) -> *mut ray_t;
     pub fn ray_table_add_col(tbl: *mut ray_t, name_id: i64, col_vec: *mut ray_t) -> *mut ray_t;
+    pub fn ray_table_get_col_idx(tbl: *mut ray_t, idx: i64) -> *mut ray_t;
+    pub fn ray_table_col_name(tbl: *mut ray_t, idx: i64) -> i64;
     pub fn ray_table_ncols(tbl: *mut ray_t) -> i64;
     pub fn ray_table_nrows(tbl: *mut ray_t) -> i64;
 

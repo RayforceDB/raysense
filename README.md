@@ -85,7 +85,8 @@ automatically. `--config` overrides that path.
 `raysense mcp` runs a stdio MCP server for agents. It exposes tools to read and
 write config, run health, inspect scan facts, list dependency edges, read
 hotspots, read rule findings, read DSM module edges, and materialize memory
-table summaries. It can also save and diff baselines.
+table summaries. It can also save/diff baselines and read saved baseline
+tables.
 
 Baselines are stored under `<path>/.raysense/baseline` by default. The manifest
 is JSON for fast agent diffs, and baseline tables are written under `tables/`
@@ -141,7 +142,8 @@ codebases:
 - Rule thresholds can be configured with TOML.
 - Forbidden top-level module dependencies can be configured with TOML.
 - Config read/write, health runs, scan facts, edges, hotspots, rule findings,
-  module edges, and memory summaries are exposed through the MCP interface.
+  module edges, memory summaries, and saved baseline tables are exposed through
+  the MCP interface.
 - Baseline save/diff is available through the CLI and MCP, with Rayforce
   splayed-table storage for baseline tables.
 - Rayforce table materialization for scan facts, call facts, call edges,

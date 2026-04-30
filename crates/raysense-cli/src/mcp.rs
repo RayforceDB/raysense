@@ -191,6 +191,16 @@ fn tools_list() -> Value {
                 "name": "raysense_baseline_diff",
                 "description": "Diff the current project health against a saved baseline.",
                 "inputSchema": baseline_schema("Baseline directory. Defaults to <path>/.raysense/baseline.")
+            },
+            {
+                "name": "raysense_baseline_tables",
+                "description": "List Rayforce splayed tables saved in a Raysense baseline.",
+                "inputSchema": baseline_table_schema(false)
+            },
+            {
+                "name": "raysense_baseline_table_read",
+                "description": "Read rows from a Rayforce splayed table saved in a Raysense baseline.",
+                "inputSchema": baseline_table_schema(true)
             }
         ]
     })
@@ -218,6 +228,8 @@ fn call_tool(params: &Value) -> Result<Value> {
         "raysense_memory_summary" => memory_summary_tool(&args),
         "raysense_baseline_save" => baseline_save_tool(&args),
         "raysense_baseline_diff" => baseline_diff_tool(&args),
+        "raysense_baseline_tables" => baseline_tables_tool(&args),
+        "raysense_baseline_table_read" => baseline_table_read_tool(&args),
         _ => Err(anyhow!("unknown tool {name}")),
     }
 }
@@ -426,6 +438,49 @@ fn baseline_diff_tool(args: &Value) -> Result<Value> {
     Ok(json!({
         "baseline_path": baseline_dir,
         "diff": diff_baselines(&before, &after)
+    }))
+}
+
+fn baseline_tables_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let baseline_dir = baseline_dir_arg(args, &root)?;
+    let tables_dir = baseline_dir.join("tables");
+    let tables = raysense_memory::list_baseline_tables(&tables_dir)
+        .with_context(|| format!("failed to list baseline tables {}", tables_dir.display()))?;
+
+    Ok(json!({
+        "baseline_path": baseline_dir,
+        "tables_path": tables_dir,
+        "tables": tables
+    }))
+}
+
+fn baseline_table_read_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let baseline_dir = baseline_dir_arg(args, &root)?;
+    let tables_dir = baseline_dir.join("tables");
+    let table = args
+        .get("table")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("table must be a string"))?;
+    let offset = args
+        .get("offset")
+        .map(|value| {
+            value
+                .as_u64()
+                .map(|value| value as usize)
+                .ok_or_else(|| anyhow!("offset must be a non-negative integer"))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let limit = limit_arg(args, 100)?;
+    let table_rows = raysense_memory::read_baseline_table(&tables_dir, table, offset, limit)
+        .with_context(|| format!("failed to read baseline table {}", tables_dir.display()))?;
+
+    Ok(json!({
+        "baseline_path": baseline_dir,
+        "tables_path": tables_dir,
+        "table": table_rows
     }))
 }
 
@@ -660,6 +715,23 @@ fn baseline_schema(path_description: &str) -> Value {
     })
 }
 
+fn baseline_table_schema(require_table: bool) -> Value {
+    let mut schema = json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "baseline_path": {"type": "string", "description": "Baseline directory. Defaults to <path>/.raysense/baseline."},
+            "table": {"type": "string", "description": "Baseline table name, such as files, functions, imports, calls, call_edges, health, hotspots, rules, module_edges, or changed_files."},
+            "offset": {"type": "integer", "minimum": 0, "description": "First row offset. Defaults to 0."},
+            "limit": {"type": "integer", "minimum": 1, "description": "Maximum rows to return. Defaults to 100."}
+        }
+    });
+    if require_table {
+        schema["required"] = json!(["table"]);
+    }
+    schema
+}
+
 fn limited<T: serde::Serialize>(items: &[T], limit: usize) -> Vec<Value> {
     items
         .iter()
@@ -695,6 +767,8 @@ mod tests {
         assert!(names.contains(&"raysense_memory_summary"));
         assert!(names.contains(&"raysense_baseline_save"));
         assert!(names.contains(&"raysense_baseline_diff"));
+        assert!(names.contains(&"raysense_baseline_tables"));
+        assert!(names.contains(&"raysense_baseline_table_read"));
     }
 
     #[test]

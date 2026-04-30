@@ -45,6 +45,20 @@ pub enum MemoryError {
     },
     #[error("rayforce failed to save splayed table {table} with code {code}")]
     SplaySave { table: &'static str, code: i32 },
+    #[error("rayforce failed to read splayed table {table}: {code}")]
+    SplayRead { table: String, code: String },
+    #[error("rayforce returned null while reading splayed table {table}")]
+    SplayReadNull { table: String },
+    #[error("failed to read baseline tables {path}: {source}")]
+    ReadTables {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("baseline table {0} was not found")]
+    TableNotFound(String),
+    #[error("invalid baseline table name {0}")]
+    InvalidTableName(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -66,6 +80,23 @@ pub struct MemorySummary {
     pub rules: TableSummary,
     pub module_edges: TableSummary,
     pub changed_files: TableSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BaselineTableInfo {
+    pub name: String,
+    pub columns: i64,
+    pub rows: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BaselineTableRows {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<serde_json::Value>,
+    pub offset: usize,
+    pub limit: usize,
+    pub total_rows: i64,
 }
 
 pub struct RayMemory {
@@ -131,18 +162,19 @@ impl RayMemory {
             path: dir.to_path_buf(),
             source,
         })?;
+        let sym_path = dir.join(".sym");
 
-        self.save_table("files", self.files.as_ptr(), dir)?;
-        self.save_table("functions", self.functions.as_ptr(), dir)?;
-        self.save_table("entry_points", self.entry_points.as_ptr(), dir)?;
-        self.save_table("imports", self.imports.as_ptr(), dir)?;
-        self.save_table("calls", self.calls.as_ptr(), dir)?;
-        self.save_table("call_edges", self.call_edges.as_ptr(), dir)?;
-        self.save_table("health", self.health.as_ptr(), dir)?;
-        self.save_table("hotspots", self.hotspots.as_ptr(), dir)?;
-        self.save_table("rules", self.rules.as_ptr(), dir)?;
-        self.save_table("module_edges", self.module_edges.as_ptr(), dir)?;
-        self.save_table("changed_files", self.changed_files.as_ptr(), dir)?;
+        self.save_table("files", self.files.as_ptr(), dir, &sym_path)?;
+        self.save_table("functions", self.functions.as_ptr(), dir, &sym_path)?;
+        self.save_table("entry_points", self.entry_points.as_ptr(), dir, &sym_path)?;
+        self.save_table("imports", self.imports.as_ptr(), dir, &sym_path)?;
+        self.save_table("calls", self.calls.as_ptr(), dir, &sym_path)?;
+        self.save_table("call_edges", self.call_edges.as_ptr(), dir, &sym_path)?;
+        self.save_table("health", self.health.as_ptr(), dir, &sym_path)?;
+        self.save_table("hotspots", self.hotspots.as_ptr(), dir, &sym_path)?;
+        self.save_table("rules", self.rules.as_ptr(), dir, &sym_path)?;
+        self.save_table("module_edges", self.module_edges.as_ptr(), dir, &sym_path)?;
+        self.save_table("changed_files", self.changed_files.as_ptr(), dir, &sym_path)?;
         Ok(())
     }
 
@@ -151,9 +183,11 @@ impl RayMemory {
         name: &'static str,
         table: *mut rayforce_sys::ray_t,
         base: &Path,
+        sym_path: &Path,
     ) -> Result<(), MemoryError> {
         let path = CString::new(base.join(name).to_string_lossy().into_owned())?;
-        let err = unsafe { rayforce_sys::ray_splay_save(table, path.as_ptr(), std::ptr::null()) };
+        let sym_path = CString::new(sym_path.to_string_lossy().into_owned())?;
+        let err = unsafe { rayforce_sys::ray_splay_save(table, path.as_ptr(), sym_path.as_ptr()) };
         if err == rayforce_sys::RAY_OK {
             Ok(())
         } else {
@@ -163,6 +197,223 @@ impl RayMemory {
             })
         }
     }
+}
+
+pub fn list_baseline_tables(dir: impl AsRef<Path>) -> Result<Vec<BaselineTableInfo>, MemoryError> {
+    init_symbols()?;
+    let dir = dir.as_ref();
+    let mut tables = Vec::new();
+    let entries = fs::read_dir(dir).map_err(|source| MemoryError::ReadTables {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|source| MemoryError::ReadTables {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|source| MemoryError::ReadTables {
+                path: entry.path(),
+                source,
+            })?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let table = read_table_object(dir, &name)?;
+        tables.push(BaselineTableInfo {
+            name,
+            columns: unsafe { rayforce_sys::ray_table_ncols(table.as_ptr()) },
+            rows: unsafe { rayforce_sys::ray_table_nrows(table.as_ptr()) },
+        });
+    }
+
+    tables.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(tables)
+}
+
+pub fn read_baseline_table(
+    dir: impl AsRef<Path>,
+    name: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<BaselineTableRows, MemoryError> {
+    init_symbols()?;
+    validate_table_name(name)?;
+    let dir = dir.as_ref();
+    if !dir.join(name).is_dir() {
+        return Err(MemoryError::TableNotFound(name.to_string()));
+    }
+    let table = read_table_object(dir, name)?;
+    table_rows(name, table.as_ptr(), offset, limit)
+}
+
+fn validate_table_name(name: &str) -> Result<(), MemoryError> {
+    if name.is_empty()
+        || name.starts_with('.')
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
+        return Err(MemoryError::InvalidTableName(name.to_string()));
+    }
+    Ok(())
+}
+
+fn read_table_object(dir: &Path, name: &str) -> Result<RayObject, MemoryError> {
+    validate_table_name(name)?;
+    let path = CString::new(dir.join(name).to_string_lossy().into_owned())?;
+    let sym_path_buf = dir.join(".sym");
+    let sym_path = if sym_path_buf.exists() {
+        Some(CString::new(sym_path_buf.to_string_lossy().into_owned())?)
+    } else {
+        None
+    };
+    let ptr = unsafe {
+        rayforce_sys::ray_read_splayed(
+            path.as_ptr(),
+            sym_path
+                .as_ref()
+                .map(|path| path.as_ptr())
+                .unwrap_or(std::ptr::null()),
+        )
+    };
+    if ptr.is_null() {
+        return Err(MemoryError::SplayReadNull {
+            table: name.to_string(),
+        });
+    }
+    if unsafe { (*ptr).type_ } == rayforce_sys::RAY_ERROR {
+        let code = unsafe {
+            let code = rayforce_sys::ray_err_code(ptr);
+            if code.is_null() {
+                "unknown".to_string()
+            } else {
+                std::ffi::CStr::from_ptr(code)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        return Err(MemoryError::SplayRead {
+            table: name.to_string(),
+            code,
+        });
+    }
+    RayObject::new(ptr, "rayforce splayed table")
+}
+
+fn table_rows(
+    name: &str,
+    table: *mut rayforce_sys::ray_t,
+    offset: usize,
+    limit: usize,
+) -> Result<BaselineTableRows, MemoryError> {
+    let total_rows = unsafe { rayforce_sys::ray_table_nrows(table) };
+    let ncols = unsafe { rayforce_sys::ray_table_ncols(table) };
+    let mut columns = Vec::new();
+    let mut col_ptrs = Vec::new();
+
+    for idx in 0..ncols {
+        let name_id = unsafe { rayforce_sys::ray_table_col_name(table, idx) };
+        columns.push(symbol_text(name_id));
+        col_ptrs.push(unsafe { rayforce_sys::ray_table_get_col_idx(table, idx) });
+    }
+
+    let start = offset.min(total_rows.max(0) as usize);
+    let end = start.saturating_add(limit).min(total_rows.max(0) as usize);
+    let mut rows = Vec::new();
+    for row_idx in start..end {
+        let mut row = serde_json::Map::new();
+        for (col_idx, col_name) in columns.iter().enumerate() {
+            row.insert(
+                col_name.clone(),
+                cell_value(col_ptrs[col_idx], row_idx as i64),
+            );
+        }
+        rows.push(serde_json::Value::Object(row));
+    }
+
+    Ok(BaselineTableRows {
+        name: name.to_string(),
+        columns,
+        rows,
+        offset,
+        limit,
+        total_rows,
+    })
+}
+
+fn symbol_text(name_id: i64) -> String {
+    let atom = unsafe { rayforce_sys::ray_sym_str(name_id) };
+    if atom.is_null() {
+        return format!("#{name_id}");
+    }
+    string_atom(atom).unwrap_or_else(|| format!("#{name_id}"))
+}
+
+fn cell_value(col: *mut rayforce_sys::ray_t, row_idx: i64) -> serde_json::Value {
+    if col.is_null() {
+        return serde_json::Value::Null;
+    }
+    let len = unsafe { (*col).len };
+    if row_idx < 0 || row_idx >= len {
+        return serde_json::Value::Null;
+    }
+
+    match unsafe { (*col).type_ } {
+        rayforce_sys::RAY_I32 => {
+            let data = ray_data(col).cast::<i32>();
+            serde_json::Value::from(unsafe { *data.add(row_idx as usize) })
+        }
+        rayforce_sys::RAY_I64 => {
+            let data = ray_data(col).cast::<i64>();
+            serde_json::Value::from(unsafe { *data.add(row_idx as usize) })
+        }
+        rayforce_sys::RAY_F64 => {
+            let data = ray_data(col).cast::<f64>();
+            serde_json::Number::from_f64(unsafe { *data.add(row_idx as usize) })
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
+        rayforce_sys::RAY_STR => string_vec_value(col, row_idx)
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null),
+        other => serde_json::Value::String(format!("<unsupported type {other}>")),
+    }
+}
+
+fn ray_data(obj: *mut rayforce_sys::ray_t) -> *const u8 {
+    unsafe {
+        obj.cast::<u8>()
+            .add(std::mem::size_of::<rayforce_sys::ray_t>())
+    }
+}
+
+fn string_vec_value(col: *mut rayforce_sys::ray_t, row_idx: i64) -> Option<String> {
+    let mut len = 0usize;
+    let ptr = unsafe { rayforce_sys::ray_str_vec_get(col, row_idx, &mut len) };
+    if ptr.is_null() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) })
+            .into_owned(),
+    )
+}
+
+fn string_atom(atom: *mut rayforce_sys::ray_t) -> Option<String> {
+    let len = unsafe { rayforce_sys::ray_str_len(atom) };
+    let ptr = unsafe { rayforce_sys::ray_str_ptr(atom) };
+    if ptr.is_null() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) })
+            .into_owned(),
+    )
 }
 
 struct RayObject {
