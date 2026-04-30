@@ -1931,7 +1931,18 @@ fn config_schema() -> Value {
                                 "max_function_complexity": {"type": ["integer", "null"], "minimum": 0},
                                 "max_cognitive_complexity": {"type": ["integer", "null"], "minimum": 0},
                                 "max_file_lines": {"type": ["integer", "null"], "minimum": 0},
-                                "max_function_lines": {"type": ["integer", "null"], "minimum": 0}
+                                "max_function_lines": {"type": ["integer", "null"], "minimum": 0},
+                                "resolver_alias_files": {"type": "array", "items": {"type": "string"}},
+                                "namespace_separator": {"type": ["string", "null"]},
+                                "module_prefix_files": {"type": "array", "items": {"type": "string"}},
+                                "module_prefix_directives": {"type": "array", "items": {"type": "string"}},
+                                "entry_point_patterns": {"type": "array", "items": {"type": "string"}},
+                                "test_module_patterns": {"type": "array", "items": {"type": "string"}},
+                                "test_attribute_patterns": {"type": "array", "items": {"type": "string"}},
+                                "parameter_node_kinds": {"type": "array", "items": {"type": "string"}},
+                                "complexity_node_kinds": {"type": "array", "items": {"type": "string"}},
+                                "logical_operator_kinds": {"type": "array", "items": {"type": "string"}},
+                                "abstract_base_classes": {"type": "array", "items": {"type": "string"}}
                             },
                             "required": ["name"]
                         }

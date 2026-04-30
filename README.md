@@ -238,6 +238,17 @@ max_function_complexity = 15
 max_cognitive_complexity = 20
 max_file_lines = 500
 max_function_lines = 80
+resolver_alias_files = ["foo.config.json"]
+namespace_separator = "."
+module_prefix_files = ["mod.foo"]
+module_prefix_directives = ["package "]
+entry_point_patterns = ["main"]
+test_module_patterns = ["tests/*"]
+test_attribute_patterns = ["@Test"]
+parameter_node_kinds = ["parameter"]
+complexity_node_kinds = ["if_statement", "while_statement"]
+logical_operator_kinds = ["&&", "||"]
+abstract_base_classes = ["Base"]
 
 [rules]
 min_quality_signal = 0

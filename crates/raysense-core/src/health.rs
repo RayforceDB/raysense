@@ -115,6 +115,36 @@ pub struct LanguagePluginConfig {
     pub max_cognitive_complexity: Option<usize>,
     pub max_file_lines: Option<usize>,
     pub max_function_lines: Option<usize>,
+    /// Files whose contents declare path aliases (e.g. `tsconfig.json`,
+    /// `.cargo/config.toml`). Consumed by import resolution.
+    pub resolver_alias_files: Vec<String>,
+    /// Module-name separator used by the language (e.g. "." for Python,
+    /// "::" for Rust). Used when joining/splitting module paths.
+    pub namespace_separator: Option<String>,
+    /// File names that introduce a module by their location (e.g.
+    /// `mod.rs`, `__init__.py`).
+    pub module_prefix_files: Vec<String>,
+    /// Source-line directives that declare a module name (e.g. `package `,
+    /// `module `).
+    pub module_prefix_directives: Vec<String>,
+    /// Symbol names that should be treated as entry points (e.g. `main`,
+    /// `init`).
+    pub entry_point_patterns: Vec<String>,
+    /// Path patterns matching test modules (in addition to `test_path_patterns`).
+    pub test_module_patterns: Vec<String>,
+    /// Source-line attributes/decorators that mark a function as a test
+    /// (e.g. `#[test]`, `@Test`).
+    pub test_attribute_patterns: Vec<String>,
+    /// Tree-sitter node kinds representing function parameter declarations.
+    pub parameter_node_kinds: Vec<String>,
+    /// Tree-sitter node kinds that increment cyclomatic complexity (`if`,
+    /// `while`, `match_arm`, ...).
+    pub complexity_node_kinds: Vec<String>,
+    /// Tree-sitter node kinds for logical operators that contribute to
+    /// cognitive complexity (`&&`, `||`).
+    pub logical_operator_kinds: Vec<String>,
+    /// Built-in or well-known abstract base class names for the language.
+    pub abstract_base_classes: Vec<String>,
 }
 
 impl Default for LanguagePluginConfig {
@@ -149,6 +179,17 @@ impl Default for LanguagePluginConfig {
             max_cognitive_complexity: None,
             max_file_lines: None,
             max_function_lines: None,
+            resolver_alias_files: Vec::new(),
+            namespace_separator: None,
+            module_prefix_files: Vec::new(),
+            module_prefix_directives: Vec::new(),
+            entry_point_patterns: Vec::new(),
+            test_module_patterns: Vec::new(),
+            test_attribute_patterns: Vec::new(),
+            parameter_node_kinds: Vec::new(),
+            complexity_node_kinds: Vec::new(),
+            logical_operator_kinds: Vec::new(),
+            abstract_base_classes: Vec::new(),
         }
     }
 }
@@ -3701,6 +3742,79 @@ mod tests {
         assert_eq!(health.metrics.size.file_size_entropy, 1.0);
         assert_eq!(health.metrics.complexity.complexity_entropy, 0.0);
         assert_eq!(health.root_causes.structural_uniformity, 0.5);
+    }
+
+    #[test]
+    fn plugin_config_round_trips_extended_semantic_fields() {
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[[scan.plugins]]
+name = "toy"
+extensions = ["toy"]
+resolver_alias_files = ["aliases.json"]
+namespace_separator = "."
+module_prefix_files = ["mod.toy", "init.toy"]
+module_prefix_directives = ["package "]
+entry_point_patterns = ["main", "init"]
+test_module_patterns = ["tests/*"]
+test_attribute_patterns = ["@Test"]
+parameter_node_kinds = ["parameter"]
+complexity_node_kinds = ["if_expression", "while_expression"]
+logical_operator_kinds = ["&&", "||"]
+abstract_base_classes = ["Base", "Abstract"]
+"#,
+        )
+        .expect("plugin config with new fields parses");
+
+        let plugin = config
+            .scan
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == "toy")
+            .expect("toy plugin present");
+        assert_eq!(plugin.resolver_alias_files, vec!["aliases.json"]);
+        assert_eq!(plugin.namespace_separator.as_deref(), Some("."));
+        assert_eq!(plugin.module_prefix_files, vec!["mod.toy", "init.toy"]);
+        assert_eq!(plugin.module_prefix_directives, vec!["package "]);
+        assert_eq!(plugin.entry_point_patterns, vec!["main", "init"]);
+        assert_eq!(plugin.test_module_patterns, vec!["tests/*"]);
+        assert_eq!(plugin.test_attribute_patterns, vec!["@Test"]);
+        assert_eq!(plugin.parameter_node_kinds, vec!["parameter"]);
+        assert_eq!(
+            plugin.complexity_node_kinds,
+            vec!["if_expression", "while_expression"]
+        );
+        assert_eq!(plugin.logical_operator_kinds, vec!["&&", "||"]);
+        assert_eq!(plugin.abstract_base_classes, vec!["Base", "Abstract"]);
+    }
+
+    #[test]
+    fn plugin_config_defaults_extended_fields_to_empty() {
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[[scan.plugins]]
+name = "minimal"
+extensions = ["min"]
+"#,
+        )
+        .expect("minimal plugin parses");
+        let plugin = config
+            .scan
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == "minimal")
+            .expect("minimal plugin present");
+        assert!(plugin.resolver_alias_files.is_empty());
+        assert!(plugin.namespace_separator.is_none());
+        assert!(plugin.module_prefix_files.is_empty());
+        assert!(plugin.module_prefix_directives.is_empty());
+        assert!(plugin.entry_point_patterns.is_empty());
+        assert!(plugin.test_module_patterns.is_empty());
+        assert!(plugin.test_attribute_patterns.is_empty());
+        assert!(plugin.parameter_node_kinds.is_empty());
+        assert!(plugin.complexity_node_kinds.is_empty());
+        assert!(plugin.logical_operator_kinds.is_empty());
+        assert!(plugin.abstract_base_classes.is_empty());
     }
 
     #[test]
