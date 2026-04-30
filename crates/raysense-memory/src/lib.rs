@@ -411,14 +411,26 @@ fn table_rows(
         .map(|sort| column_index(&columns, &sort.column))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut row_indexes = Vec::new();
-    for row_idx in 0..total_rows.max(0) as usize {
-        if row_matches(&col_ptrs, row_idx, &filters, query.filter_mode) {
-            row_indexes.push(row_idx);
+    let all_rows = total_rows.max(0) as usize;
+    let (matched_rows, page_indexes) = if query.sort.is_empty() {
+        let mut matched_rows = 0usize;
+        let mut page_indexes = Vec::new();
+        for row_idx in 0..all_rows {
+            if row_matches(&col_ptrs, row_idx, &filters, query.filter_mode) {
+                if matched_rows >= query.offset && page_indexes.len() < query.limit {
+                    page_indexes.push(row_idx);
+                }
+                matched_rows += 1;
+            }
         }
-    }
-
-    if !query.sort.is_empty() {
+        (matched_rows, page_indexes)
+    } else {
+        let mut row_indexes = Vec::new();
+        for row_idx in 0..all_rows {
+            if row_matches(&col_ptrs, row_idx, &filters, query.filter_mode) {
+                row_indexes.push(row_idx);
+            }
+        }
         row_indexes.sort_by(|left, right| {
             for (sort, col_idx) in query.sort.iter().zip(&sort_cols) {
                 let left = cell_value(col_ptrs[*col_idx], *left as i64);
@@ -434,13 +446,15 @@ fn table_rows(
             }
             left.cmp(right)
         });
-    }
 
-    let matched_rows = row_indexes.len();
-    let start = query.offset.min(matched_rows);
-    let end = start.saturating_add(query.limit).min(matched_rows);
+        let matched_rows = row_indexes.len();
+        let start = query.offset.min(matched_rows);
+        let end = start.saturating_add(query.limit).min(matched_rows);
+        (matched_rows, row_indexes[start..end].to_vec())
+    };
+
     let mut rows = Vec::new();
-    for row_idx in &row_indexes[start..end] {
+    for row_idx in &page_indexes {
         let mut row = serde_json::Map::new();
         for col_idx in &projected {
             let col_name = &columns[*col_idx];

@@ -100,6 +100,49 @@ Baseline table filters use `column:op:value`, where `op` is one of `eq`, `ne`,
 `--filter-mode any` for OR.
 Repeat `--sort` to apply ordered multi-column sorting.
 
+CLI examples:
+
+```sh
+raysense baseline save .
+raysense baseline tables --baseline .raysense/baseline
+raysense baseline table files --baseline .raysense/baseline --columns path,language,lines --filter 'language:in:["c","rust"]' --sort language:asc --sort lines:desc --limit 10
+raysense baseline table files --baseline .raysense/baseline --columns path --filter 'path:regex:^src/ops/.*\.c$' --filter 'path:not_regex:query' --limit 10
+```
+
+MCP query example:
+
+```json
+{
+  "name": "raysense_baseline_table_read",
+  "arguments": {
+    "baseline_path": ".raysense/baseline",
+    "table": "files",
+    "columns": ["path", "language", "lines"],
+    "filters": [
+      {"column": "language", "op": "in", "value": ["c", "rust"]},
+      {"column": "path", "op": "regex", "value": "^src/.*\\.(c|rs)$"}
+    ],
+    "filter_mode": "all",
+    "sort": [
+      {"column": "language", "direction": "asc"},
+      {"column": "lines", "direction": "desc"}
+    ],
+    "limit": 10
+  }
+}
+```
+
+Release checks:
+
+```sh
+cargo package -p raysense-core
+cargo package -p raysense
+```
+
+Run the `publish` workflow manually with `dry_run=true` before publishing a
+release. The `raysense` package check requires the matching `raysense-core`
+version to be visible in the registry index.
+
 Example config:
 
 ```toml

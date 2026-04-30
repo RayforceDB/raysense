@@ -26,6 +26,12 @@ on:
     types:
       - published
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run publish commands with --dry-run where possible"
+        required: true
+        type: boolean
+        default: true
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -57,18 +63,46 @@ jobs:
         run: cargo package -p raysense-core
 
       - name: Publish raysense-core
-        run: cargo publish -p raysense-core
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+            cargo publish -p raysense-core --dry-run
+          else
+            cargo publish -p raysense-core
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           RAYFORCE_DIR: ${{ github.workspace }}/deps/rayforce
 
       - name: Wait for registry index
-        run: sleep 30
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "dry run: skipping registry index wait"
+            exit 0
+          fi
+
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/raysense-core/Cargo.toml | head -n 1)"
+          for delay in 10 20 30 60 90; do
+            if cargo search raysense-core --limit 1 | grep -q "^raysense-core = \"$version\""; then
+              exit 0
+            fi
+            sleep "$delay"
+          done
+          echo "raysense-core $version did not appear in the registry index in time" >&2
+          exit 1
 
       - name: Package raysense
-        run: cargo package -p raysense
+        run: |
+          if cargo package -p raysense; then
+            exit 0
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "dry run: raysense packaging requires raysense-core to exist in the registry"
+            exit 0
+          fi
+          exit 1
 
       - name: Publish raysense
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
         run: cargo publish -p raysense
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
