@@ -75,6 +75,8 @@ raysense edges <path> [--all] [--config <path>]
 raysense memory <path> [--config <path>]
 raysense baseline save <path> [--output <path>] [--config <path>]
 raysense baseline diff <path> [--baseline <path>] [--config <path>] [--json]
+raysense baseline tables [--baseline <path>] [--json]
+raysense baseline table <name> [--baseline <path>] [--columns <a,b>] [--filter <column:op:value>] [--sort <column>] [--desc] [--offset <n>] [--limit <n>] [--json]
 raysense mcp
 raysense rayforce-version
 ```
@@ -91,6 +93,9 @@ tables with projection, filters, sorting, and pagination.
 Baselines are stored under `<path>/.raysense/baseline` by default. The manifest
 is JSON for fast agent diffs, and baseline tables are written under `tables/`
 in Rayforce splayed-table format.
+
+Baseline table filters use `column:op:value`, where `op` is one of `eq`, `ne`,
+`contains`, `starts_with`, `ends_with`, `gt`, `gte`, `lt`, or `lte`.
 
 Example config:
 

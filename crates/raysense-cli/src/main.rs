@@ -21,12 +21,17 @@
  *   SOFTWARE.
  */
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use raysense_core::{
     build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
     BaselineDiff, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
+use raysense_memory::{
+    BaselineFilterOp, BaselineSortDirection, BaselineTableFilter, BaselineTableQuery,
+    BaselineTableSort,
+};
+use serde_json::Value;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -94,6 +99,31 @@ enum BaselineCommand {
         baseline: Option<PathBuf>,
         #[arg(long)]
         config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    Tables {
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    Table {
+        table: String,
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long)]
+        columns: Option<String>,
+        #[arg(long = "filter")]
+        filters: Vec<String>,
+        #[arg(long)]
+        sort: Option<String>,
+        #[arg(long)]
+        desc: bool,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
         #[arg(long)]
         json: bool,
     },
@@ -166,6 +196,49 @@ fn main() -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&diff)?);
                 } else {
                     print_baseline_diff(&diff);
+                }
+            }
+            BaselineCommand::Tables { baseline, json } => {
+                let baseline = baseline.unwrap_or_else(default_baseline_dir);
+                let tables_dir = baseline.join("tables");
+                let tables =
+                    raysense_memory::list_baseline_tables(&tables_dir).with_context(|| {
+                        format!("failed to list baseline tables {}", tables_dir.display())
+                    })?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&tables)?);
+                } else {
+                    print_baseline_tables(&tables);
+                }
+            }
+            BaselineCommand::Table {
+                table,
+                baseline,
+                columns,
+                filters,
+                sort,
+                desc,
+                offset,
+                limit,
+                json,
+            } => {
+                let baseline = baseline.unwrap_or_else(default_baseline_dir);
+                let tables_dir = baseline.join("tables");
+                let query = BaselineTableQuery {
+                    offset,
+                    limit,
+                    columns: parse_columns(columns.as_deref())?,
+                    filters: parse_filters(&filters)?,
+                    sort: parse_sort(sort.as_deref(), desc)?,
+                };
+                let rows = raysense_memory::query_baseline_table(&tables_dir, &table, query)
+                    .with_context(|| {
+                        format!("failed to read baseline table {}", tables_dir.display())
+                    })?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                } else {
+                    print_baseline_rows(&rows);
                 }
             }
         },
@@ -241,6 +314,88 @@ fn diff_baseline(
     Ok(diff_baselines(&before, &after))
 }
 
+fn default_baseline_dir() -> PathBuf {
+    PathBuf::from(".raysense/baseline")
+}
+
+fn parse_columns(columns: Option<&str>) -> Result<Option<Vec<String>>> {
+    let Some(columns) = columns else {
+        return Ok(None);
+    };
+    let parsed: Vec<String> = columns
+        .split(',')
+        .map(str::trim)
+        .filter(|column| !column.is_empty())
+        .map(str::to_string)
+        .collect();
+    if parsed.is_empty() {
+        Err(anyhow!("columns must include at least one column name"))
+    } else {
+        Ok(Some(parsed))
+    }
+}
+
+fn parse_filters(filters: &[String]) -> Result<Vec<BaselineTableFilter>> {
+    filters
+        .iter()
+        .map(|filter| {
+            let mut parts = filter.splitn(3, ':');
+            let column = parts
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("filter must use column:op:value"))?;
+            let op = parts
+                .next()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("filter must use column:op:value"))?;
+            let value = parts
+                .next()
+                .ok_or_else(|| anyhow!("filter must use column:op:value"))?;
+            Ok(BaselineTableFilter {
+                column: column.to_string(),
+                op: parse_filter_op(op)?,
+                value: parse_filter_value(value),
+            })
+        })
+        .collect()
+}
+
+fn parse_filter_op(op: &str) -> Result<BaselineFilterOp> {
+    match op {
+        "eq" => Ok(BaselineFilterOp::Eq),
+        "ne" => Ok(BaselineFilterOp::Ne),
+        "contains" => Ok(BaselineFilterOp::Contains),
+        "starts_with" => Ok(BaselineFilterOp::StartsWith),
+        "ends_with" => Ok(BaselineFilterOp::EndsWith),
+        "gt" => Ok(BaselineFilterOp::Gt),
+        "gte" => Ok(BaselineFilterOp::Gte),
+        "lt" => Ok(BaselineFilterOp::Lt),
+        "lte" => Ok(BaselineFilterOp::Lte),
+        _ => Err(anyhow!("unsupported filter op {op}")),
+    }
+}
+
+fn parse_filter_value(value: &str) -> Value {
+    serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
+}
+
+fn parse_sort(sort: Option<&str>, desc: bool) -> Result<Option<BaselineTableSort>> {
+    let Some(column) = sort else {
+        return Ok(None);
+    };
+    if column.is_empty() {
+        return Err(anyhow!("sort column must not be empty"));
+    }
+    Ok(Some(BaselineTableSort {
+        column: column.to_string(),
+        direction: if desc {
+            BaselineSortDirection::Desc
+        } else {
+            BaselineSortDirection::Asc
+        },
+    }))
+}
+
 fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
     println!(
         "files rows={} cols={}",
@@ -286,6 +441,39 @@ fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
         "changed_files rows={} cols={}",
         summary.changed_files.rows, summary.changed_files.columns
     );
+}
+
+fn print_baseline_tables(tables: &[raysense_memory::BaselineTableInfo]) {
+    println!("name\trows\tcolumns");
+    for table in tables {
+        println!("{}\t{}\t{}", table.name, table.rows, table.columns);
+    }
+}
+
+fn print_baseline_rows(rows: &raysense_memory::BaselineTableRows) {
+    println!(
+        "table {} rows={} matched={} offset={} limit={}",
+        rows.name, rows.total_rows, rows.matched_rows, rows.offset, rows.limit
+    );
+    println!("{}", rows.columns.join("\t"));
+    for row in &rows.rows {
+        let values = rows
+            .columns
+            .iter()
+            .map(|column| display_cell(row.get(column).unwrap_or(&Value::Null)))
+            .collect::<Vec<_>>();
+        println!("{}", values.join("\t"));
+    }
+}
+
+fn display_cell(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => value.clone(),
+        Value::Array(_) | Value::Object(_) => value.to_string(),
+    }
 }
 
 fn print_baseline_diff(diff: &BaselineDiff) {
