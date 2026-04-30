@@ -25,7 +25,9 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::facts::{CallEdgeFact, CallFact, EntryPointFact, ImportFact, ScanReport, SnapshotFact};
+use crate::facts::{
+    CallEdgeFact, CallFact, EntryPointFact, ImportFact, ImportResolution, ScanReport, SnapshotFact,
+};
 use crate::graph::compute_graph_metrics;
 use crate::health::RaysenseConfig;
 use crate::scanner::{matching_plugin, module_name};
@@ -36,6 +38,10 @@ pub enum SimulateError {
     FileNotFound(String),
     #[error("file already exists at destination: {0}")]
     DestinationOccupied(String),
+    #[error("no matching local edge from {from} to {to}")]
+    EdgeNotFound { from: String, to: String },
+    #[error("edge from {from} to {to} does not participate in a cycle")]
+    EdgeNotInCycle { from: String, to: String },
 }
 
 /// Produce a `ScanReport` representing the codebase as if `file_path` did not
@@ -210,6 +216,55 @@ pub fn move_file(
     );
     new_report.graph = compute_graph_metrics(&new_report.files, &new_report.imports);
     Ok(new_report)
+}
+
+/// Remove the local import edge from `from_path` to `to_path` and confirm the
+/// reduction lowers the report's cycle count. Returns `EdgeNotFound` if the
+/// edge does not exist, or `EdgeNotInCycle` if removal does not break a cycle
+/// (i.e., the edge is not load-bearing for any cycle).
+pub fn break_cycle(
+    report: &ScanReport,
+    from_path: &str,
+    to_path: &str,
+) -> Result<ScanReport, SimulateError> {
+    let from_id = report
+        .files
+        .iter()
+        .position(|file| file.path.to_string_lossy() == from_path)
+        .ok_or_else(|| SimulateError::FileNotFound(from_path.to_string()))?;
+    let to_id = report
+        .files
+        .iter()
+        .position(|file| file.path.to_string_lossy() == to_path)
+        .ok_or_else(|| SimulateError::FileNotFound(to_path.to_string()))?;
+
+    let before_cycles = report.graph.cycle_count;
+    let mut after = report.clone();
+    let before_imports = after.imports.len();
+    after.imports.retain(|import| {
+        !(import.from_file == from_id
+            && import.resolved_file == Some(to_id)
+            && import.resolution == ImportResolution::Local)
+    });
+    if after.imports.len() == before_imports {
+        return Err(SimulateError::EdgeNotFound {
+            from: from_path.to_string(),
+            to: to_path.to_string(),
+        });
+    }
+    after.snapshot.import_count = after.imports.len();
+    after.graph = compute_graph_metrics(&after.files, &after.imports);
+    if after.graph.cycle_count >= before_cycles {
+        return Err(SimulateError::EdgeNotInCycle {
+            from: from_path.to_string(),
+            to: to_path.to_string(),
+        });
+    }
+    after.snapshot.snapshot_id = format!(
+        "{}+break_cycle:{}->{}",
+        report.snapshot.snapshot_id, from_path, to_path
+    );
+    Ok(after)
 }
 
 #[cfg(test)]
@@ -441,6 +496,76 @@ mod tests {
         let config = RaysenseConfig::default();
         let err = move_file(&before, &config, "src/missing.rs", "src/dest.rs").unwrap_err();
         assert!(matches!(err, SimulateError::FileNotFound(_)));
+    }
+
+    #[test]
+    fn break_cycle_removes_edge_and_lowers_cycle_count() {
+        // Three-file cycle: a -> b -> c -> a. Remove c -> a to break it.
+        let files = vec![
+            file(0, "src/a.rs"),
+            file(1, "src/b.rs"),
+            file(2, "src/c.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(1)),
+            import(1, 1, Some(2)),
+            import(2, 2, Some(0)),
+        ];
+        let before = report(
+            files,
+            Vec::new(),
+            imports,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(before.graph.cycle_count > 0);
+
+        let after = break_cycle(&before, "src/c.rs", "src/a.rs").unwrap();
+        assert!(after.graph.cycle_count < before.graph.cycle_count);
+        assert_eq!(after.imports.len(), 2);
+        assert!(after.snapshot.snapshot_id.contains("break_cycle"));
+    }
+
+    #[test]
+    fn break_cycle_rejects_edge_not_in_cycle() {
+        // a -> b, plus a separate cycle c -> d -> c.
+        let files = vec![
+            file(0, "src/a.rs"),
+            file(1, "src/b.rs"),
+            file(2, "src/c.rs"),
+            file(3, "src/d.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(1)),
+            import(1, 2, Some(3)),
+            import(2, 3, Some(2)),
+        ];
+        let before = report(
+            files,
+            Vec::new(),
+            imports,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let err = break_cycle(&before, "src/a.rs", "src/b.rs").unwrap_err();
+        assert!(matches!(err, SimulateError::EdgeNotInCycle { .. }));
+    }
+
+    #[test]
+    fn break_cycle_rejects_missing_edge() {
+        let files = vec![file(0, "src/a.rs"), file(1, "src/b.rs")];
+        let before = report(
+            files,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let err = break_cycle(&before, "src/a.rs", "src/b.rs").unwrap_err();
+        assert!(matches!(err, SimulateError::EdgeNotFound { .. }));
     }
 
     #[test]

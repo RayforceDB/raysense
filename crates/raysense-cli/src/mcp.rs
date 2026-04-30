@@ -1059,6 +1059,7 @@ fn what_if_tool(args: &Value) -> Result<Value> {
         Some("add_edge") => return what_if_edge_tool(args, &root, &config, "add_edge"),
         Some("remove_file") => return what_if_remove_file_tool(args, &root, &config),
         Some("move_file") => return what_if_move_file_tool(args, &root, &config),
+        Some("break_cycle") => return what_if_break_cycle_tool(args, &root, &config),
         Some(action) => return Err(anyhow!("unsupported what-if action: {action}")),
         None => {}
     }
@@ -1221,6 +1222,34 @@ fn what_if_move_file_tool(args: &Value, root: &Path, config: &RaysenseConfig) ->
     Ok(json!({
         "root": before_report.snapshot.root,
         "action": "move_file",
+        "from": from,
+        "to": to,
+        "before": what_if_health_summary(&before_health),
+        "after": what_if_health_summary(&after_health),
+        "diff": diff_baselines(&before, &after)
+    }))
+}
+
+fn what_if_break_cycle_tool(args: &Value, root: &Path, config: &RaysenseConfig) -> Result<Value> {
+    let from = args
+        .get("from")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing from"))?;
+    let to = args
+        .get("to")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing to"))?;
+    let before_report = scan_path_with_config(root, config)?;
+    let before_health = compute_health_with_config(&before_report, config);
+    let before = build_baseline(&before_report, &before_health);
+    let after_report = raysense_core::simulate_break_cycle(&before_report, from, to)
+        .map_err(|err| anyhow!(err.to_string()))?;
+    let after_health = compute_health_with_config(&after_report, config);
+    let after = build_baseline(&after_report, &after_health);
+
+    Ok(json!({
+        "root": before_report.snapshot.root,
+        "action": "break_cycle",
         "from": from,
         "to": to,
         "before": what_if_health_summary(&before_health),
@@ -1952,9 +1981,9 @@ fn what_if_schema() -> Value {
             "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
             "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
             "config": config_schema(),
-            "action": {"type": "string", "enum": ["remove_edge", "add_edge", "remove_file", "move_file"], "description": "Optional graph action to simulate. When omitted, simulates config-only changes."},
-            "from": {"type": "string", "description": "Source file path for edge or move_file actions."},
-            "to": {"type": "string", "description": "Target file path for edge or move_file actions."},
+            "action": {"type": "string", "enum": ["remove_edge", "add_edge", "remove_file", "move_file", "break_cycle"], "description": "Optional graph action to simulate. When omitted, simulates config-only changes."},
+            "from": {"type": "string", "description": "Source file path for edge, move_file, or break_cycle actions."},
+            "to": {"type": "string", "description": "Target file path for edge, move_file, or break_cycle actions."},
             "file": {"type": "string", "description": "Target file path for remove_file."},
             "ignore_paths": {
                 "type": "array",
