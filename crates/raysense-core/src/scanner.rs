@@ -410,7 +410,7 @@ fn resolve_import(
 
 fn import_candidates(from_file: &FileFact, import: &ImportFact) -> Vec<String> {
     match from_file.language {
-        Language::Rust => rust_import_candidates(&import.target),
+        Language::Rust => rust_import_candidates(&from_file.path, &import.target),
         Language::Python => python_import_candidates(&import.target),
         Language::TypeScript => typescript_import_candidates(&from_file.path, &import.target),
         Language::C | Language::Cpp => c_import_candidates(&from_file.path, &import.target),
@@ -418,29 +418,88 @@ fn import_candidates(from_file: &FileFact, import: &ImportFact) -> Vec<String> {
     }
 }
 
-fn rust_import_candidates(target: &str) -> Vec<String> {
+fn rust_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
     if !rust_target_is_local(target) {
         return Vec::new();
     }
 
-    let target = target
-        .trim_start_matches("crate::")
-        .trim_start_matches("self::")
-        .trim_start_matches("super::")
-        .replace("::", "/");
-    vec![
-        format!("{target}.rs"),
-        format!("{target}/mod.rs"),
-        format!("src/{target}.rs"),
-        format!("src/{target}/mod.rs"),
-    ]
+    let target = normalize_rust_target(target);
+    let mut candidates = Vec::new();
+
+    for prefix in rust_module_prefixes(&target) {
+        candidates.push(format!("{prefix}.rs"));
+        candidates.push(format!("{prefix}/mod.rs"));
+        candidates.push(format!("src/{prefix}.rs"));
+        candidates.push(format!("src/{prefix}/mod.rs"));
+
+        if let Some(crate_src) = rust_crate_src_dir(from_path) {
+            candidates.push(normalize_path(crate_src.join(format!("{prefix}.rs"))));
+            candidates.push(normalize_path(crate_src.join(format!("{prefix}/mod.rs"))));
+        }
+    }
+
+    candidates
 }
 
 fn rust_target_is_local(target: &str) -> bool {
+    let target = target.trim();
     target.starts_with("crate::")
         || target.starts_with("self::")
         || target.starts_with("super::")
+        || target == "super"
+        || target == "self"
         || !target.contains("::")
+}
+
+fn normalize_rust_target(target: &str) -> String {
+    strip_rust_prefix(target)
+        .split("::")
+        .filter(|segment| {
+            !segment.is_empty()
+                && *segment != "self"
+                && *segment != "super"
+                && *segment != "*"
+                && !segment.starts_with('{')
+        })
+        .map(|segment| segment.split('{').next().unwrap_or(segment))
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn strip_rust_prefix(target: &str) -> &str {
+    target
+        .trim()
+        .trim_end_matches(';')
+        .trim_start_matches("crate::")
+        .trim_start_matches("self::")
+        .trim_start_matches("super::")
+}
+
+fn rust_module_prefixes(target: &str) -> Vec<String> {
+    let parts: Vec<&str> = target.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return Vec::new();
+    }
+
+    (1..=parts.len())
+        .rev()
+        .map(|n| parts[..n].join("/"))
+        .collect()
+}
+
+fn rust_crate_src_dir(from_path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in from_path.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        out.push(part);
+        if part == "src" {
+            return Some(out);
+        }
+    }
+    None
 }
 
 fn python_import_candidates(target: &str) -> Vec<String> {
@@ -482,6 +541,7 @@ fn module_candidate(target: &str) -> Option<String> {
         .trim()
         .trim_start_matches("crate::")
         .trim_start_matches("self::")
+        .trim_start_matches("super::")
         .trim_start_matches("./")
         .trim_matches(['"', '\'']);
     if target.starts_with("../") || target.starts_with('/') || target.starts_with('@') {
@@ -491,6 +551,9 @@ fn module_candidate(target: &str) -> Option<String> {
         target
             .replace("::", ".")
             .replace('/', ".")
+            .split('{')
+            .next()
+            .unwrap_or(target)
             .trim_matches('.')
             .to_string(),
     )
