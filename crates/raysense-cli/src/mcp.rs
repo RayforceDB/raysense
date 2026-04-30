@@ -37,9 +37,17 @@ use std::path::{Path, PathBuf};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
+#[derive(Default)]
+struct McpState {
+    last_path: Option<PathBuf>,
+    last_config: Option<RaysenseConfig>,
+    baseline: Option<ProjectBaseline>,
+}
+
 pub fn run() -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
+    let mut state = McpState::default();
 
     for line in stdin.lock().lines() {
         let line = line?;
@@ -47,7 +55,7 @@ pub fn run() -> Result<()> {
             continue;
         }
 
-        let response = match handle_message(&line) {
+        let response = match handle_message(&line, &mut state) {
             Ok(Some(response)) => response,
             Ok(None) => continue,
             Err(err) => jsonrpc_error(Value::Null, -32700, &err.to_string()),
@@ -59,7 +67,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn handle_message(line: &str) -> Result<Option<Value>> {
+fn handle_message(line: &str, state: &mut McpState) -> Result<Option<Value>> {
     let message: Value = serde_json::from_str(line).context("invalid JSON-RPC message")?;
     let id = message.get("id").cloned();
     let Some(method) = message.get("method").and_then(Value::as_str) else {
@@ -76,7 +84,7 @@ fn handle_message(line: &str) -> Result<Option<Value>> {
                 return Ok(None);
             };
             let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-            let result = match call_tool(&params) {
+            let result = match call_tool(&params, state) {
                 Ok(result) => jsonrpc_result(id, tool_success(result)),
                 Err(err) => jsonrpc_result(id, tool_error(err.to_string())),
             };
@@ -175,6 +183,46 @@ fn tools_list() -> Value {
                 "inputSchema": health_limit_schema("Maximum module edges to return. Defaults to 100.")
             },
             {
+                "name": "raysense_session_start",
+                "description": "Save an in-memory baseline for an agent session.",
+                "inputSchema": baseline_schema("Optional persisted baseline directory.")
+            },
+            {
+                "name": "raysense_session_end",
+                "description": "Compare current health to the in-memory session baseline.",
+                "inputSchema": path_limit_schema("Unused.")
+            },
+            {
+                "name": "raysense_rescan",
+                "description": "Rescan the last session path or the provided path.",
+                "inputSchema": path_limit_schema("Maximum rows per fact collection. Defaults to 1000.")
+            },
+            {
+                "name": "raysense_check_rules",
+                "description": "Scan and return pass/fail rule status.",
+                "inputSchema": health_limit_schema("Maximum findings to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_evolution",
+                "description": "Return changed-file evolution metrics.",
+                "inputSchema": health_limit_schema("Maximum changed files to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_dsm",
+                "description": "Return DSM, module level, and stability metrics.",
+                "inputSchema": health_limit_schema("Maximum module edges to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_test_gaps",
+                "description": "Return test-gap metrics and files without nearby tests.",
+                "inputSchema": health_limit_schema("Maximum files to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_plugins",
+                "description": "List configured generic language plugins.",
+                "inputSchema": path_limit_schema("Unused.")
+            },
+            {
                 "name": "raysense_memory_summary",
                 "description": "Materialize Rayforce-backed memory tables and return their row/column counts.",
                 "inputSchema": {
@@ -210,7 +258,7 @@ fn tools_list() -> Value {
     })
 }
 
-fn call_tool(params: &Value) -> Result<Value> {
+fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -229,6 +277,14 @@ fn call_tool(params: &Value) -> Result<Value> {
         "raysense_hotspots" => hotspots_tool(&args),
         "raysense_rules" => rules_tool(&args),
         "raysense_module_edges" => module_edges_tool(&args),
+        "raysense_session_start" => session_start_tool(&args, state),
+        "raysense_session_end" => session_end_tool(&args, state),
+        "raysense_rescan" => rescan_tool(&args, state),
+        "raysense_check_rules" => check_rules_tool(&args),
+        "raysense_evolution" => evolution_tool(&args),
+        "raysense_dsm" => dsm_tool(&args),
+        "raysense_test_gaps" => test_gaps_tool(&args),
+        "raysense_plugins" => plugins_tool(&args),
         "raysense_memory_summary" => memory_summary_tool(&args),
         "raysense_baseline_save" => baseline_save_tool(&args),
         "raysense_baseline_diff" => baseline_diff_tool(&args),
@@ -379,6 +435,155 @@ fn module_edges_tool(args: &Value) -> Result<Value> {
         "module_edges": limited(&health.metrics.dsm.top_module_edges, limit),
         "limit": limit,
         "total": health.metrics.dsm.top_module_edges.len()
+    }))
+}
+
+fn session_start_tool(args: &Value, state: &mut McpState) -> Result<Value> {
+    let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let baseline = build_baseline(&report, &health);
+    state.last_path = Some(root.clone());
+    state.last_config = Some(config);
+    state.baseline = Some(baseline.clone());
+    Ok(json!({
+        "root": report.snapshot.root,
+        "quality_signal": health.quality_signal,
+        "score": health.score,
+        "baseline": baseline
+    }))
+}
+
+fn session_end_tool(args: &Value, state: &mut McpState) -> Result<Value> {
+    let root = args
+        .get("path")
+        .map(|_| root_arg(args))
+        .transpose()?
+        .or_else(|| state.last_path.clone())
+        .ok_or_else(|| anyhow!("no session path; call raysense_session_start first"))?;
+    let config = if args.get("config").is_some() || args.get("config_path").is_some() {
+        effective_config(args, &root)?
+    } else {
+        state.last_config.clone().unwrap_or_default()
+    };
+    let before = state
+        .baseline
+        .clone()
+        .ok_or_else(|| anyhow!("no session baseline; call raysense_session_start first"))?;
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let after = build_baseline(&report, &health);
+    let diff = diff_baselines(&before, &after);
+    Ok(json!({
+        "root": report.snapshot.root,
+        "pass": diff.score_delta >= 0 && diff.added_rules.is_empty(),
+        "quality_signal": health.quality_signal,
+        "score": health.score,
+        "diff": diff
+    }))
+}
+
+fn rescan_tool(args: &Value, state: &mut McpState) -> Result<Value> {
+    let root = args
+        .get("path")
+        .map(|_| root_arg(args))
+        .transpose()?
+        .or_else(|| state.last_path.clone())
+        .unwrap_or(std::env::current_dir().context("failed to read current directory")?);
+    let config = if args.get("config").is_some() || args.get("config_path").is_some() {
+        effective_config(args, &root)?
+    } else {
+        state.last_config.clone().unwrap_or_default()
+    };
+    state.last_path = Some(root.clone());
+    state.last_config = Some(config.clone());
+    let limit = limit_arg(args, 1000)?;
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    Ok(json!({
+        "root": report.snapshot.root,
+        "snapshot": report.snapshot,
+        "quality_signal": health.quality_signal,
+        "health": health,
+        "files": limited(&report.files, limit),
+        "functions": limited(&report.functions, limit),
+        "imports": limited(&report.imports, limit),
+        "calls": limited(&report.calls, limit),
+        "call_edges": limited(&report.call_edges, limit)
+    }))
+}
+
+fn check_rules_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+    let pass = !health
+        .rules
+        .iter()
+        .any(|rule| matches!(rule.severity, raysense_core::RuleSeverity::Error));
+    Ok(json!({
+        "root": root,
+        "pass": pass,
+        "quality_signal": health.quality_signal,
+        "rules": limited(&health.rules, limit),
+        "total": health.rules.len()
+    }))
+}
+
+fn evolution_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+    Ok(json!({
+        "root": root,
+        "evolution": {
+            "available": health.metrics.evolution.available,
+            "reason": health.metrics.evolution.reason,
+            "commits_sampled": health.metrics.evolution.commits_sampled,
+            "changed_files": health.metrics.evolution.changed_files,
+            "top_changed_files": limited(&health.metrics.evolution.top_changed_files, limit)
+        }
+    }))
+}
+
+fn dsm_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+    Ok(json!({
+        "root": root,
+        "dsm": health.metrics.dsm,
+        "levels": health.metrics.architecture.levels,
+        "unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
+        "module_edges": limited(&health.metrics.dsm.top_module_edges, limit)
+    }))
+}
+
+fn test_gaps_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
+    let limit = limit_arg(args, 100)?;
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let missing: Vec<Value> = report
+        .files
+        .iter()
+        .filter(|file| !file.path.to_string_lossy().contains("test"))
+        .take(limit)
+        .map(|file| json!({"file_id": file.file_id, "path": file.path}))
+        .collect();
+    Ok(json!({
+        "root": report.snapshot.root,
+        "test_gap": health.metrics.test_gap,
+        "candidate_files": missing
+    }))
+}
+
+fn plugins_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let (config, source) = load_config(&root, config_path_arg(args)?)?;
+    Ok(json!({
+        "root": root,
+        "source": source,
+        "plugins": config.scan.plugins
     }))
 }
 
@@ -755,17 +960,35 @@ fn config_schema() -> Value {
                     },
                     "enabled_languages": {
                         "type": "array",
-                        "items": {"type": "string", "enum": ["c", "cpp", "python", "rust", "typescript"]}
+                        "items": {"type": "string"}
                     },
                     "disabled_languages": {
                         "type": "array",
-                        "items": {"type": "string", "enum": ["c", "cpp", "python", "rust", "typescript"]}
+                        "items": {"type": "string"}
+                    },
+                    "plugins": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "extensions": {"type": "array", "items": {"type": "string"}},
+                                "function_prefixes": {"type": "array", "items": {"type": "string"}},
+                                "import_prefixes": {"type": "array", "items": {"type": "string"}},
+                                "call_suffixes": {"type": "array", "items": {"type": "string"}}
+                            },
+                            "required": ["name", "extensions"]
+                        }
                     }
                 }
             },
             "rules": {
                 "type": "object",
                 "properties": {
+                    "max_cycles": {"type": "integer", "minimum": 0},
+                    "max_coupling_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                    "max_function_complexity": {"type": "integer", "minimum": 0},
+                    "no_god_files": {"type": "boolean"},
                     "high_file_fan_in": {"type": "integer", "minimum": 0},
                     "large_file_lines": {"type": "integer", "minimum": 0},
                     "max_large_file_findings": {"type": "integer", "minimum": 0},
@@ -789,6 +1012,18 @@ fn config_schema() -> Value {
                                 "to": {"type": "string"}
                             },
                             "required": ["from", "to"]
+                        }
+                    },
+                    "layers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "path": {"type": "string"},
+                                "order": {"type": "integer"}
+                            },
+                            "required": ["name", "path", "order"]
                         }
                     }
                 }
@@ -907,10 +1142,13 @@ mod tests {
 
     #[test]
     fn lists_config_tools() {
-        let response =
-            handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
-                .unwrap()
-                .unwrap();
+        let mut state = McpState::default();
+        let response = handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+            &mut state,
+        )
+        .unwrap()
+        .unwrap();
         let tools = response["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools
             .iter()
@@ -925,6 +1163,14 @@ mod tests {
         assert!(names.contains(&"raysense_hotspots"));
         assert!(names.contains(&"raysense_rules"));
         assert!(names.contains(&"raysense_module_edges"));
+        assert!(names.contains(&"raysense_session_start"));
+        assert!(names.contains(&"raysense_session_end"));
+        assert!(names.contains(&"raysense_rescan"));
+        assert!(names.contains(&"raysense_check_rules"));
+        assert!(names.contains(&"raysense_evolution"));
+        assert!(names.contains(&"raysense_dsm"));
+        assert!(names.contains(&"raysense_test_gaps"));
+        assert!(names.contains(&"raysense_plugins"));
         assert!(names.contains(&"raysense_memory_summary"));
         assert!(names.contains(&"raysense_baseline_save"));
         assert!(names.contains(&"raysense_baseline_diff"));
@@ -934,8 +1180,10 @@ mod tests {
 
     #[test]
     fn reads_default_config() {
+        let mut state = McpState::default();
         let response = handle_message(
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"raysense_config_read","arguments":{}}}"#,
+            &mut state,
         )
         .unwrap()
         .unwrap();

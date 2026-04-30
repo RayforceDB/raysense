@@ -26,7 +26,7 @@ use crate::facts::{
     ImportResolution, Language, ScanReport, SnapshotFact,
 };
 use crate::graph::compute_graph_metrics;
-use crate::health::RaysenseConfig;
+use crate::health::{LanguagePluginConfig, RaysenseConfig};
 use crate::profile::ProjectProfile;
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
@@ -97,7 +97,14 @@ pub fn scan_path_with_config(
         }
 
         let language = Language::from_path(path);
-        if !language.is_supported() || !is_enabled_language(language, config) {
+        let plugin = matching_plugin(&relative_path, config);
+        if !language.is_supported() && plugin.is_none() {
+            continue;
+        }
+        let language_label = plugin
+            .map(|plugin| plugin.name.clone())
+            .unwrap_or_else(|| language_name(language).to_string());
+        if !is_enabled_language_name(&language_label, config) {
             continue;
         }
 
@@ -112,12 +119,17 @@ pub fn scan_path_with_config(
             module: module_name(&relative_path, language),
             path: relative_path.clone(),
             language,
+            language_name: language_label,
             lines: content.lines().count(),
             bytes: content.len(),
             content_hash: hash_content(&content),
         };
 
-        let mut file_functions = extract_functions(file_id, language, &content);
+        let mut file_functions = if let Some(plugin) = plugin {
+            extract_plugin_functions(file_id, &content, plugin)
+        } else {
+            extract_functions(file_id, language, &content)
+        };
         for function in &mut file_functions {
             function.function_id = functions.len();
             functions.push(function.clone());
@@ -130,13 +142,21 @@ pub fn scan_path_with_config(
             entry_points.push(entry_point.clone());
         }
 
-        let mut file_imports = extract_imports(file_id, language, &content);
+        let mut file_imports = if let Some(plugin) = plugin {
+            extract_plugin_imports(file_id, &content, plugin)
+        } else {
+            extract_imports(file_id, language, &content)
+        };
         for import in &mut file_imports {
             import.import_id = imports.len();
             imports.push(import.clone());
         }
 
-        let mut file_calls = extract_calls(file_id, language, &content, &file_functions);
+        let mut file_calls = if let Some(plugin) = plugin {
+            extract_plugin_calls(file_id, &content, &file_functions, plugin)
+        } else {
+            extract_calls(file_id, language, &content, &file_functions)
+        };
         for call in &mut file_calls {
             call.call_id = calls.len();
             calls.push(call.clone());
@@ -235,8 +255,7 @@ fn normalize_pattern(pattern: &str) -> String {
     pattern.replace('\\', "/").trim_matches('/').to_string()
 }
 
-fn is_enabled_language(language: Language, config: &RaysenseConfig) -> bool {
-    let language = language_name(language);
+fn is_enabled_language_name(language: &str, config: &RaysenseConfig) -> bool {
     if config
         .scan
         .disabled_languages
@@ -251,6 +270,20 @@ fn is_enabled_language(language: Language, config: &RaysenseConfig) -> bool {
             .enabled_languages
             .iter()
             .any(|item| item.eq_ignore_ascii_case(language))
+}
+
+fn matching_plugin<'a>(
+    path: &Path,
+    config: &'a RaysenseConfig,
+) -> Option<&'a LanguagePluginConfig> {
+    let ext = path.extension().and_then(|ext| ext.to_str())?;
+    config.scan.plugins.iter().find(|plugin| {
+        !plugin.name.trim().is_empty()
+            && plugin
+                .extensions
+                .iter()
+                .any(|candidate| candidate.trim_start_matches('.').eq_ignore_ascii_case(ext))
+    })
 }
 
 fn language_name(language: Language) -> &'static str {
@@ -609,6 +642,129 @@ fn extract_c_like_functions(file_id: usize, content: &str) -> Vec<FunctionFact> 
             })
         })
         .collect()
+}
+
+fn extract_plugin_functions(
+    file_id: usize,
+    content: &str,
+    plugin: &LanguagePluginConfig,
+) -> Vec<FunctionFact> {
+    let lines: Vec<&str> = content.lines().collect();
+    let prefixes = if plugin.function_prefixes.is_empty() {
+        vec![
+            "function ".to_string(),
+            "def ".to_string(),
+            "fn ".to_string(),
+        ]
+    } else {
+        plugin.function_prefixes.clone()
+    };
+
+    let mut functions = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let trimmed = line.trim_start();
+        for prefix in &prefixes {
+            let Some(rest) = trimmed.strip_prefix(prefix) else {
+                continue;
+            };
+            let name = rest
+                .split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '-'))
+                .next()
+                .filter(|name| !name.is_empty());
+            if let Some(name) = name {
+                functions.push(FunctionFact {
+                    function_id: 0,
+                    file_id,
+                    name: name.to_string(),
+                    start_line: idx + 1,
+                    end_line: generic_block_end_line(&lines, idx),
+                });
+            }
+            break;
+        }
+    }
+    functions
+}
+
+fn extract_plugin_imports(
+    file_id: usize,
+    content: &str,
+    plugin: &LanguagePluginConfig,
+) -> Vec<ImportFact> {
+    let prefixes = if plugin.import_prefixes.is_empty() {
+        vec![
+            "import ".to_string(),
+            "use ".to_string(),
+            "require ".to_string(),
+        ]
+    } else {
+        plugin.import_prefixes.clone()
+    };
+
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            for prefix in &prefixes {
+                if let Some(rest) = trimmed.strip_prefix(prefix) {
+                    let target = rest
+                        .trim()
+                        .trim_matches(['"', '\'', ';'])
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_matches(['"', '\'', ';']);
+                    if !target.is_empty() {
+                        return Some(new_import(file_id, target, "plugin_import"));
+                    }
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+fn extract_plugin_calls(
+    file_id: usize,
+    content: &str,
+    functions: &[FunctionFact],
+    plugin: &LanguagePluginConfig,
+) -> Vec<CallFact> {
+    let suffixes = if plugin.call_suffixes.is_empty() {
+        vec!["(".to_string()]
+    } else {
+        plugin.call_suffixes.clone()
+    };
+    let mut calls = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        for token in line.split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '-')) {
+            if token.is_empty() || functions.iter().any(|function| function.name == token) {
+                continue;
+            }
+            if suffixes
+                .iter()
+                .any(|suffix| line.contains(&format!("{token}{suffix}")))
+            {
+                calls.push(CallFact {
+                    call_id: 0,
+                    file_id,
+                    caller_function: enclosing_function(functions, idx + 1),
+                    target: token.to_string(),
+                    line: idx + 1,
+                });
+            }
+        }
+    }
+    calls
+}
+
+fn generic_block_end_line(lines: &[&str], start_idx: usize) -> usize {
+    let brace_end = block_end_line(lines, start_idx);
+    if brace_end > start_idx + 1 {
+        brace_end
+    } else {
+        indented_block_end_line(lines, start_idx)
+    }
 }
 
 fn brace_depths_before_lines(content: &str) -> Vec<usize> {
@@ -1613,6 +1769,39 @@ enabled_languages = ["rust"]
     }
 
     #[test]
+    fn scan_config_adds_generic_language_plugins() {
+        let root = temp_scan_root("plugins");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/tool.foo"),
+            "load core\nfunction run\n  start()\n",
+        )
+        .unwrap();
+
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[scan]
+
+[[scan.plugins]]
+name = "foo"
+extensions = ["foo"]
+function_prefixes = ["function "]
+import_prefixes = ["load "]
+call_suffixes = ["("]
+"#,
+        )
+        .unwrap();
+        let report = scan_path_with_config(&root, &config).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(report.files[0].language_name, "foo");
+        assert_eq!(report.functions[0].name, "run");
+        assert_eq!(report.imports[0].target, "core");
+        assert_eq!(report.calls[0].target, "start");
+    }
+
+    #[test]
     fn captures_function_extents() {
         let content = r#"
 int add(int a, int b) {
@@ -2049,6 +2238,7 @@ int run(void) {
             file_id,
             path: PathBuf::from(path),
             language,
+            language_name: language_name(language).to_string(),
             module: module_name(Path::new(path), language),
             lines: 1,
             bytes: 1,

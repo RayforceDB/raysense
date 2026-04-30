@@ -110,6 +110,7 @@ mod tests {
             file_id,
             path: PathBuf::from(path),
             language: Language::Rust,
+            language_name: "rust".to_string(),
             module: path.trim_end_matches(".rs").replace('/', "."),
             lines: 1,
             bytes: 1,

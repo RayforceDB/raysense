@@ -96,6 +96,7 @@ mod tests {
             file_id,
             path: PathBuf::from(path),
             language,
+            language_name: format!("{:?}", language).to_lowercase(),
             module: String::new(),
             lines: 1,
             bytes: 1,

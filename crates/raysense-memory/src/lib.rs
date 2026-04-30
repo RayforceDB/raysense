@@ -753,10 +753,7 @@ fn build_files_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
     )?;
     let languages = str_vec(
         report.files.len(),
-        report
-            .files
-            .iter()
-            .map(|file| format!("{:?}", file.language).to_lowercase()),
+        report.files.iter().map(|file| file.language_name.clone()),
     )?;
     let modules = str_vec(
         report.files.len(),
@@ -995,9 +992,13 @@ fn build_health_table(
     health: &HealthSummary,
 ) -> Result<RayObject, MemoryError> {
     table(
-        26,
+        36,
         [
             ("score", i64_vec(1, [health.score as i64])?),
+            (
+                "quality_signal",
+                i64_vec(1, [health.quality_signal as i64])?,
+            ),
             (
                 "coverage_score",
                 i64_vec(1, [health.coverage_score as i64])?,
@@ -1005,6 +1006,26 @@ fn build_health_table(
             (
                 "structural_score",
                 i64_vec(1, [health.structural_score as i64])?,
+            ),
+            (
+                "modularity_per_1000",
+                i64_vec(1, [(health.root_causes.modularity * 1000.0).round() as i64])?,
+            ),
+            (
+                "acyclicity_per_1000",
+                i64_vec(1, [(health.root_causes.acyclicity * 1000.0).round() as i64])?,
+            ),
+            (
+                "depth_per_1000",
+                i64_vec(1, [(health.root_causes.depth * 1000.0).round() as i64])?,
+            ),
+            (
+                "equality_per_1000",
+                i64_vec(1, [(health.root_causes.equality * 1000.0).round() as i64])?,
+            ),
+            (
+                "redundancy_per_1000",
+                i64_vec(1, [(health.root_causes.redundancy * 1000.0).round() as i64])?,
             ),
             ("files", i64_vec(1, [report.snapshot.file_count as i64])?),
             (
@@ -1066,6 +1087,37 @@ fn build_health_table(
             (
                 "max_function_lines",
                 i64_vec(1, [health.metrics.size.max_function_lines as i64])?,
+            ),
+            (
+                "max_function_complexity",
+                i64_vec(
+                    1,
+                    [health.metrics.complexity.max_function_complexity as i64],
+                )?,
+            ),
+            (
+                "average_function_complexity_per_1000",
+                i64_vec(
+                    1,
+                    [
+                        (health.metrics.complexity.average_function_complexity * 1000.0).round()
+                            as i64,
+                    ],
+                )?,
+            ),
+            (
+                "complexity_gini_per_1000",
+                i64_vec(
+                    1,
+                    [(health.metrics.complexity.complexity_gini * 1000.0).round() as i64],
+                )?,
+            ),
+            (
+                "redundancy_ratio_per_1000",
+                i64_vec(
+                    1,
+                    [(health.metrics.complexity.redundancy_ratio * 1000.0).round() as i64],
+                )?,
             ),
             (
                 "large_files",
@@ -1350,7 +1402,7 @@ mod tests {
         assert_eq!(summary.calls.columns, 5);
         assert_eq!(summary.call_edges.columns, 4);
         assert_eq!(summary.health.rows, 1);
-        assert_eq!(summary.health.columns, 26);
+        assert_eq!(summary.health.columns, 36);
         assert_eq!(summary.hotspots.columns, 5);
         assert_eq!(summary.rules.columns, 4);
         assert_eq!(summary.module_edges.columns, 3);
@@ -1646,6 +1698,7 @@ mod tests {
             file_id,
             path: PathBuf::from(path),
             language,
+            language_name: format!("{:?}", language).to_lowercase(),
             module: path.replace(['/', '.'], "."),
             lines,
             bytes: lines * 10,

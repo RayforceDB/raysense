@@ -35,6 +35,9 @@ use serde_json::Value;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process;
+use std::thread;
+use std::time::Duration;
 
 mod mcp;
 
@@ -77,11 +80,77 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    Check {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    Gate {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        save: bool,
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    Watch {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    Visualize {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
     Baseline {
         #[command(subcommand)]
         command: BaselineCommand,
     },
     Mcp,
+}
+
+#[derive(Debug, Subcommand)]
+enum PluginCommand {
+    List {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    Add {
+        name: String,
+        extensions: Vec<String>,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    Init {
+        name: String,
+        extension: String,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -176,6 +245,45 @@ pub fn run() -> Result<()> {
             let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
             print_memory_summary(&memory.summary());
         }
+        Command::Check { path, config, json } => {
+            let exit = check_project(&path, config.as_deref(), json)?;
+            process::exit(exit);
+        }
+        Command::Gate {
+            path,
+            save,
+            baseline,
+            config,
+            json,
+        } => {
+            let exit = gate_project(&path, baseline, config.as_deref(), save, json)?;
+            process::exit(exit);
+        }
+        Command::Watch {
+            path,
+            interval,
+            config,
+        } => watch_project(&path, config.as_deref(), interval)?,
+        Command::Visualize {
+            path,
+            output,
+            config,
+        } => visualize_project(&path, output, config.as_deref())?,
+        Command::Plugin { command } => match command {
+            PluginCommand::List { path, config } => list_plugins(&path, config.as_deref())?,
+            PluginCommand::Add {
+                name,
+                extensions,
+                path,
+                config,
+            } => add_plugin(&path, config.as_deref(), &name, extensions)?,
+            PluginCommand::Init {
+                name,
+                extension,
+                path,
+                config,
+            } => add_plugin(&path, config.as_deref(), &name, vec![extension])?,
+        },
         Command::Baseline { command } => match command {
             BaselineCommand::Save {
                 path,
@@ -270,6 +378,209 @@ fn config_for_root(
     }
 
     Ok(RaysenseConfig::default())
+}
+
+fn check_project(root: &Path, config_path: Option<&Path>, json: bool) -> Result<i32> {
+    let config = config_for_root(root, config_path)?;
+    let report = scan_path_with_config(root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&health)?);
+    } else {
+        print_health(&report, &health);
+    }
+    let has_errors = health
+        .rules
+        .iter()
+        .any(|rule| matches!(rule.severity, raysense_core::RuleSeverity::Error));
+    Ok(if has_errors { 1 } else { 0 })
+}
+
+fn gate_project(
+    root: &Path,
+    baseline: Option<PathBuf>,
+    config_path: Option<&Path>,
+    save: bool,
+    json: bool,
+) -> Result<i32> {
+    let baseline = baseline.unwrap_or_else(|| root.join(".raysense/baseline"));
+    if save {
+        save_baseline(root, &baseline, config_path)?;
+        println!("baseline {}", baseline.display());
+        return Ok(0);
+    }
+    let diff = diff_baseline(root, &baseline, config_path)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&diff)?);
+    } else {
+        print_baseline_diff(&diff);
+    }
+    Ok(if diff.score_delta < 0 || !diff.added_rules.is_empty() {
+        1
+    } else {
+        0
+    })
+}
+
+fn watch_project(root: &Path, config_path: Option<&Path>, interval: u64) -> Result<()> {
+    let mut last_snapshot = String::new();
+    loop {
+        let config = config_for_root(root, config_path)?;
+        let report = scan_path_with_config(root, &config)?;
+        let health = compute_health_with_config(&report, &config);
+        if report.snapshot.snapshot_id != last_snapshot {
+            println!(
+                "snapshot {} quality_signal={} score={} files={} rules={}",
+                report.snapshot.snapshot_id,
+                health.quality_signal,
+                health.score,
+                report.snapshot.file_count,
+                health.rules.len()
+            );
+            last_snapshot = report.snapshot.snapshot_id;
+        }
+        thread::sleep(Duration::from_secs(interval.max(1)));
+    }
+}
+
+fn visualize_project(
+    root: &Path,
+    output: Option<PathBuf>,
+    config_path: Option<&Path>,
+) -> Result<()> {
+    let config = config_for_root(root, config_path)?;
+    let report = scan_path_with_config(root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let output = output.unwrap_or_else(|| root.join(".raysense/visualization.html"));
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&output, visualization_html(&report, &health))
+        .with_context(|| format!("failed to write {}", output.display()))?;
+    println!("visualization {}", output.display());
+    Ok(())
+}
+
+fn visualization_html(
+    report: &raysense_core::ScanReport,
+    health: &raysense_core::HealthSummary,
+) -> String {
+    let max_lines = report
+        .files
+        .iter()
+        .map(|file| file.lines)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let cells = report
+        .files
+        .iter()
+        .map(|file| {
+            let width = ((file.lines as f64 / max_lines as f64) * 100.0).max(8.0);
+            format!(
+                "<div class=\"file\" style=\"flex-basis:{width:.1}%\"><b>{}</b><span>{} lines</span><small>{}</small></div>",
+                html_escape(&file.path.to_string_lossy()),
+                file.lines,
+                html_escape(&file.language_name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let modules = health
+        .metrics
+        .dsm
+        .top_module_edges
+        .iter()
+        .map(|edge| {
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&edge.from_module),
+                html_escape(&edge.to_module),
+                edge.edges
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!(
+        r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>Raysense</title>
+<style>
+body{{font-family:system-ui,sans-serif;margin:24px;background:#111;color:#eee}}
+.top{{display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap}}
+.metric{{font-size:14px;color:#aaa}}.metric b{{display:block;color:#fff;font-size:28px}}
+.grid{{display:flex;flex-wrap:wrap;gap:8px;margin:24px 0}}
+.file{{min-width:120px;min-height:72px;background:#1d2838;border:1px solid #31445d;padding:8px;box-sizing:border-box}}
+.file b,.file span,.file small{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.file span{{color:#9db5d6}}.file small{{color:#7d8999}}
+table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom:1px solid #333;padding:6px;text-align:left}}
+</style></head><body>
+<div class="top">
+<div class="metric"><b>{}</b>quality signal</div>
+<div class="metric"><b>{}</b>files</div>
+<div class="metric"><b>{}</b>functions</div>
+<div class="metric"><b>{}</b>rules</div>
+</div>
+<div class="grid">{}</div>
+<h2>Module Edges</h2><table><tr><th>from</th><th>to</th><th>edges</th></tr>{}</table>
+</body></html>"#,
+        health.quality_signal,
+        report.files.len(),
+        report.functions.len(),
+        health.rules.len(),
+        cells,
+        modules
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn list_plugins(root: &Path, config_path: Option<&Path>) -> Result<()> {
+    let config = config_for_root(root, config_path)?;
+    if config.scan.plugins.is_empty() {
+        println!("no plugins configured");
+        return Ok(());
+    }
+    for plugin in config.scan.plugins {
+        println!("{}\t{}", plugin.name, plugin.extensions.join(","));
+    }
+    Ok(())
+}
+
+fn add_plugin(
+    root: &Path,
+    config_path: Option<&Path>,
+    name: &str,
+    extensions: Vec<String>,
+) -> Result<()> {
+    let path = config_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join(".raysense.toml"));
+    let mut config = if path.exists() {
+        RaysenseConfig::from_path(&path)
+            .with_context(|| format!("failed to load config {}", path.display()))?
+    } else {
+        RaysenseConfig::default()
+    };
+    config.scan.plugins.retain(|plugin| plugin.name != name);
+    config
+        .scan
+        .plugins
+        .push(raysense_core::LanguagePluginConfig {
+            name: name.to_string(),
+            extensions,
+            ..raysense_core::LanguagePluginConfig::default()
+        });
+    let toml = toml::to_string_pretty(&config).context("failed to encode config")?;
+    fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
+    println!("plugin {} {}", name, path.display());
+    Ok(())
 }
 
 fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Result<()> {
@@ -559,6 +870,7 @@ fn print_summary(report: &raysense_core::ScanReport, config: &RaysenseConfig) {
     println!("snapshot {}", report.snapshot.snapshot_id);
     println!("root {}", report.snapshot.root.display());
     println!("score {}", health.score);
+    println!("quality_signal {}", health.quality_signal);
     println!("coverage_score {}", health.coverage_score);
     println!("structural_score {}", health.structural_score);
     println!("files {}", report.snapshot.file_count);
@@ -585,6 +897,7 @@ fn print_summary(report: &raysense_core::ScanReport, config: &RaysenseConfig) {
 
 fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::HealthSummary) {
     println!("score {}", health.score);
+    println!("quality_signal {}", health.quality_signal);
     println!("coverage_score {}", health.coverage_score);
     println!("structural_score {}", health.structural_score);
     println!("root {}", report.snapshot.root.display());
@@ -647,6 +960,29 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
     println!(
         "dsm modules={} module_edges={}",
         health.metrics.dsm.module_count, health.metrics.dsm.module_edges
+    );
+    println!(
+        "root_causes modularity={:.3} acyclicity={:.3} depth={:.3} equality={:.3} redundancy={:.3}",
+        health.root_causes.modularity,
+        health.root_causes.acyclicity,
+        health.root_causes.depth,
+        health.root_causes.equality,
+        health.root_causes.redundancy
+    );
+    println!(
+        "architecture depth={} max_blast_radius={} max_blast_radius_file={}",
+        health.metrics.architecture.module_depth,
+        health.metrics.architecture.max_blast_radius,
+        health.metrics.architecture.max_blast_radius_file
+    );
+    println!(
+        "complexity max={} avg={:.3} gini={:.3} dead_functions={} duplicate_groups={} redundancy_ratio={:.3}",
+        health.metrics.complexity.max_function_complexity,
+        health.metrics.complexity.average_function_complexity,
+        health.metrics.complexity.complexity_gini,
+        health.metrics.complexity.dead_functions.len(),
+        health.metrics.complexity.duplicate_groups.len(),
+        health.metrics.complexity.redundancy_ratio
     );
     if health.metrics.evolution.available {
         println!(

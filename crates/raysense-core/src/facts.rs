@@ -68,6 +68,7 @@ pub struct FileFact {
     pub file_id: usize,
     pub path: PathBuf,
     pub language: Language,
+    pub language_name: String,
     pub module: String,
     pub lines: usize,
     pub bytes: usize,

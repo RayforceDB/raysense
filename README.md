@@ -50,20 +50,24 @@ cargo run -q -p raysense-cli -- baseline diff ../rayforce
 Current Rayforce baseline:
 
 ```text
-score 96
+score 77
+quality_signal 7708
 coverage_score 100
-structural_score 92
-facts files=190 functions=2705 calls=25269 call_edges=15408 imports=1038
+structural_score 72
+facts files=190 functions=2662 calls=25704 call_edges=15492 imports=1039
 entry_points total=50 binaries=6 examples=4 tests=40
-imports local=656 external=0 system=382 unresolved=0
-graph resolved_edges=656 cycles=0
-coupling local_edges=656 cross_module_edges=240 cross_module_ratio=0.366
-calls total=25269 resolved_edges=15408 resolution_ratio=0.610 max_function_fan_in=2527 max_function_fan_out=293
-size max_file_lines=6329 max_function_lines=2334 large_files=63 long_functions=208
+imports local=657 external=0 system=382 unresolved=0
+graph resolved_edges=657 cycles=0
+coupling local_edges=657 cross_module_edges=240 cross_module_ratio=0.365
+calls total=25704 resolved_edges=15492 resolution_ratio=0.603 max_function_fan_in=2537 max_function_fan_out=293
+size max_file_lines=6329 max_function_lines=2334 large_files=63 long_functions=209
 test_gap production_files=150 test_files=40 files_without_nearby_tests=150
 dsm modules=5 module_edges=240
-evolution available=true commits_sampled=500 changed_files=186
-rules high_fan_in=2
+root_causes modularity=0.635 acyclicity=1.000 depth=1.000 equality=0.450 redundancy=0.952
+architecture depth=3 max_blast_radius=25 max_blast_radius_file=src/ops/query.c
+complexity max=131 avg=3.904 gini=0.550 dead_functions=50 duplicate_groups=20 redundancy_ratio=0.048
+evolution available=true commits_sampled=500 changed_files=190
+rules warnings=7 info=31
 ```
 
 ## Commands
@@ -87,6 +91,13 @@ raysense observe <path> [--json] [--memory] [--config <path>]
 raysense health <path> [--json] [--config <path>]
 raysense edges <path> [--all] [--config <path>]
 raysense memory <path> [--config <path>]
+raysense check [path] [--json] [--config <path>]
+raysense gate [path] [--save] [--baseline <path>] [--json] [--config <path>]
+raysense watch [path] [--interval <seconds>] [--config <path>]
+raysense visualize [path] [--output <path>] [--config <path>]
+raysense plugin list [path] [--config <path>]
+raysense plugin add <name> <extensions...> [--path <path>] [--config <path>]
+raysense plugin init <name> <extension> [--path <path>] [--config <path>]
 raysense baseline save <path> [--output <path>] [--config <path>]
 raysense baseline diff <path> [--baseline <path>] [--config <path>] [--json]
 raysense baseline tables [--baseline <path>] [--json]
@@ -102,7 +113,10 @@ automatically. `--config` overrides that path.
 write config, run health, inspect scan facts, list dependency edges, read
 hotspots, read rule findings, read DSM module edges, and materialize memory
 table summaries. It can also save/diff baselines and query saved baseline
-tables with projection, filters, sorting, and pagination.
+tables with projection, filters, sorting, and pagination. Agent session tools
+can save an in-memory baseline, rescan, end the session, check rules, inspect
+evolution, inspect DSM data, inspect test gaps, and list configured language
+plugins.
 
 Baselines are stored under `<path>/.raysense/baseline` by default. The manifest
 is JSON for fast agent diffs, and baseline tables are written under `tables/`
@@ -169,7 +183,18 @@ ignored_paths = ["target", "fixtures/generated"]
 enabled_languages = []
 disabled_languages = []
 
+[[scan.plugins]]
+name = "foo"
+extensions = ["foo"]
+function_prefixes = ["function "]
+import_prefixes = ["load "]
+call_suffixes = ["("]
+
 [rules]
+max_cycles = 0
+max_coupling_ratio = 1.0
+max_function_complexity = 15
+no_god_files = true
 high_file_fan_in = 50
 large_file_lines = 500
 max_large_file_findings = 20
@@ -183,6 +208,11 @@ no_tests_detected = true
 [[boundaries.forbidden_edges]]
 from = "src"
 to = "test"
+
+[[boundaries.layers]]
+name = "core"
+path = "src/core/*"
+order = 0
 ```
 
 ## Status
@@ -191,6 +221,8 @@ The first testable version focuses on Rust, C/C++, Python, and TypeScript
 codebases:
 
 - Configurable scan filtering by ignored paths and enabled/disabled languages.
+- Generic configured language plugins by file extension with configurable
+  function, import, and call token extraction.
 - Tree-sitter-backed Rust, C, C++, Python, and TypeScript function discovery
   with lightweight fallback extraction.
 - Tree-sitter-backed Rust `use`/`mod`, C/C++ include, Python import, and
@@ -204,17 +236,23 @@ codebases:
 - Entry point facts for binaries, examples, and tests.
 - Local, external, system, and unresolved import classification.
 - Graph metrics: resolved edges, cycles, fan-in, fan-out.
-- Health summary with score, import breakdown, hotspots, coupling, size,
-  entry point, test-gap, DSM, and evolution-availability metrics.
+- Health summary with score, 0-10000 quality signal, root-cause scores,
+  import breakdown, hotspots, coupling, size, entry point, test-gap, DSM,
+  architecture, complexity, and evolution metrics.
 - Built-in rules for high fan-in, production dependencies on test paths,
-  large-file/no-test findings, and call-resolution/function-call hotspots.
+  large-file/no-test findings, call-resolution/function-call hotspots, max
+  cycles, max coupling, max function complexity, god-file pressure, and ordered
+  layer constraints.
 - Rule thresholds can be configured with TOML.
 - Forbidden top-level module dependencies can be configured with TOML.
 - Config read/write, health runs, scan facts, edges, hotspots, rule findings,
-  module edges, memory summaries, and saved baseline table queries are exposed
-  through the MCP interface.
+  module edges, session start/end, rescans, rule checks, evolution, DSM, test
+  gaps, plugin listing, memory summaries, and saved baseline table queries are
+  exposed through the MCP interface.
 - Baseline save/diff is available through the CLI and MCP, with Rayforce
   splayed-table storage for baseline tables.
+- CLI quality gate, watch loop, plugin management, and generated local HTML
+  architecture visualization are available.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.

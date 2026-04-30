@@ -39,8 +39,8 @@ pub use facts::{
 pub use graph::GraphMetrics;
 pub use health::{
     compute_health, compute_health_with_config, BoundaryConfig, ConfigError, FileHotspot,
-    ForbiddenEdgeConfig, HealthSummary, RaysenseConfig, ResolutionBreakdown, RuleConfig,
-    ScanConfig,
+    ForbiddenEdgeConfig, HealthSummary, LanguagePluginConfig, LayerConfig, RaysenseConfig,
+    ResolutionBreakdown, RuleConfig, ScanConfig,
 };
 pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;
