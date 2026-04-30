@@ -22,7 +22,14 @@
 name: publish
 
 on:
+  release:
+    types:
+      - published
   workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -46,6 +53,9 @@ jobs:
         env:
           RAYFORCE_DIR: deps/rayforce
 
+      - name: Package raysense-core
+        run: cargo package -p raysense-core
+
       - name: Publish raysense-core
         run: cargo publish -p raysense-core
         env:
@@ -54,6 +64,9 @@ jobs:
 
       - name: Wait for registry index
         run: sleep 30
+
+      - name: Package raysense
+        run: cargo package -p raysense
 
       - name: Publish raysense
         run: cargo publish -p raysense

@@ -148,4 +148,5 @@ codebases:
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.
 
-CI and publish workflows are currently manual-only while the project stabilizes.
+CI runs on pushes and pull requests. Publish runs when a release is published
+and can also be started manually.
