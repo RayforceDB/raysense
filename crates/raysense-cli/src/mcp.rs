@@ -1374,6 +1374,8 @@ fn config_schema() -> Value {
                             "properties": {
                                 "name": {"type": "string"},
                                 "grammar": {"type": ["string", "null"]},
+                                "grammar_path": {"type": ["string", "null"]},
+                                "grammar_symbol": {"type": ["string", "null"]},
                                 "extensions": {"type": "array", "items": {"type": "string"}},
                                 "function_prefixes": {"type": "array", "items": {"type": "string"}},
                                 "import_prefixes": {"type": "array", "items": {"type": "string"}},

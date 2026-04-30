@@ -119,8 +119,9 @@ Project-local plugin manifests under `.raysense/plugins/*/plugin.toml` are also
 loaded during scans, using the same fields as `[[scan.plugins]]`.
 When `.raysense/plugins/<name>/queries/tags.scm` is present and the plugin
 selects a compiled grammar with `grammar = "rust"`, `c`, `cpp`, `python`, or
-`typescript`, Raysense uses query captures for functions and imports before
-falling back to token prefixes.
+`typescript`, or with `grammar_path` and optional `grammar_symbol`, Raysense
+uses query captures for functions and imports before falling back to token
+prefixes.
 
 `raysense mcp` runs a stdio MCP server for agents. It exposes tools to read and
 write config, run health, inspect scan facts, list dependency edges, read
@@ -204,6 +205,8 @@ public_api_paths = ["src/lib.rs"]
 [[scan.plugins]]
 name = "foo"
 grammar = "rust"
+grammar_path = "grammars/foo.so"
+grammar_symbol = "tree_sitter_foo"
 extensions = ["foo"]
 function_prefixes = ["function "]
 import_prefixes = ["load "]

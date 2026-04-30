@@ -30,10 +30,12 @@ readme = "README.md"
 
 [dependencies]
 ignore.workspace = true
+libloading.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tree-sitter-language.workspace = true
 toml = "1.1.2"
 tree-sitter = "0.26.8"
 tree-sitter-c = "0.24.2"

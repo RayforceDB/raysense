@@ -92,6 +92,8 @@ impl Default for ScoreConfig {
 pub struct LanguagePluginConfig {
     pub name: String,
     pub grammar: Option<String>,
+    pub grammar_path: Option<String>,
+    pub grammar_symbol: Option<String>,
     pub extensions: Vec<String>,
     pub function_prefixes: Vec<String>,
     pub import_prefixes: Vec<String>,
@@ -109,6 +111,8 @@ impl Default for LanguagePluginConfig {
         Self {
             name: String::new(),
             grammar: None,
+            grammar_path: None,
+            grammar_symbol: None,
             extensions: Vec::new(),
             function_prefixes: vec![
                 "function ".to_string(),

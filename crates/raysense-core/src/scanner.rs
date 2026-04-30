@@ -29,12 +29,14 @@ use crate::graph::compute_graph_metrics;
 use crate::health::{LanguagePluginConfig, RaysenseConfig};
 use crate::profile::ProjectProfile;
 use ignore::WalkBuilder;
+use libloading::Library;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 use tree_sitter::{Language as TsLanguage, Node, Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter_language::LanguageFn;
 
 #[derive(Debug, Error)]
 pub enum ScanError {
@@ -56,6 +58,8 @@ pub enum ScanError {
         #[source]
         source: toml::de::Error,
     },
+    #[error("failed to load grammar library {path}: {message}")]
+    GrammarLibrary { path: PathBuf, message: String },
 }
 
 pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
@@ -252,6 +256,13 @@ fn load_project_plugins(root: &Path, config: &RaysenseConfig) -> Result<Raysense
                         source,
                     })?,
                 );
+        }
+        if let Some(grammar_path) = plugin.grammar_path.as_ref() {
+            let path = PathBuf::from(grammar_path);
+            if path.is_relative() {
+                plugin.grammar_path =
+                    Some(entry.path().join(path).to_string_lossy().replace('\\', "/"));
+            }
         }
         if plugin.name.trim().is_empty() || plugin.extensions.is_empty() {
             continue;
@@ -553,6 +564,8 @@ pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
             let mut plugin = LanguagePluginConfig {
                 name: (*name).to_string(),
                 grammar: None,
+                grammar_path: None,
+                grammar_symbol: None,
                 extensions: extensions.iter().map(|item| (*item).to_string()).collect(),
                 function_prefixes: function_prefixes
                     .iter()
@@ -1098,7 +1111,8 @@ fn extract_query_functions(
     content: &str,
     plugin: &LanguagePluginConfig,
 ) -> Option<Vec<FunctionFact>> {
-    let language = query_language(plugin)?;
+    let loaded = query_language(plugin)?;
+    let language = loaded.language();
     let query_source = plugin.tags_query.as_deref()?;
     let mut parser = Parser::new();
     parser.set_language(&language).ok()?;
@@ -1166,7 +1180,8 @@ fn extract_query_imports(
     content: &str,
     plugin: &LanguagePluginConfig,
 ) -> Option<Vec<ImportFact>> {
-    let language = query_language(plugin)?;
+    let loaded = query_language(plugin)?;
+    let language = loaded.language();
     let query_source = plugin.tags_query.as_deref()?;
     let mut parser = Parser::new();
     parser.set_language(&language).ok()?;
@@ -1203,17 +1218,67 @@ fn extract_query_imports(
     Some(imports)
 }
 
-fn query_language(plugin: &LanguagePluginConfig) -> Option<TsLanguage> {
-    match plugin.grammar.as_deref().unwrap_or(plugin.name.as_str()) {
-        "c" => Some(tree_sitter_c::LANGUAGE.into()),
-        "cpp" | "c++" => Some(tree_sitter_cpp::LANGUAGE.into()),
-        "python" => Some(tree_sitter_python::LANGUAGE.into()),
-        "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
-        "typescript" | "javascript" | "tsx" | "jsx" => {
-            Some(tree_sitter_typescript::LANGUAGE_TSX.into())
+enum QueryLanguage {
+    Builtin(TsLanguage),
+    Dynamic {
+        language: TsLanguage,
+        _library: Library,
+    },
+}
+
+impl QueryLanguage {
+    fn language(&self) -> TsLanguage {
+        match self {
+            Self::Builtin(language) => language.clone(),
+            Self::Dynamic { language, .. } => language.clone(),
         }
+    }
+}
+
+fn query_language(plugin: &LanguagePluginConfig) -> Option<QueryLanguage> {
+    if let Some(path) = plugin.grammar_path.as_ref() {
+        return load_dynamic_query_language(plugin, path)
+            .map(|(language, library)| QueryLanguage::Dynamic {
+                language,
+                _library: library,
+            })
+            .ok();
+    }
+    match plugin.grammar.as_deref().unwrap_or(plugin.name.as_str()) {
+        "c" => Some(QueryLanguage::Builtin(tree_sitter_c::LANGUAGE.into())),
+        "cpp" | "c++" => Some(QueryLanguage::Builtin(tree_sitter_cpp::LANGUAGE.into())),
+        "python" => Some(QueryLanguage::Builtin(tree_sitter_python::LANGUAGE.into())),
+        "rust" => Some(QueryLanguage::Builtin(tree_sitter_rust::LANGUAGE.into())),
+        "typescript" | "javascript" | "tsx" | "jsx" => Some(QueryLanguage::Builtin(
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+        )),
         _ => None,
     }
+}
+
+fn load_dynamic_query_language(
+    plugin: &LanguagePluginConfig,
+    path: &str,
+) -> Result<(TsLanguage, Library), ScanError> {
+    let path = PathBuf::from(path);
+    let symbol = plugin
+        .grammar_symbol
+        .clone()
+        .unwrap_or_else(|| format!("tree_sitter_{}", plugin.name.replace('-', "_")));
+    let library = unsafe { Library::new(&path) }.map_err(|error| ScanError::GrammarLibrary {
+        path: path.clone(),
+        message: error.to_string(),
+    })?;
+    let language = unsafe {
+        let function: libloading::Symbol<'_, unsafe extern "C" fn() -> *const ()> = library
+            .get(symbol.as_bytes())
+            .map_err(|error| ScanError::GrammarLibrary {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
+        TsLanguage::new(LanguageFn::from_raw(*function))
+    };
+    Ok((language, library))
 }
 
 fn query_capture_is_function(name: &str) -> bool {
