@@ -37,7 +37,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod mcp;
 
@@ -120,6 +120,22 @@ enum Command {
         #[command(subcommand)]
         command: PluginCommand,
     },
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
+    Trend {
+        #[command(subcommand)]
+        command: TrendCommand,
+    },
+    Remediate {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     Baseline {
         #[command(subcommand)]
         command: BaselineCommand,
@@ -150,6 +166,36 @@ enum PluginCommand {
         path: PathBuf,
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyCommand {
+    List,
+    Init {
+        preset: String,
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TrendCommand {
+    Record {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    Show {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -284,6 +330,23 @@ pub fn run() -> Result<()> {
                 config,
             } => add_plugin(&path, config.as_deref(), &name, vec![extension])?,
         },
+        Command::Policy { command } => match command {
+            PolicyCommand::List => list_policies(),
+            PolicyCommand::Init {
+                preset,
+                path,
+                config,
+            } => init_policy(&path, config.as_deref(), &preset)?,
+        },
+        Command::Trend { command } => match command {
+            TrendCommand::Record { path, config } => record_trend(&path, config.as_deref())?,
+            TrendCommand::Show { path, config, json } => {
+                show_trend(&path, config.as_deref(), json)?
+            }
+        },
+        Command::Remediate { path, config, json } => {
+            print_remediations(&path, config.as_deref(), json)?
+        }
         Command::Baseline { command } => match command {
             BaselineCommand::Save {
                 path,
@@ -649,6 +712,156 @@ fn add_plugin(
     fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
     println!("plugin {} {}", name, path.display());
     Ok(())
+}
+
+fn list_policies() {
+    for name in ["rust-crate", "monorepo", "service-backend", "library"] {
+        println!("{name}");
+    }
+}
+
+fn init_policy(root: &Path, config_path: Option<&Path>, preset: &str) -> Result<()> {
+    let path = config_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join(".raysense.toml"));
+    let mut config = if path.exists() {
+        RaysenseConfig::from_path(&path)
+            .with_context(|| format!("failed to load config {}", path.display()))?
+    } else {
+        RaysenseConfig::default()
+    };
+    apply_policy_preset(&mut config, preset)?;
+    let toml = toml::to_string_pretty(&config).context("failed to encode config")?;
+    fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
+    println!("policy {} {}", preset, path.display());
+    Ok(())
+}
+
+fn apply_policy_preset(config: &mut RaysenseConfig, preset: &str) -> Result<()> {
+    match preset {
+        "rust-crate" => {
+            config.scan.ignored_paths = vec!["target".to_string()];
+            config.scan.generated_paths = vec!["**/generated/*".to_string()];
+            config.scan.enabled_languages = vec!["rust".to_string(), "toml".to_string()];
+            config.scan.module_roots = vec!["crates".to_string(), "src".to_string()];
+            config.scan.test_roots = vec!["tests".to_string(), "benches".to_string()];
+            config.scan.public_api_paths =
+                vec!["src/lib.rs".to_string(), "*/src/lib.rs".to_string()];
+            config.rules.max_function_complexity = 20;
+        }
+        "monorepo" => {
+            config.scan.module_roots = vec![
+                "apps".to_string(),
+                "packages".to_string(),
+                "crates".to_string(),
+                "services".to_string(),
+            ];
+            config.rules.max_coupling_ratio = 0.4;
+            config.rules.high_file_fan_in = 75;
+        }
+        "service-backend" => {
+            config.scan.module_roots =
+                vec!["src".to_string(), "internal".to_string(), "pkg".to_string()];
+            config.rules.max_function_complexity = 18;
+            config.boundaries.layers = vec![
+                raysense_core::LayerConfig {
+                    name: "api".to_string(),
+                    path: "src/api/*".to_string(),
+                    order: 2,
+                },
+                raysense_core::LayerConfig {
+                    name: "domain".to_string(),
+                    path: "src/domain/*".to_string(),
+                    order: 1,
+                },
+                raysense_core::LayerConfig {
+                    name: "infra".to_string(),
+                    path: "src/infra/*".to_string(),
+                    order: 0,
+                },
+            ];
+        }
+        "library" => {
+            config.scan.public_api_paths = vec![
+                "src/lib.*".to_string(),
+                "include/*".to_string(),
+                "*/src/lib.*".to_string(),
+            ];
+            config.rules.max_function_complexity = 15;
+            config.score.redundancy_weight = 1.5;
+        }
+        _ => return Err(anyhow!("unknown policy preset {preset}")),
+    }
+    Ok(())
+}
+
+fn record_trend(root: &Path, config_path: Option<&Path>) -> Result<()> {
+    let config = config_for_root(root, config_path)?;
+    let report = scan_path_with_config(root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let dir = report.snapshot.root.join(".raysense/trends");
+    let path = dir.join("history.json");
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let mut samples: Vec<Value> = if path.exists() {
+        serde_json::from_str(&fs::read_to_string(&path)?).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    samples.push(serde_json::json!({
+        "timestamp": unix_time(),
+        "snapshot_id": report.snapshot.snapshot_id,
+        "score": health.score,
+        "quality_signal": health.quality_signal,
+        "rules": health.rules.len(),
+        "files": report.files.len(),
+        "functions": report.functions.len()
+    }));
+    fs::write(&path, serde_json::to_string_pretty(&samples)?)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    println!("trend {}", path.display());
+    Ok(())
+}
+
+fn show_trend(root: &Path, config_path: Option<&Path>, json: bool) -> Result<()> {
+    let config = config_for_root(root, config_path)?;
+    let report = scan_path_with_config(root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&health.metrics.trend)?);
+    } else if health.metrics.trend.available {
+        println!(
+            "trend samples={} score_delta={} quality_signal_delta={} rule_delta={}",
+            health.metrics.trend.samples,
+            health.metrics.trend.score_delta,
+            health.metrics.trend.quality_signal_delta,
+            health.metrics.trend.rule_delta
+        );
+    } else {
+        println!("trend unavailable");
+    }
+    Ok(())
+}
+
+fn print_remediations(root: &Path, config_path: Option<&Path>, json: bool) -> Result<()> {
+    let config = config_for_root(root, config_path)?;
+    let report = scan_path_with_config(root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&health.remediations)?);
+    } else {
+        for item in health.remediations {
+            println!("{} {} - {}", item.code, item.path, item.action);
+            println!("  {}", item.command);
+        }
+    }
+    Ok(())
+}
+
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Result<()> {

@@ -35,6 +35,7 @@ pub struct RaysenseConfig {
     pub scan: ScanConfig,
     pub rules: RuleConfig,
     pub boundaries: BoundaryConfig,
+    pub score: ScoreConfig,
 }
 
 impl RaysenseConfig {
@@ -55,10 +56,35 @@ impl RaysenseConfig {
 #[serde(default)]
 pub struct ScanConfig {
     pub ignored_paths: Vec<String>,
+    pub generated_paths: Vec<String>,
     pub enabled_languages: Vec<String>,
     pub disabled_languages: Vec<String>,
     pub module_roots: Vec<String>,
+    pub test_roots: Vec<String>,
+    pub public_api_paths: Vec<String>,
     pub plugins: Vec<LanguagePluginConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScoreConfig {
+    pub modularity_weight: f64,
+    pub acyclicity_weight: f64,
+    pub depth_weight: f64,
+    pub equality_weight: f64,
+    pub redundancy_weight: f64,
+}
+
+impl Default for ScoreConfig {
+    fn default() -> Self {
+        Self {
+            modularity_weight: 1.0,
+            acyclicity_weight: 1.0,
+            depth_weight: 1.0,
+            equality_weight: 1.0,
+            redundancy_weight: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +202,7 @@ pub struct HealthSummary {
     pub resolution: ResolutionBreakdown,
     pub hotspots: Vec<FileHotspot>,
     pub rules: Vec<RuleFinding>,
+    pub remediations: Vec<Remediation>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -189,6 +216,7 @@ pub struct MetricsSummary {
     pub test_gap: TestGapMetrics,
     pub dsm: DsmMetrics,
     pub evolution: EvolutionMetrics,
+    pub trend: TrendMetrics,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -226,7 +254,9 @@ pub struct ComplexityMetrics {
     pub complex_functions: Vec<FunctionComplexityMetric>,
     pub dead_functions: Vec<FunctionComplexityMetric>,
     pub duplicate_groups: Vec<DuplicateFunctionGroup>,
+    pub semantic_duplicate_groups: Vec<DuplicateFunctionGroup>,
     pub redundancy_ratio: f64,
+    pub public_api_functions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,7 +331,26 @@ pub struct TestGapMetrics {
 pub struct TestGapCandidate {
     pub file_id: usize,
     pub path: String,
+    pub framework: String,
     pub expected_tests: Vec<String>,
+    pub matched_tests: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrendMetrics {
+    pub available: bool,
+    pub samples: usize,
+    pub score_delta: i16,
+    pub quality_signal_delta: i32,
+    pub rule_delta: isize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Remediation {
+    pub code: String,
+    pub path: String,
+    pub action: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -374,8 +423,9 @@ pub fn compute_health_with_config(report: &ScanReport, config: &RaysenseConfig) 
     let hotspots = hotspots(report);
     let metrics = metrics(report, &hotspots, config);
     let rules = rules(report, &hotspots, &metrics, config);
+    let remediations = remediations(&rules, &metrics);
     let root_causes = root_causes(report, &metrics);
-    let quality_signal = quality_signal(&root_causes);
+    let quality_signal = quality_signal(&root_causes, &config.score);
 
     HealthSummary {
         score: ((quality_signal as f64 / 10000.0) * 100.0).round() as u8,
@@ -387,6 +437,7 @@ pub fn compute_health_with_config(report: &ScanReport, config: &RaysenseConfig) 
         resolution,
         hotspots,
         rules,
+        remediations,
     }
 }
 
@@ -487,6 +538,7 @@ fn metrics(
         test_gap: test_gap_metrics(report),
         dsm: dsm_metrics(report, config),
         evolution: evolution_metrics(report),
+        trend: trend_metrics(report),
     }
 }
 
@@ -628,6 +680,8 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
     let mut dead_functions = Vec::new();
     let mut by_name: BTreeMap<String, Vec<FunctionComplexityMetric>> = BTreeMap::new();
     let mut by_fingerprint: BTreeMap<String, Vec<FunctionComplexityMetric>> = BTreeMap::new();
+    let mut by_semantic_shape: BTreeMap<String, Vec<FunctionComplexityMetric>> = BTreeMap::new();
+    let mut public_api_functions = 0usize;
 
     for function in &report.functions {
         let Some(file) = report.files.get(function.file_id) else {
@@ -652,9 +706,19 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
             .entry(function.name.clone())
             .or_default()
             .push(metric.clone());
+        let public_api_like = is_public_api_like(file, function, &body);
+        if public_api_like {
+            public_api_functions += 1;
+        }
         if let Some(fingerprint) = normalized_body_fingerprint(&body) {
             by_fingerprint
                 .entry(fingerprint)
+                .or_default()
+                .push(metric.clone());
+        }
+        if let Some(shape) = semantic_shape_fingerprint(&body) {
+            by_semantic_shape
+                .entry(shape)
                 .or_default()
                 .push(metric.clone());
         }
@@ -667,7 +731,7 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
             .unwrap_or(0)
             == 0
             && !is_entry_like_function(&function.name)
-            && !is_public_api_like(file, function, &body)
+            && !public_api_like
         {
             dead_functions.push(metric);
         }
@@ -704,6 +768,22 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
             .then_with(|| a.name.cmp(&b.name))
     });
     duplicate_groups.truncate(20);
+    let mut semantic_duplicate_groups: Vec<DuplicateFunctionGroup> = by_semantic_shape
+        .into_iter()
+        .filter(|(_, functions)| functions.len() > 1)
+        .map(|(fingerprint, functions)| DuplicateFunctionGroup {
+            fingerprint,
+            name: shared_duplicate_name(&functions),
+            functions,
+        })
+        .collect();
+    semantic_duplicate_groups.sort_by(|a, b| {
+        b.functions
+            .len()
+            .cmp(&a.functions.len())
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    semantic_duplicate_groups.truncate(20);
 
     let max_function_complexity = values.iter().copied().fold(0.0, f64::max) as usize;
     let average_function_complexity = if values.is_empty() {
@@ -727,7 +807,9 @@ fn complexity_metrics(report: &ScanReport) -> ComplexityMetrics {
         complex_functions,
         dead_functions,
         duplicate_groups,
+        semantic_duplicate_groups,
         redundancy_ratio,
+        public_api_functions,
     }
 }
 
@@ -741,19 +823,24 @@ fn root_causes(report: &ScanReport, metrics: &MetricsSummary) -> RootCauseScores
     }
 }
 
-fn quality_signal(scores: &RootCauseScores) -> u32 {
+fn quality_signal(scores: &RootCauseScores, weights: &ScoreConfig) -> u32 {
     let values = [
-        scores.modularity,
-        scores.acyclicity,
-        scores.depth,
-        scores.equality,
-        scores.redundancy,
+        (scores.modularity, weights.modularity_weight),
+        (scores.acyclicity, weights.acyclicity_weight),
+        (scores.depth, weights.depth_weight),
+        (scores.equality, weights.equality_weight),
+        (scores.redundancy, weights.redundancy_weight),
     ];
-    let product = values
+    let weight_sum = values
         .iter()
-        .map(|value| value.max(0.0001))
-        .product::<f64>();
-    (product.powf(1.0 / values.len() as f64) * 10000.0).round() as u32
+        .map(|(_, weight)| weight.max(0.0))
+        .sum::<f64>()
+        .max(0.0001);
+    let weighted_log = values
+        .iter()
+        .map(|(value, weight)| value.max(0.0001).ln() * weight.max(0.0))
+        .sum::<f64>();
+    ((weighted_log / weight_sum).exp() * 10000.0).round() as u32
 }
 
 fn file_adjacency(report: &ScanReport) -> HashMap<usize, Vec<usize>> {
@@ -1020,6 +1107,25 @@ fn normalized_body_fingerprint(body: &str) -> Option<String> {
     Some(short_hash(&normalized))
 }
 
+fn semantic_shape_fingerprint(body: &str) -> Option<String> {
+    let tokens = normalized_tokens(body);
+    if tokens.len() < 20 {
+        return None;
+    }
+    let shape = tokens
+        .iter()
+        .filter(|token| {
+            is_keyword_token(token) || matches!(token.as_str(), "{" | "}" | "(" | ")" | "?" | ":")
+        })
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if shape.split_whitespace().count() < 4 {
+        return None;
+    }
+    Some(format!("shape:{}", short_hash(&shape)))
+}
+
 fn normalized_tokens(body: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -1230,13 +1336,21 @@ fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
             continue;
         }
         production_files += 1;
-        let expected_tests = expected_test_paths(&path);
-        if !expected_tests.iter().any(|path| test_paths.contains(path)) {
+        let framework = test_framework(file);
+        let expected_tests = expected_test_paths(&path, &framework);
+        let matched_tests = expected_tests
+            .iter()
+            .filter(|path| test_paths.contains(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if matched_tests.is_empty() {
             files_without_nearby_tests += 1;
             candidates.push(TestGapCandidate {
                 file_id: file.file_id,
                 path: path.into_owned(),
+                framework,
                 expected_tests,
+                matched_tests,
             });
         }
     }
@@ -1255,7 +1369,7 @@ fn test_gap_metrics(report: &ScanReport) -> TestGapMetrics {
     }
 }
 
-fn expected_test_paths(path: &str) -> Vec<String> {
+fn expected_test_paths(path: &str, framework: &str) -> Vec<String> {
     let normalized = path.replace('\\', "/");
     let path = Path::new(&normalized);
     let stem = path
@@ -1283,9 +1397,44 @@ fn expected_test_paths(path: &str) -> Vec<String> {
     if normalized.starts_with("src/") {
         out.push(normalized.replacen("src/", "tests/", 1));
     }
+    match framework {
+        "rust" => {
+            out.push(format!("tests/{stem}.rs"));
+            out.push(format!("src/{stem}/tests.rs"));
+        }
+        "python" => {
+            out.push(format!("tests/test_{stem}.py"));
+        }
+        "typescript" | "javascript" => {
+            out.push(
+                format!("{parent}/{stem}.spec.{ext}")
+                    .trim_start_matches('/')
+                    .to_string(),
+            );
+            out.push(
+                format!("{parent}/{stem}.test.{ext}")
+                    .trim_start_matches('/')
+                    .to_string(),
+            );
+        }
+        _ => {}
+    }
     out.sort();
     out.dedup();
     out
+}
+
+fn test_framework(file: &crate::facts::FileFact) -> String {
+    match file.language_name.as_str() {
+        "rust" => "rust",
+        "python" => "python",
+        "typescript" => "typescript",
+        "go" => "go",
+        "java" => "junit",
+        "csharp" => "dotnet",
+        other => other,
+    }
+    .to_string()
 }
 
 fn dsm_metrics(report: &ScanReport, config: &RaysenseConfig) -> DsmMetrics {
@@ -1411,6 +1560,33 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
         changed_files: file_commits.len(),
         top_changed_files,
     }
+}
+
+fn trend_metrics(report: &ScanReport) -> TrendMetrics {
+    let path = report.snapshot.root.join(".raysense/trends/history.json");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return TrendMetrics::default();
+    };
+    let Ok(samples) = serde_json::from_str::<Vec<TrendSample>>(&content) else {
+        return TrendMetrics::default();
+    };
+    let (Some(first), Some(last)) = (samples.first(), samples.last()) else {
+        return TrendMetrics::default();
+    };
+    TrendMetrics {
+        available: true,
+        samples: samples.len(),
+        score_delta: last.score as i16 - first.score as i16,
+        quality_signal_delta: last.quality_signal as i32 - first.quality_signal as i32,
+        rule_delta: last.rules as isize - first.rules as isize,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrendSample {
+    score: u8,
+    quality_signal: u32,
+    rules: usize,
 }
 
 fn flush_commit_files(
@@ -1643,6 +1819,68 @@ fn rules(
     findings
 }
 
+fn remediations(rules: &[RuleFinding], metrics: &MetricsSummary) -> Vec<Remediation> {
+    let mut out = Vec::new();
+    for rule in rules {
+        let action = match rule.code.as_str() {
+            "max_function_complexity" => {
+                "split the function, extract decision branches, or add a local policy override"
+            }
+            "high_fan_in" => "introduce a facade boundary or split shared responsibilities",
+            "production_depends_on_test" => {
+                "move shared fixtures into a production-safe support module"
+            }
+            "large_file" => "split file by cohesive type, operation, or module boundary",
+            "no_tests_detected" => "add first tests at the expected test-gap paths",
+            "low_call_resolution" => {
+                "add language plugin patterns or enable a grammar-backed scanner"
+            }
+            "layer_order" => "invert the dependency or update ordered layer config",
+            "max_cycles" => {
+                "break one dependency edge in each cycle or configure an allowed boundary"
+            }
+            _ => "inspect the finding and tune policy or architecture",
+        };
+        out.push(Remediation {
+            code: rule.code.clone(),
+            path: rule.path.clone(),
+            action: action.to_string(),
+            command: format!("raysense check {} --json", shell_path(&rule.path)),
+        });
+    }
+    for gap in metrics.test_gap.candidates.iter().take(10) {
+        if let Some(path) = gap.expected_tests.first() {
+            out.push(Remediation {
+                code: "test_gap".to_string(),
+                path: gap.path.clone(),
+                action: format!("add a {} test for {}", gap.framework, gap.path),
+                command: format!(
+                    "mkdir -p {} && touch {}",
+                    parent_path(path),
+                    shell_path(path)
+                ),
+            });
+        }
+    }
+    out.truncate(50);
+    out
+}
+
+fn shell_path(path: &str) -> String {
+    if path.contains(' ') {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    } else {
+        path.to_string()
+    }
+}
+
+fn parent_path(path: &str) -> String {
+    Path::new(path)
+        .parent()
+        .map(|path| shell_path(&path.to_string_lossy()))
+        .unwrap_or_else(|| ".".to_string())
+}
+
 fn boundary_findings(report: &ScanReport, config: &BoundaryConfig) -> Vec<RuleFinding> {
     if config.forbidden_edges.is_empty() {
         return Vec::new();
@@ -1752,6 +1990,9 @@ fn normalize_rule_path(path: &Path) -> String {
 
 fn module_group(file: &crate::facts::FileFact, config: &RaysenseConfig) -> String {
     let path = normalize_rule_path(&file.path);
+    if let Some(group) = ecosystem_module_group(&path, &file.language_name) {
+        return group;
+    }
     for root in &config.scan.module_roots {
         let root = root.trim_matches('/');
         if root.is_empty() {
@@ -1773,6 +2014,31 @@ fn module_group(file: &crate::facts::FileFact, config: &RaysenseConfig) -> Strin
         }
     }
     top_module(&file.module).to_string()
+}
+
+fn ecosystem_module_group(path: &str, language: &str) -> Option<String> {
+    let parts = path.split('/').collect::<Vec<_>>();
+    if parts.len() >= 3 && parts[0] == "crates" {
+        return Some(format!("crates/{}", parts[1]));
+    }
+    if parts.len() >= 3 && parts[0] == "packages" {
+        return Some(format!("packages/{}", parts[1]));
+    }
+    if parts.len() >= 3 && parts[0] == "apps" {
+        return Some(format!("apps/{}", parts[1]));
+    }
+    match language {
+        "go" if parts.len() >= 2 => Some(parts[..parts.len().saturating_sub(1)].join("/")),
+        "python" if parts.len() >= 2 && parts[0] == "src" => {
+            parts.get(1).map(|item| (*item).to_string())
+        }
+        "java" | "kotlin" if parts.iter().any(|part| *part == "src") => parts
+            .iter()
+            .position(|part| *part == "java" || *part == "kotlin")
+            .and_then(|idx| parts.get(idx + 1))
+            .map(|item| (*item).to_string()),
+        _ => None,
+    }
 }
 
 fn top_module(module: &str) -> &str {

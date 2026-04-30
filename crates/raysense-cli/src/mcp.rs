@@ -223,6 +223,21 @@ fn tools_list() -> Value {
                 "inputSchema": path_limit_schema("Unused.")
             },
             {
+                "name": "raysense_remediations",
+                "description": "Return suggested remediation actions for current findings and test gaps.",
+                "inputSchema": health_limit_schema("Maximum remediation actions to return. Defaults to 100.")
+            },
+            {
+                "name": "raysense_trend",
+                "description": "Return persisted trend metrics when .raysense/trends/history.json exists.",
+                "inputSchema": health_limit_schema("Unused.")
+            },
+            {
+                "name": "raysense_policy_presets",
+                "description": "List built-in policy preset names.",
+                "inputSchema": path_limit_schema("Unused.")
+            },
+            {
                 "name": "raysense_memory_summary",
                 "description": "Materialize Rayforce-backed memory tables and return their row/column counts.",
                 "inputSchema": {
@@ -285,6 +300,9 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_dsm" => dsm_tool(&args),
         "raysense_test_gaps" => test_gaps_tool(&args),
         "raysense_plugins" => plugins_tool(&args),
+        "raysense_remediations" => remediations_tool(&args),
+        "raysense_trend" => trend_tool(&args),
+        "raysense_policy_presets" => policy_presets_tool(&args),
         "raysense_memory_summary" => memory_summary_tool(&args),
         "raysense_baseline_save" => baseline_save_tool(&args),
         "raysense_baseline_diff" => baseline_diff_tool(&args),
@@ -594,6 +612,30 @@ fn plugins_tool(args: &Value) -> Result<Value> {
         "root": root,
         "source": source,
         "plugins": config.scan.plugins
+    }))
+}
+
+fn remediations_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    let limit = limit_arg(args, 100)?;
+    Ok(json!({
+        "root": root,
+        "remediations": limited(&health.remediations, limit),
+        "total": health.remediations.len()
+    }))
+}
+
+fn trend_tool(args: &Value) -> Result<Value> {
+    let (root, health) = health_from_args(args)?;
+    Ok(json!({
+        "root": root,
+        "trend": health.metrics.trend
+    }))
+}
+
+fn policy_presets_tool(_args: &Value) -> Result<Value> {
+    Ok(json!({
+        "presets": ["rust-crate", "monorepo", "service-backend", "library"]
     }))
 }
 
@@ -968,6 +1010,10 @@ fn config_schema() -> Value {
                         "type": "array",
                         "items": {"type": "string"}
                     },
+                    "generated_paths": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
                     "enabled_languages": {
                         "type": "array",
                         "items": {"type": "string"}
@@ -977,6 +1023,14 @@ fn config_schema() -> Value {
                         "items": {"type": "string"}
                     },
                     "module_roots": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "test_roots": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "public_api_paths": {
                         "type": "array",
                         "items": {"type": "string"}
                     },
@@ -1040,6 +1094,16 @@ fn config_schema() -> Value {
                             "required": ["name", "path", "order"]
                         }
                     }
+                }
+            },
+            "score": {
+                "type": "object",
+                "properties": {
+                    "modularity_weight": {"type": "number", "minimum": 0},
+                    "acyclicity_weight": {"type": "number", "minimum": 0},
+                    "depth_weight": {"type": "number", "minimum": 0},
+                    "equality_weight": {"type": "number", "minimum": 0},
+                    "redundancy_weight": {"type": "number", "minimum": 0}
                 }
             }
         }
@@ -1185,6 +1249,9 @@ mod tests {
         assert!(names.contains(&"raysense_dsm"));
         assert!(names.contains(&"raysense_test_gaps"));
         assert!(names.contains(&"raysense_plugins"));
+        assert!(names.contains(&"raysense_remediations"));
+        assert!(names.contains(&"raysense_trend"));
+        assert!(names.contains(&"raysense_policy_presets"));
         assert!(names.contains(&"raysense_memory_summary"));
         assert!(names.contains(&"raysense_baseline_save"));
         assert!(names.contains(&"raysense_baseline_diff"));

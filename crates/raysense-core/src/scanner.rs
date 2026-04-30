@@ -92,7 +92,9 @@ pub fn scan_path_with_config(
 
         let path = entry.path();
         let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
-        if is_ignored_path(&relative_path, &config.scan.ignored_paths) {
+        if is_ignored_path(&relative_path, &config.scan.ignored_paths)
+            || is_ignored_path(&relative_path, &config.scan.generated_paths)
+        {
             continue;
         }
 

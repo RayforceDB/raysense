@@ -98,6 +98,11 @@ raysense visualize [path] [--output <path>] [--config <path>]
 raysense plugin list [path] [--config <path>]
 raysense plugin add <name> <extensions...> [--path <path>] [--config <path>]
 raysense plugin init <name> <extension> [--path <path>] [--config <path>]
+raysense policy list
+raysense policy init <preset> [path] [--config <path>]
+raysense trend record [path] [--config <path>]
+raysense trend show [path] [--json] [--config <path>]
+raysense remediate [path] [--json] [--config <path>]
 raysense baseline save <path> [--output <path>] [--config <path>]
 raysense baseline diff <path> [--baseline <path>] [--config <path>] [--json]
 raysense baseline tables [--baseline <path>] [--json]
@@ -180,9 +185,12 @@ Example config:
 ```toml
 [scan]
 ignored_paths = ["target", "fixtures/generated"]
+generated_paths = ["**/generated/*"]
 enabled_languages = []
 disabled_languages = []
 module_roots = ["crates", "src"]
+test_roots = ["tests"]
+public_api_paths = ["src/lib.rs"]
 
 [[scan.plugins]]
 name = "foo"
@@ -214,6 +222,13 @@ to = "test"
 name = "core"
 path = "src/core/*"
 order = 0
+
+[score]
+modularity_weight = 1.0
+acyclicity_weight = 1.0
+depth_weight = 1.0
+equality_weight = 1.0
+redundancy_weight = 1.0
 ```
 
 ## Status
@@ -247,8 +262,19 @@ and formats:
   architecture, complexity, and evolution metrics.
 - Source-aware complexity, duplicate-body grouping, and public API aware
   dead-function filtering.
+- Semantic-shape duplicate grouping for code that is structurally similar after
+  names and literals are normalized.
+- Ecosystem-aware module grouping for common monorepo, Rust, Python, Java, and
+  Kotlin layouts.
 - Test-gap candidates include expected test file paths for each unmatched
   production file.
+- Framework-aware test-gap naming for Rust, Python, TypeScript, Go, Java, and
+  .NET-style projects.
+- Built-in policy presets for Rust crates, monorepos, backend services, and
+  libraries.
+- Remediation suggestions are exposed through the CLI and MCP.
+- Persisted trend samples can be recorded and read back for score/rule deltas.
+- Score calibration weights can be configured for the root-cause dimensions.
 - Built-in rules for high fan-in, production dependencies on test paths,
   large-file/no-test findings, call-resolution/function-call hotspots, max
   cycles, max coupling, max function complexity, god-file pressure, and ordered
@@ -257,8 +283,9 @@ and formats:
 - Forbidden top-level module dependencies can be configured with TOML.
 - Config read/write, health runs, scan facts, edges, hotspots, rule findings,
   module edges, session start/end, rescans, rule checks, evolution, DSM, test
-  gaps, plugin listing, memory summaries, and saved baseline table queries are
-  exposed through the MCP interface.
+  gaps, plugin listing, remediation suggestions, trend metrics, policy presets,
+  memory summaries, and saved baseline table queries are exposed through the
+  MCP interface.
 - Baseline save/diff is available through the CLI and MCP, with Rayforce
   splayed-table storage for baseline tables.
 - MCP session baselines are persisted by default and can be compared across
