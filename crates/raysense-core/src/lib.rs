@@ -49,4 +49,6 @@ pub use health::{
 pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;
 pub use scanner::{scan_path, scan_path_with_config, standard_language_plugins, ScanError};
-pub use simulate::{remove_file as simulate_remove_file, SimulateError};
+pub use simulate::{
+    move_file as simulate_move_file, remove_file as simulate_remove_file, SimulateError,
+};

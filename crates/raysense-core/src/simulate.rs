@@ -21,15 +21,21 @@
  *   SOFTWARE.
  */
 
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 use crate::facts::{CallEdgeFact, CallFact, EntryPointFact, ImportFact, ScanReport, SnapshotFact};
 use crate::graph::compute_graph_metrics;
+use crate::health::RaysenseConfig;
+use crate::scanner::{matching_plugin, module_name};
 
 #[derive(Debug, Error)]
 pub enum SimulateError {
     #[error("file not found in scan: {0}")]
     FileNotFound(String),
+    #[error("file already exists at destination: {0}")]
+    DestinationOccupied(String),
 }
 
 /// Produce a `ScanReport` representing the codebase as if `file_path` did not
@@ -167,6 +173,43 @@ pub fn remove_file(report: &ScanReport, file_path: &str) -> Result<ScanReport, S
         call_edges: new_call_edges,
         graph,
     })
+}
+
+/// Produce a `ScanReport` representing the codebase as if `from_path` had been
+/// moved to `to_path`. The file keeps its `file_id` (and so all imports/calls
+/// referencing it stay valid); only `path`, `module`, and the
+/// graph-derived metrics that depend on path/module change.
+pub fn move_file(
+    report: &ScanReport,
+    config: &RaysenseConfig,
+    from_path: &str,
+    to_path: &str,
+) -> Result<ScanReport, SimulateError> {
+    let target_id = report
+        .files
+        .iter()
+        .position(|file| file.path.to_string_lossy() == from_path)
+        .ok_or_else(|| SimulateError::FileNotFound(from_path.to_string()))?;
+    if report
+        .files
+        .iter()
+        .any(|file| file.path.to_string_lossy() == to_path)
+    {
+        return Err(SimulateError::DestinationOccupied(to_path.to_string()));
+    }
+
+    let mut new_report = report.clone();
+    let new_path = PathBuf::from(to_path);
+    let language = new_report.files[target_id].language;
+    let plugin = matching_plugin(&new_path, config);
+    new_report.files[target_id].path = new_path.clone();
+    new_report.files[target_id].module = module_name(&new_path, language, plugin.as_ref());
+    new_report.snapshot.snapshot_id = format!(
+        "{}+move_file:{}->{}",
+        report.snapshot.snapshot_id, from_path, to_path
+    );
+    new_report.graph = compute_graph_metrics(&new_report.files, &new_report.imports);
+    Ok(new_report)
 }
 
 #[cfg(test)]
@@ -337,6 +380,67 @@ mod tests {
         let to = preserved.resolved_file.map(|id| &after.files[id]);
         assert_eq!(from.path, PathBuf::from("src/c.rs"));
         assert_eq!(to.unwrap().path, PathBuf::from("src/d.rs"));
+    }
+
+    #[test]
+    fn move_file_updates_path_and_module() {
+        let files = vec![file(0, "src/foo.rs"), file(1, "src/bar.rs")];
+        let imports = vec![import(0, 0, Some(1))];
+        let before = report(
+            files,
+            Vec::new(),
+            imports,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let mut config = RaysenseConfig::default();
+        config.scan.module_roots = vec!["src".to_string()];
+
+        let after = move_file(&before, &config, "src/foo.rs", "lib/foo.rs").unwrap();
+
+        let moved = after
+            .files
+            .iter()
+            .find(|file| file.path == PathBuf::from("lib/foo.rs"))
+            .expect("destination present");
+        assert_eq!(moved.file_id, 0);
+        assert!(!moved.module.contains("src"));
+        assert_eq!(after.imports[0].from_file, 0);
+        assert_eq!(after.imports[0].resolved_file, Some(1));
+        assert!(after.snapshot.snapshot_id.contains("move_file"));
+    }
+
+    #[test]
+    fn move_file_rejects_destination_collision() {
+        let files = vec![file(0, "src/foo.rs"), file(1, "src/bar.rs")];
+        let before = report(
+            files,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let config = RaysenseConfig::default();
+        let err = move_file(&before, &config, "src/foo.rs", "src/bar.rs").unwrap_err();
+        assert!(matches!(err, SimulateError::DestinationOccupied(_)));
+    }
+
+    #[test]
+    fn move_file_returns_error_for_unknown_source() {
+        let before = report(
+            vec![file(0, "src/foo.rs")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let config = RaysenseConfig::default();
+        let err = move_file(&before, &config, "src/missing.rs", "src/dest.rs").unwrap_err();
+        assert!(matches!(err, SimulateError::FileNotFound(_)));
     }
 
     #[test]

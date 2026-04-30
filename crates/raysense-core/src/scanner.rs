@@ -363,7 +363,10 @@ fn is_enabled_language_name(language: &str, config: &RaysenseConfig) -> bool {
             .any(|item| item.eq_ignore_ascii_case(language))
 }
 
-fn matching_plugin(path: &Path, config: &RaysenseConfig) -> Option<LanguagePluginConfig> {
+pub(crate) fn matching_plugin(
+    path: &Path,
+    config: &RaysenseConfig,
+) -> Option<LanguagePluginConfig> {
     config
         .scan
         .plugins
@@ -719,7 +722,11 @@ fn snapshot_id(files: &[FileFact]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn module_name(path: &Path, language: Language, plugin: Option<&LanguagePluginConfig>) -> String {
+pub(crate) fn module_name(
+    path: &Path,
+    language: Language,
+    plugin: Option<&LanguagePluginConfig>,
+) -> String {
     let mut components: Vec<String> = path.components().filter_map(component_to_string).collect();
     if let Some(plugin) = plugin {
         for root in &plugin.source_roots {
