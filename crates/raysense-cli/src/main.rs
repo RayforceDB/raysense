@@ -177,10 +177,24 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         "dsm modules={} module_edges={}",
         health.metrics.dsm.module_count, health.metrics.dsm.module_edges
     );
-    println!(
-        "evolution available={} reason={}",
-        health.metrics.evolution.available, health.metrics.evolution.reason
-    );
+    if health.metrics.evolution.available {
+        println!(
+            "evolution available=true commits_sampled={} changed_files={}",
+            health.metrics.evolution.commits_sampled, health.metrics.evolution.changed_files
+        );
+    } else {
+        println!(
+            "evolution available=false reason={}",
+            health.metrics.evolution.reason
+        );
+    }
+
+    if !health.metrics.evolution.top_changed_files.is_empty() {
+        println!("changed_files");
+        for file in &health.metrics.evolution.top_changed_files {
+            println!("  commits={} {}", file.commits, file.path);
+        }
+    }
 
     if !health.metrics.dsm.top_module_edges.is_empty() {
         println!("module_edges");

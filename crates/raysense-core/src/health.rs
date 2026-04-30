@@ -1,6 +1,8 @@
 use crate::facts::{EntryPointKind, ImportResolution, ScanReport};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
+use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthSummary {
@@ -72,6 +74,15 @@ pub struct ModuleEdgeMetric {
 pub struct EvolutionMetrics {
     pub available: bool,
     pub reason: String,
+    pub commits_sampled: usize,
+    pub changed_files: usize,
+    pub top_changed_files: Vec<EvolutionFileMetric>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionFileMetric {
+    pub path: String,
+    pub commits: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -217,10 +228,7 @@ fn metrics(report: &ScanReport, hotspots: &[FileHotspot]) -> MetricsSummary {
         entry_points: entry_point_metrics(report),
         test_gap: test_gap_metrics(report),
         dsm: dsm_metrics(report),
-        evolution: EvolutionMetrics {
-            available: false,
-            reason: "git history ingestion is not implemented yet".to_string(),
-        },
+        evolution: evolution_metrics(report),
     }
 }
 
@@ -381,6 +389,118 @@ fn dsm_metrics(report: &ScanReport) -> DsmMetrics {
         module_edges: edges.values().sum(),
         top_module_edges,
     }
+}
+
+fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
+    let root = &report.snapshot.root;
+    let prefix = match git_output(root, ["rev-parse", "--show-prefix"]) {
+        Ok(output) => output.trim().replace('\\', "/"),
+        Err(reason) => {
+            return EvolutionMetrics {
+                available: false,
+                reason,
+                ..EvolutionMetrics::default()
+            };
+        }
+    };
+
+    let log = match git_output(
+        root,
+        ["log", "-n", "500", "--format=commit:%H", "--name-only"],
+    ) {
+        Ok(output) => output,
+        Err(reason) => {
+            return EvolutionMetrics {
+                available: false,
+                reason,
+                ..EvolutionMetrics::default()
+            };
+        }
+    };
+
+    let scanned_files: HashSet<String> = report
+        .files
+        .iter()
+        .map(|file| file.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    let mut commits_sampled = 0;
+    let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+    let mut commit_files = HashSet::new();
+
+    for line in log.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("commit:") {
+            flush_commit_files(&mut file_commits, &mut commit_files);
+            commits_sampled += 1;
+            continue;
+        }
+
+        if let Some(path) = scan_relative_git_path(line, &prefix) {
+            if scanned_files.contains(&path) {
+                commit_files.insert(path);
+            }
+        }
+    }
+    flush_commit_files(&mut file_commits, &mut commit_files);
+
+    let mut top_changed_files: Vec<EvolutionFileMetric> = file_commits
+        .iter()
+        .map(|(path, commits)| EvolutionFileMetric {
+            path: path.clone(),
+            commits: *commits,
+        })
+        .collect();
+    top_changed_files.sort_by(|a, b| b.commits.cmp(&a.commits).then_with(|| a.path.cmp(&b.path)));
+    top_changed_files.truncate(10);
+
+    EvolutionMetrics {
+        available: true,
+        reason: String::new(),
+        commits_sampled,
+        changed_files: file_commits.len(),
+        top_changed_files,
+    }
+}
+
+fn flush_commit_files(
+    file_commits: &mut BTreeMap<String, usize>,
+    commit_files: &mut HashSet<String>,
+) {
+    for path in commit_files.drain() {
+        *file_commits.entry(path).or_default() += 1;
+    }
+}
+
+fn scan_relative_git_path(path: &str, prefix: &str) -> Option<String> {
+    let path = path.replace('\\', "/");
+    if prefix.is_empty() {
+        return Some(path);
+    }
+    path.strip_prefix(prefix)
+        .map(|path| path.trim_start_matches('/').to_string())
+        .filter(|path| !path.is_empty())
+}
+
+fn git_output<const N: usize>(root: &Path, args: [&str; N]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err(format!("git exited with status {}", output.status));
+        }
+        return Err(stderr);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn rules(
@@ -604,7 +724,22 @@ mod tests {
         assert_eq!(health.metrics.size.long_functions, 1);
         assert_eq!(health.metrics.entry_points.binaries, 1);
         assert_eq!(health.metrics.dsm.module_edges, 1);
-        assert!(!health.metrics.evolution.available);
+    }
+
+    #[test]
+    fn normalizes_git_paths_for_scanned_subdirectories() {
+        assert_eq!(
+            scan_relative_git_path("crates/core/src/lib.rs", "crates/core/"),
+            Some("src/lib.rs".to_string())
+        );
+        assert_eq!(
+            scan_relative_git_path("other/src/lib.rs", "crates/core/"),
+            None
+        );
+        assert_eq!(
+            scan_relative_git_path("src/lib.rs", ""),
+            Some("src/lib.rs".to_string())
+        );
     }
 
     fn file(file_id: usize, path: &str) -> FileFact {
