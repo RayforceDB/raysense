@@ -1598,6 +1598,7 @@ fn config_schema() -> Value {
                     "high_function_fan_in": {"type": "integer", "minimum": 0},
                     "high_function_fan_out": {"type": "integer", "minimum": 0},
                     "max_call_hotspot_findings": {"type": "integer", "minimum": 0},
+                    "max_upward_layer_violations": {"type": "integer", "minimum": 0},
                     "no_tests_detected": {"type": "boolean"}
                 }
             },

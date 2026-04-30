@@ -249,6 +249,7 @@ low_call_resolution_ratio = 0.5
 high_function_fan_in = 200
 high_function_fan_out = 100
 max_call_hotspot_findings = 5
+max_upward_layer_violations = 0
 no_tests_detected = true
 
 [[boundaries.forbidden_edges]]

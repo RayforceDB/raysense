@@ -158,6 +158,7 @@ pub struct RuleConfig {
     pub high_function_fan_in: usize,
     pub high_function_fan_out: usize,
     pub max_call_hotspot_findings: usize,
+    pub max_upward_layer_violations: usize,
     pub no_tests_detected: bool,
 }
 
@@ -184,6 +185,7 @@ impl Default for RuleConfig {
             high_function_fan_in: 200,
             high_function_fan_out: 100,
             max_call_hotspot_findings: 5,
+            max_upward_layer_violations: 0,
             no_tests_detected: true,
         }
     }
@@ -1955,7 +1957,22 @@ fn rules(
     }
 
     findings.extend(boundary_findings(report, &config.boundaries));
-    findings.extend(layer_findings(report, &config.boundaries));
+    let layer_findings = layer_findings(report, &config.boundaries);
+    if rules.max_upward_layer_violations > 0
+        && layer_findings.len() > rules.max_upward_layer_violations
+    {
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Error,
+            code: "max_upward_layer_violations".to_string(),
+            path: report.snapshot.root.to_string_lossy().into_owned(),
+            message: format!(
+                "{} upward layer violations exceeds max {}",
+                layer_findings.len(),
+                rules.max_upward_layer_violations
+            ),
+        });
+    }
+    findings.extend(layer_findings);
 
     findings
 }
@@ -2007,6 +2024,9 @@ fn remediations(rules: &[RuleFinding], metrics: &MetricsSummary) -> Vec<Remediat
                 "add language plugin patterns or enable a grammar-backed scanner"
             }
             "layer_order" => "invert the dependency or update ordered layer config",
+            "max_upward_layer_violations" => {
+                "remove upward layer dependencies or adjust layer ordering"
+            }
             "max_cycles" => {
                 "break one dependency edge in each cycle or configure an allowed boundary"
             }
@@ -2797,6 +2817,69 @@ to = "test"
             .rules
             .iter()
             .any(|rule| rule.code == "forbidden_module_edge"));
+    }
+
+    #[test]
+    fn caps_upward_layer_violations() {
+        let files = vec![
+            file(0, "src/infra/db.rs"),
+            file(1, "src/api/http.rs"),
+            file(2, "src/api/rpc.rs"),
+        ];
+        let imports = vec![
+            import(0, 0, Some(1), ImportResolution::Local),
+            import(1, 0, Some(2), ImportResolution::Local),
+        ];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[rules]
+max_upward_layer_violations = 1
+
+[[boundaries.layers]]
+name = "infra"
+path = "src/infra/*"
+order = 0
+
+[[boundaries.layers]]
+name = "api"
+path = "src/api/*"
+order = 2
+"#,
+        )
+        .unwrap();
+
+        let health = compute_health_with_config(&report, &config);
+
+        assert!(health
+            .rules
+            .iter()
+            .any(|rule| rule.code == "max_upward_layer_violations"));
+        assert_eq!(
+            health
+                .rules
+                .iter()
+                .filter(|rule| rule.code == "layer_order")
+                .count(),
+            2
+        );
     }
 
     fn file(file_id: usize, path: &str) -> FileFact {
