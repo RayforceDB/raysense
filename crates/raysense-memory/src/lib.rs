@@ -59,6 +59,8 @@ pub enum MemoryError {
     TableNotFound(String),
     #[error("invalid baseline table name {0}")]
     InvalidTableName(String),
+    #[error("unknown baseline table column {0}")]
+    UnknownColumn(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -97,6 +99,60 @@ pub struct BaselineTableRows {
     pub offset: usize,
     pub limit: usize,
     pub total_rows: i64,
+    pub matched_rows: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaselineFilterOp {
+    Eq,
+    Ne,
+    Contains,
+    StartsWith,
+    EndsWith,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BaselineTableFilter {
+    pub column: String,
+    pub op: BaselineFilterOp,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaselineSortDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaselineTableSort {
+    pub column: String,
+    pub direction: BaselineSortDirection,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BaselineTableQuery {
+    pub offset: usize,
+    pub limit: usize,
+    pub columns: Option<Vec<String>>,
+    pub filters: Vec<BaselineTableFilter>,
+    pub sort: Option<BaselineTableSort>,
+}
+
+impl BaselineTableQuery {
+    pub fn page(offset: usize, limit: usize) -> Self {
+        Self {
+            offset,
+            limit,
+            columns: None,
+            filters: Vec::new(),
+            sort: None,
+        }
+    }
 }
 
 pub struct RayMemory {
@@ -241,6 +297,14 @@ pub fn read_baseline_table(
     offset: usize,
     limit: usize,
 ) -> Result<BaselineTableRows, MemoryError> {
+    query_baseline_table(dir, name, BaselineTableQuery::page(offset, limit))
+}
+
+pub fn query_baseline_table(
+    dir: impl AsRef<Path>,
+    name: &str,
+    query: BaselineTableQuery,
+) -> Result<BaselineTableRows, MemoryError> {
     init_symbols()?;
     validate_table_name(name)?;
     let dir = dir.as_ref();
@@ -248,7 +312,7 @@ pub fn read_baseline_table(
         return Err(MemoryError::TableNotFound(name.to_string()));
     }
     let table = read_table_object(dir, name)?;
-    table_rows(name, table.as_ptr(), offset, limit)
+    table_rows(name, table.as_ptr(), query)
 }
 
 fn validate_table_name(name: &str) -> Result<(), MemoryError> {
@@ -308,8 +372,7 @@ fn read_table_object(dir: &Path, name: &str) -> Result<RayObject, MemoryError> {
 fn table_rows(
     name: &str,
     table: *mut rayforce_sys::ray_t,
-    offset: usize,
-    limit: usize,
+    query: BaselineTableQuery,
 ) -> Result<BaselineTableRows, MemoryError> {
     let total_rows = unsafe { rayforce_sys::ray_table_nrows(table) };
     let ncols = unsafe { rayforce_sys::ray_table_ncols(table) };
@@ -322,15 +385,44 @@ fn table_rows(
         col_ptrs.push(unsafe { rayforce_sys::ray_table_get_col_idx(table, idx) });
     }
 
-    let start = offset.min(total_rows.max(0) as usize);
-    let end = start.saturating_add(limit).min(total_rows.max(0) as usize);
+    let projected = project_columns(&columns, query.columns.as_deref())?;
+    validate_filters(&columns, &query.filters)?;
+    let sort_col = query
+        .sort
+        .as_ref()
+        .map(|sort| column_index(&columns, &sort.column))
+        .transpose()?;
+
+    let mut row_indexes = Vec::new();
+    for row_idx in 0..total_rows.max(0) as usize {
+        if row_matches(&columns, &col_ptrs, row_idx, &query.filters) {
+            row_indexes.push(row_idx);
+        }
+    }
+
+    if let (Some(sort), Some(col_idx)) = (&query.sort, sort_col) {
+        row_indexes.sort_by(|left, right| {
+            let left = cell_value(col_ptrs[col_idx], *left as i64);
+            let right = cell_value(col_ptrs[col_idx], *right as i64);
+            let ordering = compare_values(&left, &right);
+            match sort.direction {
+                BaselineSortDirection::Asc => ordering,
+                BaselineSortDirection::Desc => ordering.reverse(),
+            }
+        });
+    }
+
+    let matched_rows = row_indexes.len();
+    let start = query.offset.min(matched_rows);
+    let end = start.saturating_add(query.limit).min(matched_rows);
     let mut rows = Vec::new();
-    for row_idx in start..end {
+    for row_idx in &row_indexes[start..end] {
         let mut row = serde_json::Map::new();
-        for (col_idx, col_name) in columns.iter().enumerate() {
+        for col_idx in &projected {
+            let col_name = &columns[*col_idx];
             row.insert(
                 col_name.clone(),
-                cell_value(col_ptrs[col_idx], row_idx as i64),
+                cell_value(col_ptrs[*col_idx], *row_idx as i64),
             );
         }
         rows.push(serde_json::Value::Object(row));
@@ -338,12 +430,116 @@ fn table_rows(
 
     Ok(BaselineTableRows {
         name: name.to_string(),
-        columns,
+        columns: projected.iter().map(|idx| columns[*idx].clone()).collect(),
         rows,
-        offset,
-        limit,
+        offset: query.offset,
+        limit: query.limit,
         total_rows,
+        matched_rows,
     })
+}
+
+fn project_columns(
+    columns: &[String],
+    requested: Option<&[String]>,
+) -> Result<Vec<usize>, MemoryError> {
+    match requested {
+        Some(requested) if !requested.is_empty() => requested
+            .iter()
+            .map(|name| column_index(columns, name))
+            .collect(),
+        _ => Ok((0..columns.len()).collect()),
+    }
+}
+
+fn validate_filters(
+    columns: &[String],
+    filters: &[BaselineTableFilter],
+) -> Result<(), MemoryError> {
+    for filter in filters {
+        column_index(columns, &filter.column)?;
+    }
+    Ok(())
+}
+
+fn column_index(columns: &[String], name: &str) -> Result<usize, MemoryError> {
+    columns
+        .iter()
+        .position(|column| column == name)
+        .ok_or_else(|| MemoryError::UnknownColumn(name.to_string()))
+}
+
+fn row_matches(
+    columns: &[String],
+    col_ptrs: &[*mut rayforce_sys::ray_t],
+    row_idx: usize,
+    filters: &[BaselineTableFilter],
+) -> bool {
+    filters.iter().all(|filter| {
+        let Some(col_idx) = columns.iter().position(|column| column == &filter.column) else {
+            return false;
+        };
+        filter_matches(
+            &filter.op,
+            &cell_value(col_ptrs[col_idx], row_idx as i64),
+            &filter.value,
+        )
+    })
+}
+
+fn filter_matches(
+    op: &BaselineFilterOp,
+    actual: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> bool {
+    match op {
+        BaselineFilterOp::Eq => values_equal(actual, expected),
+        BaselineFilterOp::Ne => !values_equal(actual, expected),
+        BaselineFilterOp::Contains => string_pair(actual, expected)
+            .is_some_and(|(actual, expected)| actual.contains(expected)),
+        BaselineFilterOp::StartsWith => string_pair(actual, expected)
+            .is_some_and(|(actual, expected)| actual.starts_with(expected)),
+        BaselineFilterOp::EndsWith => string_pair(actual, expected)
+            .is_some_and(|(actual, expected)| actual.ends_with(expected)),
+        BaselineFilterOp::Gt => compare_values(actual, expected).is_gt(),
+        BaselineFilterOp::Gte => !compare_values(actual, expected).is_lt(),
+        BaselineFilterOp::Lt => compare_values(actual, expected).is_lt(),
+        BaselineFilterOp::Lte => !compare_values(actual, expected).is_gt(),
+    }
+}
+
+fn values_equal(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    if let (Some(left), Some(right)) = (left.as_f64(), right.as_f64()) {
+        (left - right).abs() < f64::EPSILON
+    } else {
+        left == right
+    }
+}
+
+fn string_pair<'a>(
+    actual: &'a serde_json::Value,
+    expected: &'a serde_json::Value,
+) -> Option<(&'a str, &'a str)> {
+    Some((actual.as_str()?, expected.as_str()?))
+}
+
+fn compare_values(left: &serde_json::Value, right: &serde_json::Value) -> std::cmp::Ordering {
+    match (left.as_f64(), right.as_f64()) {
+        (Some(left), Some(right)) => left
+            .partial_cmp(&right)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        _ => value_sort_key(left).cmp(&value_sort_key(right)),
+    }
+}
+
+fn value_sort_key(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => value.to_string(),
+    }
 }
 
 fn symbol_text(name_id: i64) -> String {

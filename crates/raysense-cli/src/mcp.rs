@@ -26,6 +26,10 @@ use raysense_core::{
     build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
     ImportResolution, ProjectBaseline, RaysenseConfig,
 };
+use raysense_memory::{
+    BaselineFilterOp, BaselineSortDirection, BaselineTableFilter, BaselineTableQuery,
+    BaselineTableSort,
+};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -474,7 +478,14 @@ fn baseline_table_read_tool(args: &Value) -> Result<Value> {
         .transpose()?
         .unwrap_or(0);
     let limit = limit_arg(args, 100)?;
-    let table_rows = raysense_memory::read_baseline_table(&tables_dir, table, offset, limit)
+    let query = BaselineTableQuery {
+        offset,
+        limit,
+        columns: columns_arg(args)?,
+        filters: filters_arg(args)?,
+        sort: sort_arg(args)?,
+    };
+    let table_rows = raysense_memory::query_baseline_table(&tables_dir, table, query)
         .with_context(|| format!("failed to read baseline table {}", tables_dir.display()))?;
 
     Ok(json!({
@@ -553,6 +564,90 @@ fn limit_arg(args: &Value, default: usize) -> Result<usize> {
         }
         None => Ok(default),
     }
+}
+
+fn columns_arg(args: &Value) -> Result<Option<Vec<String>>> {
+    args.get("columns")
+        .map(|value| {
+            value
+                .as_array()
+                .ok_or_else(|| anyhow!("columns must be an array of strings"))?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| anyhow!("columns must be an array of strings"))
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+fn filters_arg(args: &Value) -> Result<Vec<BaselineTableFilter>> {
+    let Some(filters) = args.get("filters") else {
+        return Ok(Vec::new());
+    };
+    filters
+        .as_array()
+        .ok_or_else(|| anyhow!("filters must be an array"))?
+        .iter()
+        .map(|filter| {
+            let column = filter
+                .get("column")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("filter column must be a string"))?
+                .to_string();
+            let op = filter
+                .get("op")
+                .and_then(Value::as_str)
+                .map(parse_filter_op)
+                .transpose()?
+                .unwrap_or(BaselineFilterOp::Eq);
+            let value = filter
+                .get("value")
+                .cloned()
+                .ok_or_else(|| anyhow!("filter value is required"))?;
+            Ok(BaselineTableFilter { column, op, value })
+        })
+        .collect()
+}
+
+fn parse_filter_op(op: &str) -> Result<BaselineFilterOp> {
+    match op {
+        "eq" => Ok(BaselineFilterOp::Eq),
+        "ne" => Ok(BaselineFilterOp::Ne),
+        "contains" => Ok(BaselineFilterOp::Contains),
+        "starts_with" => Ok(BaselineFilterOp::StartsWith),
+        "ends_with" => Ok(BaselineFilterOp::EndsWith),
+        "gt" => Ok(BaselineFilterOp::Gt),
+        "gte" => Ok(BaselineFilterOp::Gte),
+        "lt" => Ok(BaselineFilterOp::Lt),
+        "lte" => Ok(BaselineFilterOp::Lte),
+        _ => Err(anyhow!("unsupported filter op {op}")),
+    }
+}
+
+fn sort_arg(args: &Value) -> Result<Option<BaselineTableSort>> {
+    args.get("sort")
+        .map(|value| {
+            let column = value
+                .get("column")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("sort column must be a string"))?
+                .to_string();
+            let direction = match value
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("asc")
+            {
+                "asc" => BaselineSortDirection::Asc,
+                "desc" => BaselineSortDirection::Desc,
+                direction => return Err(anyhow!("unsupported sort direction {direction}")),
+            };
+            Ok(BaselineTableSort { column, direction })
+        })
+        .transpose()
 }
 
 fn config_arg(args: &Value) -> Result<RaysenseConfig> {
@@ -723,7 +818,34 @@ fn baseline_table_schema(require_table: bool) -> Value {
             "baseline_path": {"type": "string", "description": "Baseline directory. Defaults to <path>/.raysense/baseline."},
             "table": {"type": "string", "description": "Baseline table name, such as files, functions, imports, calls, call_edges, health, hotspots, rules, module_edges, or changed_files."},
             "offset": {"type": "integer", "minimum": 0, "description": "First row offset. Defaults to 0."},
-            "limit": {"type": "integer", "minimum": 1, "description": "Maximum rows to return. Defaults to 100."}
+            "limit": {"type": "integer", "minimum": 1, "description": "Maximum rows to return. Defaults to 100."},
+            "columns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of columns to include in returned rows."
+            },
+            "filters": {
+                "type": "array",
+                "description": "Optional AND filters applied before offset and limit.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "column": {"type": "string"},
+                        "op": {"type": "string", "enum": ["eq", "ne", "contains", "starts_with", "ends_with", "gt", "gte", "lt", "lte"]},
+                        "value": {}
+                    },
+                    "required": ["column", "value"]
+                }
+            },
+            "sort": {
+                "type": "object",
+                "description": "Optional single-column sort applied after filters.",
+                "properties": {
+                    "column": {"type": "string"},
+                    "direction": {"type": "string", "enum": ["asc", "desc"]}
+                },
+                "required": ["column"]
+            }
         }
     });
     if require_table {
