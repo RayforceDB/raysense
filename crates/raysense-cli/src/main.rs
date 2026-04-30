@@ -195,6 +195,14 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.metrics.coupling.cross_module_ratio
     );
     println!(
+        "calls total={} resolved_edges={} resolution_ratio={:.3} max_function_fan_in={} max_function_fan_out={}",
+        health.metrics.calls.total_calls,
+        health.metrics.calls.resolved_edges,
+        health.metrics.calls.resolution_ratio,
+        health.metrics.calls.max_function_fan_in,
+        health.metrics.calls.max_function_fan_out
+    );
+    println!(
         "size max_file_lines={} max_function_lines={} large_files={} long_functions={}",
         health.metrics.size.max_file_lines,
         health.metrics.size.max_function_lines,
@@ -227,6 +235,26 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         println!("changed_files");
         for file in &health.metrics.evolution.top_changed_files {
             println!("  commits={} {}", file.commits, file.path);
+        }
+    }
+
+    if !health.metrics.calls.top_called_functions.is_empty() {
+        println!("top_called_functions");
+        for function in &health.metrics.calls.top_called_functions {
+            println!(
+                "  calls={} {}:{}",
+                function.calls, function.path, function.name
+            );
+        }
+    }
+
+    if !health.metrics.calls.top_calling_functions.is_empty() {
+        println!("top_calling_functions");
+        for function in &health.metrics.calls.top_calling_functions {
+            println!(
+                "  calls={} {}:{}",
+                function.calls, function.path, function.name
+            );
         }
     }
 

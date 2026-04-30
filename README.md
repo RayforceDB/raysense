@@ -33,6 +33,7 @@ entry_points total=50 binaries=6 examples=4 tests=40
 imports local=639 external=0 system=376 unresolved=0
 graph resolved_edges=639 cycles=0
 coupling local_edges=639 cross_module_edges=238 cross_module_ratio=0.372
+calls total=25067 resolved_edges=8191 resolution_ratio=0.327 max_function_fan_in=607 max_function_fan_out=170
 size max_file_lines=6329 max_function_lines=2334 large_files=62 long_functions=423
 test_gap production_files=146 test_files=40 files_without_nearby_tests=146
 dsm modules=5 module_edges=238
@@ -60,6 +61,8 @@ The first testable version focuses on Rust and C/C++ codebases:
   lightweight fallback extraction.
 - Tree-sitter-backed Rust, C, and C++ call facts with enclosing function ids.
 - Conservative call-edge resolution for unambiguous function names.
+- Function-level call metrics: resolution ratio, fan-in/fan-out, and top
+  called/calling functions.
 - Project profile inference for reusable include-root discovery.
 - Entry point facts for binaries, examples, and tests.
 - Local, external, system, and unresolved import classification.

@@ -380,7 +380,7 @@ fn build_health_table(
     health: &HealthSummary,
 ) -> Result<RayObject, MemoryError> {
     table(
-        21,
+        26,
         [
             ("score", i64_vec(1, [health.score as i64])?),
             (
@@ -400,6 +400,8 @@ fn build_health_table(
                 "imports",
                 i64_vec(1, [report.snapshot.import_count as i64])?,
             ),
+            ("calls", i64_vec(1, [report.snapshot.call_count as i64])?),
+            ("call_edges", i64_vec(1, [report.call_edges.len() as i64])?),
             (
                 "local_imports",
                 i64_vec(1, [health.resolution.local as i64])?,
@@ -426,6 +428,21 @@ fn build_health_table(
                     1,
                     [(health.metrics.coupling.cross_module_ratio * 1000.0).round() as i64],
                 )?,
+            ),
+            (
+                "call_resolution_ratio_per_1000",
+                i64_vec(
+                    1,
+                    [(health.metrics.calls.resolution_ratio * 1000.0).round() as i64],
+                )?,
+            ),
+            (
+                "max_function_fan_in",
+                i64_vec(1, [health.metrics.calls.max_function_fan_in as i64])?,
+            ),
+            (
+                "max_function_fan_out",
+                i64_vec(1, [health.metrics.calls.max_function_fan_out as i64])?,
             ),
             (
                 "max_file_lines",
@@ -715,7 +732,7 @@ mod tests {
         assert_eq!(summary.calls.columns, 5);
         assert_eq!(summary.call_edges.columns, 4);
         assert_eq!(summary.health.rows, 1);
-        assert_eq!(summary.health.columns, 21);
+        assert_eq!(summary.health.columns, 26);
         assert_eq!(summary.hotspots.columns, 5);
         assert_eq!(summary.rules.columns, 4);
         assert_eq!(summary.module_edges.columns, 3);

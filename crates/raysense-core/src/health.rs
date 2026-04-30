@@ -18,6 +18,7 @@ pub struct HealthSummary {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetricsSummary {
     pub coupling: CouplingMetrics,
+    pub calls: CallMetrics,
     pub size: SizeMetrics,
     pub entry_points: EntryPointMetrics,
     pub test_gap: TestGapMetrics,
@@ -32,6 +33,26 @@ pub struct CouplingMetrics {
     pub cross_module_ratio: f64,
     pub max_fan_in: usize,
     pub max_fan_out: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CallMetrics {
+    pub total_calls: usize,
+    pub resolved_edges: usize,
+    pub resolution_ratio: f64,
+    pub max_function_fan_in: usize,
+    pub max_function_fan_out: usize,
+    pub top_called_functions: Vec<FunctionCallMetric>,
+    pub top_calling_functions: Vec<FunctionCallMetric>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCallMetric {
+    pub function_id: usize,
+    pub file_id: usize,
+    pub path: String,
+    pub name: String,
+    pub calls: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -224,6 +245,7 @@ fn hotspots(report: &ScanReport) -> Vec<FileHotspot> {
 fn metrics(report: &ScanReport, hotspots: &[FileHotspot]) -> MetricsSummary {
     MetricsSummary {
         coupling: coupling_metrics(report, hotspots),
+        calls: call_metrics(report),
         size: size_metrics(report),
         entry_points: entry_point_metrics(report),
         test_gap: test_gap_metrics(report),
@@ -270,6 +292,55 @@ fn coupling_metrics(report: &ScanReport, hotspots: &[FileHotspot]) -> CouplingMe
             .max()
             .unwrap_or(0),
     }
+}
+
+fn call_metrics(report: &ScanReport) -> CallMetrics {
+    let mut fan_in: HashMap<usize, usize> = HashMap::new();
+    let mut fan_out: HashMap<usize, usize> = HashMap::new();
+
+    for edge in &report.call_edges {
+        *fan_in.entry(edge.callee_function).or_default() += 1;
+        *fan_out.entry(edge.caller_function).or_default() += 1;
+    }
+
+    CallMetrics {
+        total_calls: report.calls.len(),
+        resolved_edges: report.call_edges.len(),
+        resolution_ratio: ratio(report.call_edges.len(), report.calls.len()),
+        max_function_fan_in: fan_in.values().copied().max().unwrap_or(0),
+        max_function_fan_out: fan_out.values().copied().max().unwrap_or(0),
+        top_called_functions: function_call_metrics(report, &fan_in),
+        top_calling_functions: function_call_metrics(report, &fan_out),
+    }
+}
+
+fn function_call_metrics(
+    report: &ScanReport,
+    counts: &HashMap<usize, usize>,
+) -> Vec<FunctionCallMetric> {
+    let mut metrics: Vec<FunctionCallMetric> = counts
+        .iter()
+        .filter_map(|(function_id, calls)| {
+            let function = report.functions.get(*function_id)?;
+            let file = report.files.get(function.file_id)?;
+            Some(FunctionCallMetric {
+                function_id: *function_id,
+                file_id: function.file_id,
+                path: file.path.to_string_lossy().into_owned(),
+                name: function.name.clone(),
+                calls: *calls,
+            })
+        })
+        .collect();
+
+    metrics.sort_by(|a, b| {
+        b.calls
+            .cmp(&a.calls)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    metrics.truncate(10);
+    metrics
 }
 
 fn size_metrics(report: &ScanReport) -> SizeMetrics {
@@ -618,7 +689,8 @@ fn is_test_path(path: &str) -> bool {
 mod tests {
     use super::*;
     use crate::facts::{
-        EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact, Language, SnapshotFact,
+        CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
+        Language, SnapshotFact,
     };
     use crate::graph::compute_graph_metrics;
     use std::path::PathBuf;
@@ -751,6 +823,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn computes_call_metrics() {
+        let files = vec![file(0, "src/a.rs")];
+        let functions = vec![
+            function(0, 0, "run"),
+            function(1, 0, "load"),
+            function(2, 0, "save"),
+        ];
+        let calls = vec![
+            call(0, 0, Some(0), "load"),
+            call(1, 0, Some(0), "save"),
+            call(2, 0, Some(2), "load"),
+        ];
+        let call_edges = vec![
+            call_edge(0, 0, 0, 1),
+            call_edge(1, 1, 0, 2),
+            call_edge(2, 2, 2, 1),
+        ];
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: functions.len(),
+                import_count: 0,
+                call_count: calls.len(),
+            },
+            files,
+            functions,
+            entry_points: Vec::new(),
+            imports: Vec::new(),
+            calls,
+            call_edges,
+            graph: compute_graph_metrics(&[], &[]),
+        };
+
+        let health = compute_health(&report);
+
+        assert_eq!(health.metrics.calls.total_calls, 3);
+        assert_eq!(health.metrics.calls.resolved_edges, 3);
+        assert_eq!(health.metrics.calls.max_function_fan_in, 2);
+        assert_eq!(health.metrics.calls.max_function_fan_out, 2);
+        assert_eq!(health.metrics.calls.top_called_functions[0].name, "load");
+        assert_eq!(health.metrics.calls.top_calling_functions[0].name, "run");
+    }
+
     fn file(file_id: usize, path: &str) -> FileFact {
         FileFact {
             file_id,
@@ -776,6 +894,45 @@ mod tests {
             kind: "use".to_string(),
             resolution,
             resolved_file,
+        }
+    }
+
+    fn function(function_id: usize, file_id: usize, name: &str) -> FunctionFact {
+        FunctionFact {
+            function_id,
+            file_id,
+            name: name.to_string(),
+            start_line: 1,
+            end_line: 1,
+        }
+    }
+
+    fn call(
+        call_id: usize,
+        file_id: usize,
+        caller_function: Option<usize>,
+        target: &str,
+    ) -> CallFact {
+        CallFact {
+            call_id,
+            file_id,
+            caller_function,
+            target: target.to_string(),
+            line: 1,
+        }
+    }
+
+    fn call_edge(
+        edge_id: usize,
+        call_id: usize,
+        caller_function: usize,
+        callee_function: usize,
+    ) -> CallEdgeFact {
+        CallEdgeFact {
+            edge_id,
+            call_id,
+            caller_function,
+            callee_function,
         }
     }
 }
