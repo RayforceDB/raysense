@@ -29,6 +29,7 @@ score 96
 coverage_score 100
 structural_score 92
 facts files=186 functions=8233 imports=1010
+entry_points 50
 imports local=639 external=0 system=371 unresolved=0
 graph resolved_edges=639 cycles=0
 rules high_fan_in=2
@@ -50,6 +51,8 @@ The first testable version focuses on Rust and C/C++ codebases:
 
 - Rust `use` and `mod` extraction.
 - C/C++ local and system include extraction.
+- Project profile inference for reusable include-root discovery.
+- Entry point facts for binaries, examples, and tests.
 - Local, external, system, and unresolved import classification.
 - Graph metrics: resolved edges, cycles, fan-in, fan-out.
 - Health summary with score, import breakdown, and hotspots.

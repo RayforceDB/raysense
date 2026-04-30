@@ -88,6 +88,10 @@ fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
         summary.functions.rows, summary.functions.columns
     );
     println!(
+        "entry_points rows={} cols={}",
+        summary.entry_points.rows, summary.entry_points.columns
+    );
+    println!(
         "imports rows={} cols={}",
         summary.imports.rows, summary.imports.columns
     );
@@ -102,6 +106,7 @@ fn print_summary(report: &raysense_core::ScanReport) {
     println!("structural_score {}", health.structural_score);
     println!("files {}", report.snapshot.file_count);
     println!("functions {}", report.snapshot.function_count);
+    println!("entry_points {}", report.entry_points.len());
     println!("imports {}", report.snapshot.import_count);
     println!("local_imports {}", health.resolution.local);
     println!("external_imports {}", health.resolution.external);
@@ -122,6 +127,7 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         "facts files={} functions={} imports={}",
         report.snapshot.file_count, report.snapshot.function_count, report.snapshot.import_count
     );
+    println!("entry_points {}", report.entry_points.len());
     println!(
         "imports local={} external={} system={} unresolved={}",
         health.resolution.local,

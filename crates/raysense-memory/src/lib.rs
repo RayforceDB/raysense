@@ -23,12 +23,14 @@ pub struct TableSummary {
 pub struct MemorySummary {
     pub files: TableSummary,
     pub functions: TableSummary,
+    pub entry_points: TableSummary,
     pub imports: TableSummary,
 }
 
 pub struct RayMemory {
     files: RayObject,
     functions: RayObject,
+    entry_points: RayObject,
     imports: RayObject,
 }
 
@@ -39,6 +41,7 @@ impl RayMemory {
         Ok(Self {
             files: build_files_table(report)?,
             functions: build_functions_table(report)?,
+            entry_points: build_entry_points_table(report)?,
             imports: build_imports_table(report)?,
         })
     }
@@ -47,6 +50,7 @@ impl RayMemory {
         MemorySummary {
             files: table_summary(self.files.as_ptr()),
             functions: table_summary(self.functions.as_ptr()),
+            entry_points: table_summary(self.entry_points.as_ptr()),
             imports: table_summary(self.imports.as_ptr()),
         }
     }
@@ -190,6 +194,41 @@ fn build_functions_table(report: &ScanReport) -> Result<RayObject, MemoryError> 
     )
 }
 
+fn build_entry_points_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
+    let ids = i64_vec(
+        report.entry_points.len(),
+        report
+            .entry_points
+            .iter()
+            .map(|entry| entry.entry_id as i64),
+    )?;
+    let file_ids = i64_vec(
+        report.entry_points.len(),
+        report.entry_points.iter().map(|entry| entry.file_id as i64),
+    )?;
+    let kinds = str_vec(
+        report.entry_points.len(),
+        report
+            .entry_points
+            .iter()
+            .map(|entry| format!("{:?}", entry.kind).to_lowercase()),
+    )?;
+    let symbols = str_vec(
+        report.entry_points.len(),
+        report.entry_points.iter().map(|entry| entry.symbol.clone()),
+    )?;
+
+    table(
+        4,
+        [
+            ("entry_id", ids),
+            ("file_id", file_ids),
+            ("kind", kinds),
+            ("symbol", symbols),
+        ],
+    )
+}
+
 fn build_imports_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
     let ids = i64_vec(
         report.imports.len(),
@@ -317,6 +356,10 @@ mod tests {
 
         assert_eq!(summary.files.rows as usize, report.files.len());
         assert_eq!(summary.functions.rows as usize, report.functions.len());
+        assert_eq!(
+            summary.entry_points.rows as usize,
+            report.entry_points.len()
+        );
         assert_eq!(summary.imports.rows as usize, report.imports.len());
     }
 }

@@ -221,6 +221,7 @@ mod tests {
             },
             files,
             functions: Vec::new(),
+            entry_points: Vec::new(),
             imports,
             graph,
         };
@@ -251,6 +252,7 @@ mod tests {
             },
             files,
             functions: Vec::new(),
+            entry_points: Vec::new(),
             imports,
             graph,
         };

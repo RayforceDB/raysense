@@ -1,7 +1,9 @@
 use crate::facts::{
-    FileFact, FunctionFact, ImportFact, ImportResolution, Language, ScanReport, SnapshotFact,
+    EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact, ImportResolution, Language,
+    ScanReport, SnapshotFact,
 };
 use crate::graph::compute_graph_metrics;
+use crate::profile::ProjectProfile;
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -36,6 +38,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
 
     let mut files = Vec::new();
     let mut functions = Vec::new();
+    let mut entry_points = Vec::new();
     let mut imports = Vec::new();
 
     for entry in WalkBuilder::new(&root)
@@ -70,7 +73,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         let file_fact = FileFact {
             file_id,
             module: module_name(&relative_path, language),
-            path: relative_path,
+            path: relative_path.clone(),
             language,
             lines: content.lines().count(),
             bytes: content.len(),
@@ -81,6 +84,13 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         for function in &mut file_functions {
             function.function_id = functions.len();
             functions.push(function.clone());
+        }
+
+        let mut file_entry_points =
+            extract_entry_points(file_id, language, &relative_path, &file_functions);
+        for entry_point in &mut file_entry_points {
+            entry_point.entry_id = entry_points.len();
+            entry_points.push(entry_point.clone());
         }
 
         let mut file_imports = extract_imports(file_id, language, &content);
@@ -108,6 +118,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
         snapshot,
         files,
         functions,
+        entry_points,
         imports,
         graph,
     })
@@ -162,6 +173,53 @@ fn extract_functions(file_id: usize, language: Language, content: &str) -> Vec<F
         Language::C | Language::Cpp => extract_c_like_functions(file_id, content),
         Language::Unknown => Vec::new(),
     }
+}
+
+fn extract_entry_points(
+    file_id: usize,
+    language: Language,
+    path: &Path,
+    functions: &[FunctionFact],
+) -> Vec<EntryPointFact> {
+    let mut entries = Vec::new();
+
+    for function in functions {
+        if function.name == "main"
+            && matches!(language, Language::Rust | Language::C | Language::Cpp)
+        {
+            entries.push(new_entry(file_id, EntryPointKind::Binary, "main"));
+        }
+    }
+
+    let normalized = normalize_path(path);
+    if normalized.starts_with("examples/") {
+        entries.push(new_entry(
+            file_id,
+            EntryPointKind::Example,
+            path_symbol(path),
+        ));
+    }
+    if is_test_path(&normalized) {
+        entries.push(new_entry(file_id, EntryPointKind::Test, path_symbol(path)));
+    }
+
+    entries
+}
+
+fn new_entry(file_id: usize, kind: EntryPointKind, symbol: impl Into<String>) -> EntryPointFact {
+    EntryPointFact {
+        entry_id: 0,
+        file_id,
+        kind,
+        symbol: symbol.into(),
+    }
+}
+
+fn path_symbol(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn extract_token_functions(file_id: usize, content: &str, token: &str) -> Vec<FunctionFact> {
@@ -369,7 +427,7 @@ fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
 fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
     let mut by_path = HashMap::new();
     let mut by_module = HashMap::new();
-    let include_roots = infer_include_roots(files);
+    let profile = ProjectProfile::infer(files);
 
     for file in files {
         by_path.insert(normalize_path(&file.path), file.file_id);
@@ -383,8 +441,13 @@ fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
         let Some(from_file) = file_by_id.get(&import.from_file).copied() else {
             continue;
         };
-        import.resolved_file =
-            resolve_import(from_file, import, &by_path, &by_module, &include_roots);
+        import.resolved_file = resolve_import(
+            from_file,
+            import,
+            &by_path,
+            &by_module,
+            &profile.include_roots,
+        );
         import.resolution = classify_import(from_file, import);
     }
 }
@@ -559,16 +622,6 @@ fn c_import_candidates(from_path: &Path, target: &str, include_roots: &[PathBuf]
     candidates
 }
 
-fn infer_include_roots(files: &[FileFact]) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for candidate in ["include", "src", "test", "tests"] {
-        if files.iter().any(|file| file.path.starts_with(candidate)) {
-            roots.push(PathBuf::from(candidate));
-        }
-    }
-    roots
-}
-
 fn module_candidate(target: &str) -> Option<String> {
     let target = target
         .trim()
@@ -634,6 +687,15 @@ fn component_to_string(component: Component<'_>) -> Option<String> {
         Component::Normal(value) => value.to_str().map(ToOwned::to_owned),
         _ => None,
     }
+}
+
+fn is_test_path(path: &str) -> bool {
+    path.starts_with("test/")
+        || path.starts_with("tests/")
+        || path.contains("/test/")
+        || path.contains("/tests/")
+        || path.contains("_test.")
+        || path.contains("_tests.")
 }
 
 #[cfg(test)]
@@ -777,6 +839,24 @@ def run():
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].target, "scanner");
         assert_eq!(imports[0].kind, "mod");
+    }
+
+    #[test]
+    fn extracts_entry_points() {
+        let functions = vec![FunctionFact {
+            function_id: 0,
+            file_id: 0,
+            name: "main".to_string(),
+            start_line: 1,
+            end_line: 1,
+        }];
+
+        let entries =
+            extract_entry_points(0, Language::Rust, Path::new("examples/demo.rs"), &functions);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].kind, EntryPointKind::Binary);
+        assert_eq!(entries[1].kind, EntryPointKind::Example);
     }
 
     #[test]

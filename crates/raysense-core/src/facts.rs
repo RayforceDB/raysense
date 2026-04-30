@@ -60,6 +60,21 @@ pub struct FunctionFact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntryPointFact {
+    pub entry_id: usize,
+    pub file_id: usize,
+    pub kind: EntryPointKind,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryPointKind {
+    Binary,
+    Example,
+    Test,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportFact {
     pub import_id: usize,
     pub from_file: usize,
@@ -82,6 +97,7 @@ pub struct ScanReport {
     pub snapshot: SnapshotFact,
     pub files: Vec<FileFact>,
     pub functions: Vec<FunctionFact>,
+    pub entry_points: Vec<EntryPointFact>,
     pub imports: Vec<ImportFact>,
     pub graph: crate::graph::GraphMetrics,
 }
