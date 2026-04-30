@@ -11,5 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+rayforce-sys = { path = "../rayforce-sys" }
 raysense-core = { path = "../raysense-core" }
+raysense-memory = { path = "../raysense-memory" }
 serde_json.workspace = true
