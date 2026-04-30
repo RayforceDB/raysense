@@ -283,6 +283,8 @@ pub struct ArchitectureMetrics {
     pub module_depth: usize,
     pub max_blast_radius: usize,
     pub max_blast_radius_file: String,
+    pub max_non_foundation_blast_radius: usize,
+    pub max_non_foundation_blast_radius_file: String,
     pub levels: BTreeMap<String, usize>,
     pub unstable_modules: Vec<ModuleStabilityMetric>,
     pub stable_foundations: Vec<ModuleStabilityMetric>,
@@ -722,13 +724,20 @@ fn function_call_metrics(
 fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> ArchitectureMetrics {
     let adjacency = file_adjacency(report);
     let reverse = reverse_adjacency(&adjacency);
+    let foundation_files = foundation_file_ids(report, config);
     let mut max_blast_radius = 0usize;
     let mut max_blast_radius_file = String::new();
+    let mut max_non_foundation_blast_radius = 0usize;
+    let mut max_non_foundation_blast_radius_file = String::new();
     for file in &report.files {
-        let radius = reachable_count(file.file_id, &adjacency);
+        let radius = reachable_count(file.file_id, &reverse);
         if radius > max_blast_radius {
             max_blast_radius = radius;
             max_blast_radius_file = file.path.to_string_lossy().into_owned();
+        }
+        if !foundation_files.contains(&file.file_id) && radius > max_non_foundation_blast_radius {
+            max_non_foundation_blast_radius = radius;
+            max_non_foundation_blast_radius_file = file.path.to_string_lossy().into_owned();
         }
     }
 
@@ -741,6 +750,8 @@ fn architecture_metrics(report: &ScanReport, config: &RaysenseConfig) -> Archite
             .unwrap_or(0),
         max_blast_radius,
         max_blast_radius_file,
+        max_non_foundation_blast_radius,
+        max_non_foundation_blast_radius_file,
         levels: dependency_levels(report, &adjacency, &reverse),
         unstable_modules: module_stability(report, config),
         stable_foundations: stable_foundation_metrics(report, config),
@@ -1063,6 +1074,39 @@ fn stable_foundation_modules(report: &ScanReport, config: &RaysenseConfig) -> Ha
         .filter(|metric| metric.fan_in >= 2 && (metric.fan_out == 0 || metric.instability <= 0.15))
         .map(|metric| metric.module)
         .collect()
+}
+
+pub fn is_foundation_file(report: &ScanReport, config: &RaysenseConfig, file_id: usize) -> bool {
+    foundation_file_ids(report, config).contains(&file_id)
+}
+
+fn foundation_file_ids(report: &ScanReport, config: &RaysenseConfig) -> HashSet<usize> {
+    let stable_modules = stable_foundation_modules(report, config);
+    let file_fan_in = file_fan_in(report);
+
+    report
+        .files
+        .iter()
+        .filter(|file| {
+            stable_modules.contains(&module_group(file, config))
+                || file_fan_in.get(&file.file_id).copied().unwrap_or(0) >= 5
+                || is_package_index_path(&normalize_rule_path(&file.path))
+        })
+        .map(|file| file.file_id)
+        .collect()
+}
+
+fn file_fan_in(report: &ScanReport) -> HashMap<usize, usize> {
+    let mut fan_in: HashMap<usize, usize> = HashMap::new();
+    for import in &report.imports {
+        let Some(to_file_id) = import.resolved_file else {
+            continue;
+        };
+        if to_file_id != import.from_file && import.resolution == ImportResolution::Local {
+            *fan_in.entry(to_file_id).or_default() += 1;
+        }
+    }
+    fan_in
 }
 
 fn module_stability_all(
@@ -1426,7 +1470,11 @@ fn is_public_api_like(
                 || trimmed.starts_with("def __")
         })
         || path.ends_with("lib.rs")
-        || path.ends_with("mod.rs")
+        || is_package_index_path(&path)
+}
+
+fn is_package_index_path(path: &str) -> bool {
+    path.ends_with("mod.rs")
         || path.ends_with("__init__.py")
         || path.ends_with("index.ts")
         || path.ends_with("index.tsx")
@@ -2625,6 +2673,65 @@ mod tests {
             .iter()
             .any(|module| module.module == "src/core"));
         assert!(health.root_causes.modularity > 0.6);
+    }
+
+    #[test]
+    fn reports_non_foundation_blast_radius() {
+        let files = vec![
+            file(0, "src/core/types.rs"),
+            file(1, "src/app1/a.rs"),
+            file(2, "src/app2/a.rs"),
+            file(3, "src/app3/a.rs"),
+            file(4, "src/app4/a.rs"),
+            file(5, "src/app5/a.rs"),
+            file(6, "src/app6/a.rs"),
+        ];
+        let imports = vec![
+            import(0, 1, Some(0), ImportResolution::Local),
+            import(1, 2, Some(0), ImportResolution::Local),
+            import(2, 3, Some(0), ImportResolution::Local),
+            import(3, 4, Some(0), ImportResolution::Local),
+            import(4, 5, Some(0), ImportResolution::Local),
+            import(5, 6, Some(0), ImportResolution::Local),
+        ];
+        let graph = compute_graph_metrics(&files, &imports);
+        let report = ScanReport {
+            snapshot: SnapshotFact {
+                snapshot_id: "test".to_string(),
+                root: PathBuf::from("."),
+                file_count: files.len(),
+                function_count: 0,
+                import_count: imports.len(),
+                call_count: 0,
+            },
+            files,
+            functions: Vec::new(),
+            entry_points: Vec::new(),
+            imports,
+            calls: Vec::new(),
+            call_edges: Vec::new(),
+            graph,
+        };
+
+        let mut config = RaysenseConfig::default();
+        config.scan.module_roots = vec!["src".to_string()];
+        let health = compute_health_with_config(&report, &config);
+
+        assert_eq!(health.metrics.architecture.max_blast_radius, 6);
+        assert_eq!(
+            health.metrics.architecture.max_blast_radius_file,
+            "src/core/types.rs"
+        );
+        assert_eq!(
+            health.metrics.architecture.max_non_foundation_blast_radius,
+            0
+        );
+        assert!(health
+            .metrics
+            .architecture
+            .stable_foundations
+            .iter()
+            .any(|module| module.module == "src/core"));
     }
 
     #[test]

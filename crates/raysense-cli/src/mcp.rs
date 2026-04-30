@@ -23,8 +23,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use raysense_core::{
-    build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
-    ImportResolution, ProjectBaseline, RaysenseConfig,
+    build_baseline, compute_health_with_config, diff_baselines, is_foundation_file,
+    scan_path_with_config, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
 use raysense_memory::{
     BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
@@ -566,6 +566,8 @@ fn architecture_tool(args: &Value) -> Result<Value> {
             "module_depth": health.metrics.architecture.module_depth,
             "max_blast_radius": health.metrics.architecture.max_blast_radius,
             "max_blast_radius_file": health.metrics.architecture.max_blast_radius_file,
+            "max_non_foundation_blast_radius": health.metrics.architecture.max_non_foundation_blast_radius,
+            "max_non_foundation_blast_radius_file": health.metrics.architecture.max_non_foundation_blast_radius_file,
             "levels": health.metrics.architecture.levels,
             "cycles": limited(&health.metrics.architecture.cycles, limit),
             "unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
@@ -656,6 +658,7 @@ fn blast_radius_tool(args: &Value) -> Result<Value> {
         "file_id": file_id,
         "file": file.path,
         "blast_radius": reachable_total,
+        "is_foundation": is_foundation_file(&report, &config, file_id),
         "reachable_files": reachable,
         "limit": limit
     }))
@@ -1327,7 +1330,7 @@ fn local_adjacency(report: &raysense_core::ScanReport) -> HashMap<usize, Vec<usi
             continue;
         };
         if import.resolution == ImportResolution::Local && import.from_file != to_file {
-            adjacency.entry(import.from_file).or_default().push(to_file);
+            adjacency.entry(to_file).or_default().push(import.from_file);
         }
     }
     adjacency
