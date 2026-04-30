@@ -22,6 +22,7 @@
  */
 
 use anyhow::{anyhow, Context, Result};
+use raysense_core::graph::compute_graph_metrics;
 use raysense_core::{
     build_baseline, compute_health_with_config, diff_baselines, is_foundation_file,
     scan_path_with_config, ImportResolution, ProjectBaseline, RaysenseConfig,
@@ -300,7 +301,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "raysense_what_if",
-                "description": "Simulate scan config changes and return score, rule, and baseline deltas without writing files.",
+                "description": "Simulate scan config changes or local dependency edge removal and return health deltas without writing files.",
                 "inputSchema": what_if_schema()
             },
             {
@@ -1053,6 +1054,10 @@ fn remediations_tool(args: &Value) -> Result<Value> {
 fn what_if_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
+    if args.get("action").and_then(Value::as_str) == Some("remove_edge") {
+        return what_if_remove_edge_tool(args, &root, &config);
+    }
+
     let ignore_paths = string_array_arg(args, "ignore_paths")?;
     let generated_paths = string_array_arg(args, "generated_paths")?;
     let before_report = scan_path_with_config(&root, &config)?;
@@ -1089,6 +1094,66 @@ fn what_if_tool(args: &Value) -> Result<Value> {
         },
         "diff": diff_baselines(&before, &after)
     }))
+}
+
+fn what_if_remove_edge_tool(args: &Value, root: &Path, config: &RaysenseConfig) -> Result<Value> {
+    let from = args
+        .get("from")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing from"))?;
+    let to = args
+        .get("to")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing to"))?;
+    let before_report = scan_path_with_config(root, config)?;
+    let before_health = compute_health_with_config(&before_report, config);
+    let before = build_baseline(&before_report, &before_health);
+    let from_file_id =
+        find_file_id(&before_report, from).ok_or_else(|| anyhow!("from file not found: {from}"))?;
+    let to_file_id =
+        find_file_id(&before_report, to).ok_or_else(|| anyhow!("to file not found: {to}"))?;
+
+    let mut after_report = before_report.clone();
+    let before_edges = after_report.imports.len();
+    after_report.imports.retain(|import| {
+        !(import.from_file == from_file_id
+            && import.resolved_file == Some(to_file_id)
+            && import.resolution == ImportResolution::Local)
+    });
+    let removed_edges = before_edges.saturating_sub(after_report.imports.len());
+    if removed_edges == 0 {
+        return Err(anyhow!("no matching local edge found from {from} to {to}"));
+    }
+
+    after_report.snapshot.import_count = after_report.imports.len();
+    after_report.graph = compute_graph_metrics(&after_report.files, &after_report.imports);
+    let after_health = compute_health_with_config(&after_report, config);
+    let after = build_baseline(&after_report, &after_health);
+
+    Ok(json!({
+        "root": before_report.snapshot.root,
+        "action": "remove_edge",
+        "from": from,
+        "to": to,
+        "removed_edges": removed_edges,
+        "before": what_if_health_summary(&before_health),
+        "after": what_if_health_summary(&after_health),
+        "diff": diff_baselines(&before, &after)
+    }))
+}
+
+fn what_if_health_summary(health: &raysense_core::HealthSummary) -> Value {
+    json!({
+        "score": health.score,
+        "quality_signal": health.quality_signal,
+        "rules": health.rules.len(),
+        "max_blast_radius": health.metrics.architecture.max_blast_radius,
+        "max_non_foundation_blast_radius": health.metrics.architecture.max_non_foundation_blast_radius,
+        "cycles": health.metrics.architecture.cycles.len(),
+        "upward_violations": health.metrics.architecture.upward_violations.len(),
+        "cross_unstable_edges": health.metrics.coupling.cross_unstable_edges,
+        "cross_unstable_ratio": health.metrics.coupling.cross_unstable_ratio
+    })
 }
 
 fn trend_tool(args: &Value) -> Result<Value> {
@@ -1798,6 +1863,9 @@ fn what_if_schema() -> Value {
             "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
             "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
             "config": config_schema(),
+            "action": {"type": "string", "enum": ["remove_edge"], "description": "Optional graph action to simulate. When omitted, simulates config-only changes."},
+            "from": {"type": "string", "description": "Source file path for action=remove_edge."},
+            "to": {"type": "string", "description": "Target file path for action=remove_edge."},
             "ignore_paths": {
                 "type": "array",
                 "items": {"type": "string"},
