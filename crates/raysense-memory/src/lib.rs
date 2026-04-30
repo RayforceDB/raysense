@@ -61,6 +61,12 @@ pub enum MemoryError {
     InvalidTableName(String),
     #[error("unknown baseline table column {0}")]
     UnknownColumn(String),
+    #[error("invalid regex for baseline table column {column}: {source}")]
+    InvalidRegex {
+        column: String,
+        #[source]
+        source: regex::Error,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -102,7 +108,7 @@ pub struct BaselineTableRows {
     pub matched_rows: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaselineFilterOp {
     Eq,
     Ne,
@@ -398,7 +404,7 @@ fn table_rows(
     }
 
     let projected = project_columns(&columns, query.columns.as_deref())?;
-    validate_filters(&columns, &query.filters)?;
+    let filters = compile_filters(&columns, query.filters)?;
     let sort_cols = query
         .sort
         .iter()
@@ -407,13 +413,7 @@ fn table_rows(
 
     let mut row_indexes = Vec::new();
     for row_idx in 0..total_rows.max(0) as usize {
-        if row_matches(
-            &columns,
-            &col_ptrs,
-            row_idx,
-            &query.filters,
-            query.filter_mode,
-        ) {
+        if row_matches(&col_ptrs, row_idx, &filters, query.filter_mode) {
             row_indexes.push(row_idx);
         }
     }
@@ -476,14 +476,33 @@ fn project_columns(
     }
 }
 
-fn validate_filters(
+fn compile_filters(
     columns: &[String],
-    filters: &[BaselineTableFilter],
-) -> Result<(), MemoryError> {
-    for filter in filters {
-        column_index(columns, &filter.column)?;
-    }
-    Ok(())
+    filters: Vec<BaselineTableFilter>,
+) -> Result<Vec<CompiledFilter>, MemoryError> {
+    filters
+        .into_iter()
+        .map(|filter| {
+            let col_idx = column_index(columns, &filter.column)?;
+            let regex = match filter.op {
+                BaselineFilterOp::Regex | BaselineFilterOp::NotRegex => Some(
+                    regex::Regex::new(filter.value.as_str().unwrap_or_default()).map_err(
+                        |source| MemoryError::InvalidRegex {
+                            column: filter.column.clone(),
+                            source,
+                        },
+                    )?,
+                ),
+                _ => None,
+            };
+            Ok(CompiledFilter {
+                col_idx,
+                op: filter.op,
+                value: filter.value,
+                regex,
+            })
+        })
+        .collect()
 }
 
 fn column_index(columns: &[String], name: &str) -> Result<usize, MemoryError> {
@@ -494,22 +513,18 @@ fn column_index(columns: &[String], name: &str) -> Result<usize, MemoryError> {
 }
 
 fn row_matches(
-    columns: &[String],
     col_ptrs: &[*mut rayforce_sys::ray_t],
     row_idx: usize,
-    filters: &[BaselineTableFilter],
+    filters: &[CompiledFilter],
     filter_mode: BaselineFilterMode,
 ) -> bool {
     if filters.is_empty() {
         return true;
     }
-    let matches = |filter: &BaselineTableFilter| {
-        let Some(col_idx) = columns.iter().position(|column| column == &filter.column) else {
-            return false;
-        };
+    let matches = |filter: &CompiledFilter| {
         filter_matches(
-            &filter.op,
-            &cell_value(col_ptrs[col_idx], row_idx as i64),
+            filter,
+            &cell_value(col_ptrs[filter.col_idx], row_idx as i64),
             &filter.value,
         )
     };
@@ -519,12 +534,19 @@ fn row_matches(
     }
 }
 
+struct CompiledFilter {
+    col_idx: usize,
+    op: BaselineFilterOp,
+    value: serde_json::Value,
+    regex: Option<regex::Regex>,
+}
+
 fn filter_matches(
-    op: &BaselineFilterOp,
+    filter: &CompiledFilter,
     actual: &serde_json::Value,
     expected: &serde_json::Value,
 ) -> bool {
-    match op {
+    match filter.op {
         BaselineFilterOp::Eq => values_equal(actual, expected),
         BaselineFilterOp::Ne => !values_equal(actual, expected),
         BaselineFilterOp::In => value_set(expected)
@@ -540,12 +562,8 @@ fn filter_matches(
             .is_some_and(|(actual, expected)| actual.starts_with(expected)),
         BaselineFilterOp::EndsWith => string_pair(actual, expected)
             .is_some_and(|(actual, expected)| actual.ends_with(expected)),
-        BaselineFilterOp::Regex => {
-            regex_pair(actual, expected).is_some_and(|(actual, pattern)| pattern.is_match(actual))
-        }
-        BaselineFilterOp::NotRegex => {
-            regex_pair(actual, expected).is_some_and(|(actual, pattern)| !pattern.is_match(actual))
-        }
+        BaselineFilterOp::Regex => regex_match(actual, filter.regex.as_ref()),
+        BaselineFilterOp::NotRegex => !regex_match(actual, filter.regex.as_ref()),
         BaselineFilterOp::Gt => compare_values(actual, expected).is_gt(),
         BaselineFilterOp::Gte => !compare_values(actual, expected).is_lt(),
         BaselineFilterOp::Lt => compare_values(actual, expected).is_lt(),
@@ -553,13 +571,11 @@ fn filter_matches(
     }
 }
 
-fn regex_pair<'a>(
-    actual: &'a serde_json::Value,
-    expected: &'a serde_json::Value,
-) -> Option<(&'a str, regex::Regex)> {
-    let actual = actual.as_str()?;
-    let pattern = regex::Regex::new(expected.as_str()?).ok()?;
-    Some((actual, pattern))
+fn regex_match(actual: &serde_json::Value, pattern: Option<&regex::Regex>) -> bool {
+    actual
+        .as_str()
+        .zip(pattern)
+        .is_some_and(|(actual, pattern)| pattern.is_match(actual))
 }
 
 fn value_set(value: &serde_json::Value) -> Option<&[serde_json::Value]> {
@@ -1540,6 +1556,36 @@ mod tests {
                 json!({"path": "src/mid.c"}),
             ]
         );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_baseline_regex_filters() {
+        let dir = temp_tables_dir("invalid-regex-filter");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let err = query_baseline_table(
+            &dir,
+            "files",
+            BaselineTableQuery {
+                offset: 0,
+                limit: 10,
+                columns: Some(vec!["path".to_string()]),
+                filters: vec![BaselineTableFilter {
+                    column: "path".to_string(),
+                    op: BaselineFilterOp::Regex,
+                    value: json!("["),
+                }],
+                filter_mode: BaselineFilterMode::All,
+                sort: Vec::new(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, MemoryError::InvalidRegex { column, .. } if column == "path"));
 
         std::fs::remove_dir_all(dir).unwrap();
     }
