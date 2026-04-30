@@ -1,3 +1,26 @@
+<!--
+  Copyright (c) 2025-2026 Anton Kundenko <singaraiona@gmail.com>
+  All rights reserved.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+-->
+
 # Raysense
 
 Raysense is local architectural telemetry for AI coding agents.
@@ -48,11 +71,16 @@ raysense observe <path> [--json] [--memory] [--config <path>]
 raysense health <path> [--json] [--config <path>]
 raysense edges <path> [--all]
 raysense memory <path> [--config <path>]
+raysense mcp
 raysense rayforce-version
 ```
 
 If `<path>/.raysense.toml` exists, health-producing commands load it
 automatically. `--config` overrides that path.
+
+`raysense mcp` runs a stdio MCP server for agents. It exposes tools to read the
+effective config, write config as TOML, and run health with either file-based or
+inline config.
 
 Example config:
 
@@ -95,6 +123,7 @@ The first testable version focuses on Rust and C/C++ codebases:
   large-file/no-test findings, and call-resolution/function-call hotspots.
 - Rule thresholds can be configured with TOML.
 - Forbidden top-level module dependencies can be configured with TOML.
+- Config read/write and health runs are exposed through the MCP interface.
 - Rayforce table materialization for scan facts, call facts, call edges,
   health summary, hotspots, rules, module edges, and changed-file evolution
   metrics.
