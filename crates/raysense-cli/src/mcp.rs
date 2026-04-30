@@ -294,6 +294,11 @@ fn tools_list() -> Value {
                 "inputSchema": plugin_scaffold_schema()
             },
             {
+                "name": "raysense_plugin_sync",
+                "description": "Materialize bundled standard plugin profiles into project-local .raysense/plugins/<name>/plugin.toml files. Skips existing manifests unless force is true.",
+                "inputSchema": plugin_sync_schema()
+            },
+            {
                 "name": "raysense_remediations",
                 "description": "Return suggested remediation actions for current findings and test gaps.",
                 "inputSchema": health_limit_schema("Maximum remediation actions to return. Defaults to 100.")
@@ -397,6 +402,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_standard_plugins" => standard_plugins_tool(&args),
         "raysense_plugin_add" => plugin_add_tool(&args),
         "raysense_plugin_add_standard" => plugin_add_standard_tool(&args),
+        "raysense_plugin_sync" => plugin_sync_tool(&args),
         "raysense_plugin_remove" => plugin_remove_tool(&args),
         "raysense_plugin_validate" => plugin_validate_tool(&args),
         "raysense_plugin_scaffold" => plugin_scaffold_tool(&args),
@@ -965,6 +971,20 @@ fn plugin_add_tool(args: &Value) -> Result<Value> {
         "root": root,
         "path": path,
         "config": config
+    }))
+}
+
+fn plugin_sync_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let names = string_array_arg(args, "names")?;
+    let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+    let summary = super::sync_standard_plugins(&root, &names, force)?;
+    Ok(json!({
+        "root": root,
+        "wrote": summary.written.len(),
+        "skipped": summary.skipped.len(),
+        "written_paths": summary.written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "skipped_paths": summary.skipped.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
     }))
 }
 
@@ -2173,6 +2193,21 @@ fn plugin_add_schema() -> Value {
     })
 }
 
+fn plugin_sync_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional plugin names to sync. When omitted, all standard plugins are materialized."
+            },
+            "force": {"type": "boolean", "description": "Overwrite existing project-local plugin.toml files. Defaults to false."}
+        }
+    })
+}
+
 fn plugin_add_standard_schema() -> Value {
     json!({
         "type": "object",
@@ -2343,6 +2378,7 @@ mod tests {
         assert!(names.contains(&"raysense_standard_plugins"));
         assert!(names.contains(&"raysense_plugin_add"));
         assert!(names.contains(&"raysense_plugin_add_standard"));
+        assert!(names.contains(&"raysense_plugin_sync"));
         assert!(names.contains(&"raysense_plugin_remove"));
         assert!(names.contains(&"raysense_plugin_validate"));
         assert!(names.contains(&"raysense_plugin_scaffold"));

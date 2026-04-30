@@ -214,6 +214,16 @@ enum PluginCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    Sync {
+        /// Optional list of standard plugin names to sync. When omitted,
+        /// every standard plugin is materialized.
+        names: Vec<String>,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Overwrite existing plugin.toml files.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -402,6 +412,20 @@ pub fn run() -> Result<()> {
             } => {
                 let output = scaffold_plugin(&path, &name, &extension)?;
                 println!("plugin_scaffold {} {}", name, output.display());
+            }
+            PluginCommand::Sync { names, path, force } => {
+                let summary = sync_standard_plugins(&path, &names, force)?;
+                for entry in &summary.written {
+                    println!("plugin_sync wrote {}", entry.display());
+                }
+                for entry in &summary.skipped {
+                    println!("plugin_sync skipped {}", entry.display());
+                }
+                println!(
+                    "plugin_sync wrote={} skipped={}",
+                    summary.written.len(),
+                    summary.skipped.len()
+                );
             }
             PluginCommand::Init {
                 name,
@@ -1237,6 +1261,41 @@ fn print_plugin_validation(validation: &Value) {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PluginSyncSummary {
+    pub written: Vec<PathBuf>,
+    pub skipped: Vec<PathBuf>,
+}
+
+pub(crate) fn sync_standard_plugins(
+    root: &Path,
+    names: &[String],
+    force: bool,
+) -> Result<PluginSyncSummary> {
+    let plugins = raysense_core::standard_language_plugins();
+    let filter: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+    let mut summary = PluginSyncSummary::default();
+    for plugin in plugins {
+        if !filter.is_empty() && !filter.contains(plugin.name.as_str()) {
+            continue;
+        }
+        let plugin_dir = root.join(".raysense/plugins").join(&plugin.name);
+        let manifest_path = plugin_dir.join("plugin.toml");
+        if manifest_path.exists() && !force {
+            summary.skipped.push(manifest_path);
+            continue;
+        }
+        fs::create_dir_all(&plugin_dir)
+            .with_context(|| format!("failed to create {}", plugin_dir.display()))?;
+        let toml = toml::to_string_pretty(&plugin)
+            .with_context(|| format!("failed to encode plugin manifest for {}", plugin.name))?;
+        fs::write(&manifest_path, toml)
+            .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+        summary.written.push(manifest_path);
+    }
+    Ok(summary)
+}
+
 pub(crate) fn scaffold_plugin(root: &Path, name: &str, extension: &str) -> Result<PathBuf> {
     if name.trim().is_empty() {
         return Err(anyhow!("plugin name must not be empty"));
@@ -2046,4 +2105,51 @@ fn print_edges(report: &raysense_core::ScanReport, all: bool) -> io::Result<()> 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("raysense-cli-{name}-{nanos}"))
+    }
+
+    #[test]
+    fn sync_standard_plugins_writes_then_skips_without_force() {
+        let root = temp_root("sync");
+        fs::create_dir_all(&root).unwrap();
+        let summary = sync_standard_plugins(&root, &["go".to_string()], false).unwrap();
+        assert_eq!(summary.written.len(), 1);
+        assert!(summary.skipped.is_empty());
+        let manifest = root.join(".raysense/plugins/go/plugin.toml");
+        assert!(manifest.exists());
+
+        let again = sync_standard_plugins(&root, &["go".to_string()], false).unwrap();
+        assert!(again.written.is_empty());
+        assert_eq!(again.skipped.len(), 1);
+
+        let forced = sync_standard_plugins(&root, &["go".to_string()], true).unwrap();
+        assert_eq!(forced.written.len(), 1);
+        assert!(forced.skipped.is_empty());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sync_standard_plugins_filters_unknown_names_to_empty() {
+        let root = temp_root("sync-unknown");
+        fs::create_dir_all(&root).unwrap();
+        let summary =
+            sync_standard_plugins(&root, &["definitely-not-a-language".to_string()], false)
+                .unwrap();
+        assert!(summary.written.is_empty());
+        assert!(summary.skipped.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
