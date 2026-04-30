@@ -269,6 +269,16 @@ fn tools_list() -> Value {
                 "inputSchema": path_limit_schema("Maximum plugins to return. Defaults to all.")
             },
             {
+                "name": "raysense_plugin_add",
+                "description": "Add or replace a generic language plugin in project config.",
+                "inputSchema": plugin_add_schema()
+            },
+            {
+                "name": "raysense_plugin_add_standard",
+                "description": "Add standard language plugin profiles to project config.",
+                "inputSchema": plugin_add_standard_schema()
+            },
+            {
                 "name": "raysense_remediations",
                 "description": "Return suggested remediation actions for current findings and test gaps.",
                 "inputSchema": health_limit_schema("Maximum remediation actions to return. Defaults to 100.")
@@ -365,6 +375,8 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_sarif" => sarif_tool(&args),
         "raysense_plugins" => plugins_tool(&args),
         "raysense_standard_plugins" => standard_plugins_tool(&args),
+        "raysense_plugin_add" => plugin_add_tool(&args),
+        "raysense_plugin_add_standard" => plugin_add_standard_tool(&args),
         "raysense_remediations" => remediations_tool(&args),
         "raysense_what_if" => what_if_tool(&args),
         "raysense_trend" => trend_tool(&args),
@@ -882,6 +894,62 @@ fn standard_plugins_tool(args: &Value) -> Result<Value> {
     }))
 }
 
+fn plugin_add_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing plugin name"))?;
+    let extensions = string_array_arg(args, "extensions")?;
+    if extensions.is_empty() {
+        return Err(anyhow!("extensions must not be empty"));
+    }
+    let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
+    let mut config = load_or_default_config(&path)?;
+    config.scan.plugins.retain(|plugin| plugin.name != name);
+    config
+        .scan
+        .plugins
+        .push(raysense_core::LanguagePluginConfig {
+            name: name.to_string(),
+            extensions,
+            ..raysense_core::LanguagePluginConfig::default()
+        });
+    write_config_path(&path, &config)?;
+
+    Ok(json!({
+        "root": root,
+        "path": path,
+        "config": config
+    }))
+}
+
+fn plugin_add_standard_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
+    let mut config = load_or_default_config(&path)?;
+    let standard = raysense_core::standard_language_plugins();
+    for plugin in &standard {
+        config
+            .scan
+            .plugins
+            .retain(|existing| existing.name != plugin.name);
+    }
+    config.scan.plugins.extend(standard);
+    config
+        .scan
+        .plugins
+        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    write_config_path(&path, &config)?;
+
+    Ok(json!({
+        "root": root,
+        "path": path,
+        "plugins": config.scan.plugins,
+        "total": config.scan.plugins.len()
+    }))
+}
+
 fn remediations_tool(args: &Value) -> Result<Value> {
     let (root, health) = health_from_args(args)?;
     let limit = limit_arg(args, 100)?;
@@ -954,15 +1022,9 @@ fn policy_init_tool(args: &Value) -> Result<Value> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing preset"))?;
     let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
-    let mut config = if path.exists() {
-        RaysenseConfig::from_path(&path)
-            .with_context(|| format!("failed to load config {}", path.display()))?
-    } else {
-        RaysenseConfig::default()
-    };
+    let mut config = load_or_default_config(&path)?;
     super::apply_policy_preset(&mut config, preset)?;
-    let toml = toml::to_string_pretty(&config).context("failed to encode config as TOML")?;
-    fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
+    write_config_path(&path, &config)?;
 
     Ok(json!({
         "root": root,
@@ -1391,6 +1453,24 @@ fn load_config(root: &Path, explicit: Option<PathBuf>) -> Result<(RaysenseConfig
     Ok((RaysenseConfig::default(), "default".to_string()))
 }
 
+fn load_or_default_config(path: &Path) -> Result<RaysenseConfig> {
+    if path.exists() {
+        RaysenseConfig::from_path(path)
+            .with_context(|| format!("failed to load config {}", path.display()))
+    } else {
+        Ok(RaysenseConfig::default())
+    }
+}
+
+fn write_config_path(path: &Path, config: &RaysenseConfig) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let toml = toml::to_string_pretty(config).context("failed to encode config as TOML")?;
+    fs::write(path, toml).with_context(|| format!("failed to write {}", path.display()))
+}
+
 fn tool_success(structured: Value) -> Value {
     json!({
         "content": [
@@ -1663,6 +1743,33 @@ fn policy_init_schema() -> Value {
     })
 }
 
+fn plugin_add_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Destination config file. Defaults to <path>/.raysense.toml."},
+            "name": {"type": "string", "description": "Plugin name."},
+            "extensions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "File extensions handled by the plugin."
+            }
+        },
+        "required": ["name", "extensions"]
+    })
+}
+
+fn plugin_add_standard_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "config_path": {"type": "string", "description": "Destination config file. Defaults to <path>/.raysense.toml."}
+        }
+    })
+}
+
 fn baseline_schema(path_description: &str) -> Value {
     json!({
         "type": "object",
@@ -1787,6 +1894,8 @@ mod tests {
         assert!(names.contains(&"raysense_sarif"));
         assert!(names.contains(&"raysense_plugins"));
         assert!(names.contains(&"raysense_standard_plugins"));
+        assert!(names.contains(&"raysense_plugin_add"));
+        assert!(names.contains(&"raysense_plugin_add_standard"));
         assert!(names.contains(&"raysense_remediations"));
         assert!(names.contains(&"raysense_what_if"));
         assert!(names.contains(&"raysense_trend"));

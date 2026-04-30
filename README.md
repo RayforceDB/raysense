@@ -132,7 +132,8 @@ write visualization dashboards, emit SARIF reports, apply policy presets,
 save/diff baselines, and query saved baseline tables with projection, filters,
 sorting, and pagination. Agent session tools can save an in-memory baseline,
 rescan, end the session, check rules, inspect evolution, inspect DSM data,
-inspect test gaps, and list configured language plugins.
+inspect test gaps, list configured language plugins, and add generic or
+standard plugin profiles.
 
 `raysense visualize` writes a self-refreshing local HTML dashboard with file
 size blocks, module graph edges, hotspots, rules, complexity, test gaps, and an
