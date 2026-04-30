@@ -91,10 +91,12 @@ impl Default for ScoreConfig {
 #[serde(default)]
 pub struct LanguagePluginConfig {
     pub name: String,
+    pub grammar: Option<String>,
     pub extensions: Vec<String>,
     pub function_prefixes: Vec<String>,
     pub import_prefixes: Vec<String>,
     pub call_suffixes: Vec<String>,
+    pub tags_query: Option<String>,
     pub package_index_files: Vec<String>,
     pub test_path_patterns: Vec<String>,
     pub source_roots: Vec<String>,
@@ -106,6 +108,7 @@ impl Default for LanguagePluginConfig {
     fn default() -> Self {
         Self {
             name: String::new(),
+            grammar: None,
             extensions: Vec::new(),
             function_prefixes: vec![
                 "function ".to_string(),
@@ -118,6 +121,7 @@ impl Default for LanguagePluginConfig {
                 "require ".to_string(),
             ],
             call_suffixes: vec!["(".to_string()],
+            tags_query: None,
             package_index_files: Vec::new(),
             test_path_patterns: Vec::new(),
             source_roots: Vec::new(),

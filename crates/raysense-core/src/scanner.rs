@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
-use tree_sitter::{Node, Parser};
+use tree_sitter::{Language as TsLanguage, Node, Parser, Query, QueryCursor, StreamingIterator};
 
 #[derive(Debug, Error)]
 pub enum ScanError {
@@ -238,11 +238,21 @@ fn load_project_plugins(root: &Path, config: &RaysenseConfig) -> Result<Raysense
             path: plugin_path.clone(),
             source,
         })?;
-        let plugin: LanguagePluginConfig =
+        let mut plugin: LanguagePluginConfig =
             toml::from_str(&content).map_err(|source| ScanError::PluginConfig {
                 path: plugin_path,
                 source,
             })?;
+        let tags_path = entry.path().join("queries/tags.scm");
+        if tags_path.exists() {
+            plugin.tags_query =
+                Some(
+                    fs::read_to_string(&tags_path).map_err(|source| ScanError::Read {
+                        path: tags_path,
+                        source,
+                    })?,
+                );
+        }
         if plugin.name.trim().is_empty() || plugin.extensions.is_empty() {
             continue;
         }
@@ -542,6 +552,7 @@ pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
         .map(|(name, extensions, function_prefixes, import_prefixes)| {
             let mut plugin = LanguagePluginConfig {
                 name: (*name).to_string(),
+                grammar: None,
                 extensions: extensions.iter().map(|item| (*item).to_string()).collect(),
                 function_prefixes: function_prefixes
                     .iter()
@@ -552,6 +563,7 @@ pub fn standard_language_plugins() -> Vec<LanguagePluginConfig> {
                     .map(|item| (*item).to_string())
                     .collect(),
                 call_suffixes: vec!["(".to_string()],
+                tags_query: None,
                 ..LanguagePluginConfig::default()
             };
             apply_builtin_profile_defaults(&mut plugin);
@@ -1010,6 +1022,9 @@ fn extract_plugin_functions(
     content: &str,
     plugin: &LanguagePluginConfig,
 ) -> Vec<FunctionFact> {
+    if let Some(functions) = extract_query_functions(file_id, content, plugin) {
+        return functions;
+    }
     let lines: Vec<&str> = content.lines().collect();
     let prefixes = plugin.function_prefixes.clone();
 
@@ -1047,6 +1062,9 @@ fn extract_plugin_imports(
     content: &str,
     plugin: &LanguagePluginConfig,
 ) -> Vec<ImportFact> {
+    if let Some(imports) = extract_query_imports(file_id, content, plugin) {
+        return imports;
+    }
     let prefixes = plugin.import_prefixes.clone();
 
     content
@@ -1073,6 +1091,147 @@ fn extract_plugin_imports(
             None
         })
         .collect()
+}
+
+fn extract_query_functions(
+    file_id: usize,
+    content: &str,
+    plugin: &LanguagePluginConfig,
+) -> Option<Vec<FunctionFact>> {
+    let language = query_language(plugin)?;
+    let query_source = plugin.tags_query.as_deref()?;
+    let mut parser = Parser::new();
+    parser.set_language(&language).ok()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+    let query = Query::new(&language, query_source).ok()?;
+    let capture_names = query.capture_names();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    let mut functions = Vec::new();
+
+    while let Some(matched) = matches.next() {
+        let mut name = None;
+        let mut definition = None;
+        for capture in matched.captures {
+            let capture_name = capture_names
+                .get(capture.index as usize)
+                .copied()
+                .unwrap_or("");
+            if query_capture_is_name(capture_name) {
+                name = node_text(content, capture.node);
+            }
+            if query_capture_is_function(capture_name) {
+                definition = Some(capture.node);
+            }
+        }
+        let Some(node) = definition.or_else(|| {
+            matched
+                .captures
+                .iter()
+                .find(|capture| {
+                    capture_names
+                        .get(capture.index as usize)
+                        .is_some_and(|name| query_capture_is_name(name))
+                })
+                .map(|capture| capture.node)
+        }) else {
+            continue;
+        };
+        let Some(name) = name else {
+            continue;
+        };
+        functions.push(FunctionFact {
+            function_id: 0,
+            file_id,
+            name,
+            start_line: node.start_position().row + 1,
+            end_line: node.end_position().row + 1,
+        });
+    }
+    functions.sort_by(|a, b| {
+        a.start_line
+            .cmp(&b.start_line)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    functions.dedup_by(|a, b| a.name == b.name && a.start_line == b.start_line);
+    Some(functions)
+}
+
+fn extract_query_imports(
+    file_id: usize,
+    content: &str,
+    plugin: &LanguagePluginConfig,
+) -> Option<Vec<ImportFact>> {
+    let language = query_language(plugin)?;
+    let query_source = plugin.tags_query.as_deref()?;
+    let mut parser = Parser::new();
+    parser.set_language(&language).ok()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+    let query = Query::new(&language, query_source).ok()?;
+    let capture_names = query.capture_names();
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, root, content.as_bytes());
+    let mut imports = Vec::new();
+
+    while let Some(matched) = matches.next() {
+        for capture in matched.captures {
+            let capture_name = capture_names
+                .get(capture.index as usize)
+                .copied()
+                .unwrap_or("");
+            if !query_capture_is_import(capture_name) {
+                continue;
+            }
+            if let Some(target) = node_text(content, capture.node)
+                .and_then(|text| quoted_module_specifier(&text).or(Some(text)))
+                .map(|target| target.trim_matches(['"', '\'', ';']).to_string())
+                .filter(|target| !target.is_empty())
+            {
+                imports.push(new_import(file_id, &target, "query_import"));
+            }
+        }
+    }
+    imports.dedup_by(|a, b| a.target == b.target);
+    Some(imports)
+}
+
+fn query_language(plugin: &LanguagePluginConfig) -> Option<TsLanguage> {
+    match plugin.grammar.as_deref().unwrap_or(plugin.name.as_str()) {
+        "c" => Some(tree_sitter_c::LANGUAGE.into()),
+        "cpp" | "c++" => Some(tree_sitter_cpp::LANGUAGE.into()),
+        "python" => Some(tree_sitter_python::LANGUAGE.into()),
+        "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
+        "typescript" | "javascript" | "tsx" | "jsx" => {
+            Some(tree_sitter_typescript::LANGUAGE_TSX.into())
+        }
+        _ => None,
+    }
+}
+
+fn query_capture_is_function(name: &str) -> bool {
+    name.contains("definition.function")
+        || name.contains("definition.method")
+        || name == "function"
+        || name == "method"
+}
+
+fn query_capture_is_name(name: &str) -> bool {
+    name == "name" || name.ends_with(".name")
+}
+
+fn query_capture_is_import(name: &str) -> bool {
+    name.contains("reference.import")
+        || name.contains("import")
+        || name.contains("module")
+        || name.contains("source")
 }
 
 fn extract_plugin_calls(
@@ -2333,6 +2492,44 @@ call_suffixes = ["("]
         assert_eq!(report.files[0].language_name, "toy");
         assert_eq!(report.functions[0].name, "run");
         assert_eq!(report.imports[0].target, "core");
+    }
+
+    #[test]
+    fn project_local_plugins_can_use_tree_sitter_queries() {
+        let root = temp_scan_root("local_plugin_queries");
+        fs::create_dir_all(root.join(".raysense/plugins/rustish/queries")).unwrap();
+        fs::write(
+            root.join(".raysense/plugins/rustish/plugin.toml"),
+            r#"
+name = "rustish"
+grammar = "rust"
+extensions = ["rsh"]
+function_prefixes = ["unused "]
+import_prefixes = ["unused "]
+call_suffixes = ["("]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join(".raysense/plugins/rustish/queries/tags.scm"),
+            r#"
+(function_item
+  name: (identifier) @name) @definition.function
+
+(use_declaration
+  argument: (_) @reference.import)
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("main.rsh"), "use crate::core;\nfn run() {}\n").unwrap();
+
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(report.functions[0].name, "run");
+        assert_eq!(report.imports[0].target, "crate::core");
+        assert_eq!(report.imports[0].kind, "query_import");
     }
 
     #[test]

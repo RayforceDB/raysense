@@ -117,6 +117,10 @@ If `<path>/.raysense.toml` exists, health-producing commands load it
 automatically. `--config` overrides that path.
 Project-local plugin manifests under `.raysense/plugins/*/plugin.toml` are also
 loaded during scans, using the same fields as `[[scan.plugins]]`.
+When `.raysense/plugins/<name>/queries/tags.scm` is present and the plugin
+selects a compiled grammar with `grammar = "rust"`, `c`, `cpp`, `python`, or
+`typescript`, Raysense uses query captures for functions and imports before
+falling back to token prefixes.
 
 `raysense mcp` runs a stdio MCP server for agents. It exposes tools to read and
 write config, run health, inspect scan facts, list dependency edges, read
@@ -199,10 +203,15 @@ public_api_paths = ["src/lib.rs"]
 
 [[scan.plugins]]
 name = "foo"
+grammar = "rust"
 extensions = ["foo"]
 function_prefixes = ["function "]
 import_prefixes = ["load "]
 call_suffixes = ["("]
+tags_query = """
+(function_item
+  name: (identifier) @name) @definition.function
+"""
 package_index_files = ["index.foo"]
 test_path_patterns = ["tests/*", "*_test.foo"]
 source_roots = ["src"]

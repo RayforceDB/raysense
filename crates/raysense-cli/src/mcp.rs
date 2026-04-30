@@ -1373,10 +1373,12 @@ fn config_schema() -> Value {
                             "type": "object",
                             "properties": {
                                 "name": {"type": "string"},
+                                "grammar": {"type": ["string", "null"]},
                                 "extensions": {"type": "array", "items": {"type": "string"}},
                                 "function_prefixes": {"type": "array", "items": {"type": "string"}},
                                 "import_prefixes": {"type": "array", "items": {"type": "string"}},
                                 "call_suffixes": {"type": "array", "items": {"type": "string"}},
+                                "tags_query": {"type": ["string", "null"]},
                                 "package_index_files": {"type": "array", "items": {"type": "string"}},
                                 "test_path_patterns": {"type": "array", "items": {"type": "string"}},
                                 "source_roots": {"type": "array", "items": {"type": "string"}},
