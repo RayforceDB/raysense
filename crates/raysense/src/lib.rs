@@ -2,8 +2,8 @@ pub const NAME: &str = "raysense";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use raysense_core::{
-    scan_path, FileFact, FunctionFact, GraphMetrics, ImportFact, Language, ScanError, ScanReport,
-    SnapshotFact,
+    scan_path, FileFact, FunctionFact, GraphMetrics, ImportFact, ImportResolution, Language,
+    ScanError, ScanReport, SnapshotFact,
 };
 
 pub fn package_name() -> &'static str {

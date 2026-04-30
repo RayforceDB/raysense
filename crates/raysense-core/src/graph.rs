@@ -65,7 +65,7 @@ fn reaches_itself(start: usize, adjacency: &HashMap<usize, Vec<usize>>) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::{FileFact, ImportFact, Language};
+    use crate::facts::{FileFact, ImportFact, ImportResolution, Language};
     use std::path::PathBuf;
 
     #[test]
@@ -100,6 +100,7 @@ mod tests {
             from_file,
             target: String::new(),
             kind: "use".to_string(),
+            resolution: ImportResolution::Local,
             resolved_file: Some(to_file),
         }
     }

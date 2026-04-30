@@ -207,6 +207,13 @@ fn build_imports_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
         report.imports.len(),
         report.imports.iter().map(|import| import.kind.clone()),
     )?;
+    let resolutions = str_vec(
+        report.imports.len(),
+        report
+            .imports
+            .iter()
+            .map(|import| format!("{:?}", import.resolution).to_lowercase()),
+    )?;
     let resolved_files = i64_vec(
         report.imports.len(),
         report
@@ -216,12 +223,13 @@ fn build_imports_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
     )?;
 
     table(
-        5,
+        6,
         [
             ("import_id", ids),
             ("from_file", from_files),
             ("target", targets),
             ("kind", kinds),
+            ("resolution", resolutions),
             ("resolved_file", resolved_files),
         ],
     )

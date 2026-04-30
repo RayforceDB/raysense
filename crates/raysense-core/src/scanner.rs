@@ -1,4 +1,6 @@
-use crate::facts::{FileFact, FunctionFact, ImportFact, Language, ScanReport, SnapshotFact};
+use crate::facts::{
+    FileFact, FunctionFact, ImportFact, ImportResolution, Language, ScanReport, SnapshotFact,
+};
 use crate::graph::compute_graph_metrics;
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
@@ -261,14 +263,28 @@ fn extract_imports(file_id: usize, language: Language, content: &str) -> Vec<Imp
 }
 
 fn extract_rust_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim_start();
-            let target = trimmed.strip_prefix("use ")?.trim_end_matches(';').trim();
-            Some(new_import(file_id, target, "use"))
-        })
-        .collect()
+    let mut imports = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if let Some(target) = trimmed.strip_prefix("use ") {
+            imports.push(new_import(
+                file_id,
+                target.trim_end_matches(';').trim(),
+                "use",
+            ));
+        }
+        if let Some(rest) = trimmed.strip_prefix("mod ") {
+            if let Some(target) = rest
+                .trim_end_matches(';')
+                .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                .next()
+                .filter(|target| !target.is_empty())
+            {
+                imports.push(new_import(file_id, target, "mod"));
+            }
+        }
+    }
+    imports
 }
 
 fn extract_python_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
@@ -316,10 +332,15 @@ fn extract_c_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
         .filter_map(|line| {
             let trimmed = line.trim_start();
             let target = trimmed.strip_prefix("#include ")?.trim();
+            let kind = if target.starts_with('<') {
+                "include_system"
+            } else {
+                "include"
+            };
             Some(new_import(
                 file_id,
                 target.trim_matches(['<', '>', '"']),
-                "include",
+                kind,
             ))
         })
         .collect()
@@ -331,6 +352,7 @@ fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
         from_file: file_id,
         target: target.to_string(),
         kind: kind.to_string(),
+        resolution: ImportResolution::Unresolved,
         resolved_file: None,
     }
 }
@@ -352,6 +374,22 @@ fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
             continue;
         };
         import.resolved_file = resolve_import(from_file, import, &by_path, &by_module);
+        import.resolution = classify_import(from_file, import);
+    }
+}
+
+fn classify_import(from_file: &FileFact, import: &ImportFact) -> ImportResolution {
+    if import.resolved_file.is_some() {
+        return ImportResolution::Local;
+    }
+
+    match from_file.language {
+        Language::C | Language::Cpp if import.kind == "include_system" => ImportResolution::System,
+        Language::Rust if rust_target_is_local(&import.target) => ImportResolution::Unresolved,
+        Language::TypeScript if import.target.starts_with('.') => ImportResolution::Unresolved,
+        Language::Python if import.target.starts_with('.') => ImportResolution::Unresolved,
+        Language::C | Language::Cpp if import.kind == "include" => ImportResolution::Unresolved,
+        _ => ImportResolution::External,
     }
 }
 
@@ -381,9 +419,14 @@ fn import_candidates(from_file: &FileFact, import: &ImportFact) -> Vec<String> {
 }
 
 fn rust_import_candidates(target: &str) -> Vec<String> {
+    if !rust_target_is_local(target) {
+        return Vec::new();
+    }
+
     let target = target
         .trim_start_matches("crate::")
         .trim_start_matches("self::")
+        .trim_start_matches("super::")
         .replace("::", "/");
     vec![
         format!("{target}.rs"),
@@ -391,6 +434,13 @@ fn rust_import_candidates(target: &str) -> Vec<String> {
         format!("src/{target}.rs"),
         format!("src/{target}/mod.rs"),
     ]
+}
+
+fn rust_target_is_local(target: &str) -> bool {
+    target.starts_with("crate::")
+        || target.starts_with("self::")
+        || target.starts_with("super::")
+        || !target.contains("::")
 }
 
 fn python_import_candidates(target: &str) -> Vec<String> {
@@ -421,9 +471,8 @@ fn c_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
     }
 
     let mut candidates = Vec::new();
-    if let Some(base) = relative_base(from_path, target) {
-        candidates.push(normalize_path(base));
-    }
+    let parent = from_path.parent().unwrap_or_else(|| Path::new(""));
+    candidates.push(normalize_path(normalize_components(parent.join(target))));
     candidates.push(target.replace('\\', "/"));
     candidates
 }
@@ -536,30 +585,15 @@ def run():
     #[test]
     fn resolves_imports_by_stem() {
         let files = vec![
-            FileFact {
-                file_id: 0,
-                path: PathBuf::from("src/main.rs"),
-                language: Language::Rust,
-                module: "src.main".to_string(),
-                lines: 1,
-                bytes: 1,
-                content_hash: String::new(),
-            },
-            FileFact {
-                file_id: 1,
-                path: PathBuf::from("src/graph.rs"),
-                language: Language::Rust,
-                module: "src.graph".to_string(),
-                lines: 1,
-                bytes: 1,
-                content_hash: String::new(),
-            },
+            file(0, "src/main.rs", Language::Rust),
+            file(1, "src/graph.rs", Language::Rust),
         ];
         let mut imports = vec![new_import(0, "crate::graph", "use")];
 
         resolve_imports(&files, &mut imports);
 
         assert_eq!(imports[0].resolved_file, Some(1));
+        assert_eq!(imports[0].resolution, ImportResolution::Local);
     }
 
     #[test]
@@ -578,6 +612,8 @@ def run():
 
         assert_eq!(imports[0].resolved_file, Some(1));
         assert_eq!(imports[1].resolved_file, Some(2));
+        assert_eq!(imports[0].resolution, ImportResolution::Local);
+        assert_eq!(imports[1].resolution, ImportResolution::Local);
     }
 
     #[test]
@@ -591,6 +627,47 @@ def run():
         resolve_imports(&files, &mut imports);
 
         assert_eq!(imports[0].resolved_file, Some(1));
+        assert_eq!(imports[0].resolution, ImportResolution::Local);
+    }
+
+    #[test]
+    fn classifies_external_rust_crates() {
+        let files = vec![file(0, "src/main.rs", Language::Rust)];
+        let mut imports = vec![new_import(0, "serde::Serialize", "use")];
+
+        resolve_imports(&files, &mut imports);
+
+        assert_eq!(imports[0].resolved_file, None);
+        assert_eq!(imports[0].resolution, ImportResolution::External);
+    }
+
+    #[test]
+    fn classifies_c_system_and_local_includes() {
+        let files = vec![
+            file(0, "src/runtime.c", Language::C),
+            file(1, "src/runtime.h", Language::C),
+        ];
+        let mut imports = vec![
+            new_import(0, "stdio.h", "include_system"),
+            new_import(0, "runtime.h", "include"),
+            new_import(0, "missing.h", "include"),
+        ];
+
+        resolve_imports(&files, &mut imports);
+
+        assert_eq!(imports[0].resolution, ImportResolution::System);
+        assert_eq!(imports[1].resolved_file, Some(1));
+        assert_eq!(imports[1].resolution, ImportResolution::Local);
+        assert_eq!(imports[2].resolution, ImportResolution::Unresolved);
+    }
+
+    #[test]
+    fn extracts_rust_mod_declarations() {
+        let imports = extract_imports(0, Language::Rust, "mod scanner;\nuse crate::facts;\n");
+
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].target, "scanner");
+        assert_eq!(imports[0].kind, "mod");
     }
 
     #[test]

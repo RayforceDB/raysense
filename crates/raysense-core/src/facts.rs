@@ -65,7 +65,16 @@ pub struct ImportFact {
     pub from_file: usize,
     pub target: String,
     pub kind: String,
+    pub resolution: ImportResolution,
     pub resolved_file: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportResolution {
+    External,
+    Local,
+    System,
+    Unresolved,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
