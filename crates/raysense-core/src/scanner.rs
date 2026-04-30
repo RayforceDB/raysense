@@ -111,7 +111,7 @@ pub fn scan_path(root: impl AsRef<Path>) -> Result<ScanReport, ScanError> {
     }
 
     resolve_imports(&files, &mut imports);
-    let call_edges = resolve_call_edges(&functions, &calls);
+    let call_edges = resolve_call_edges(&files, &functions, &calls);
 
     let snapshot_id = snapshot_id(&files);
     let graph = compute_graph_metrics(&files, &imports);
@@ -797,7 +797,11 @@ fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
     }
 }
 
-fn resolve_call_edges(functions: &[FunctionFact], calls: &[CallFact]) -> Vec<CallEdgeFact> {
+fn resolve_call_edges(
+    files: &[FileFact],
+    functions: &[FunctionFact],
+    calls: &[CallFact],
+) -> Vec<CallEdgeFact> {
     let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
     for function in functions {
         by_name
@@ -814,17 +818,64 @@ fn resolve_call_edges(functions: &[FunctionFact], calls: &[CallFact]) -> Vec<Cal
         let Some(callees) = by_name.get(call.target.as_str()) else {
             continue;
         };
-        let [callee_function] = callees.as_slice() else {
+        let Some(callee_function) = resolve_call_target(files, functions, caller_function, callees)
+        else {
             continue;
         };
         edges.push(CallEdgeFact {
             edge_id: edges.len(),
             call_id: call.call_id,
             caller_function,
-            callee_function: *callee_function,
+            callee_function,
         });
     }
     edges
+}
+
+fn resolve_call_target(
+    files: &[FileFact],
+    functions: &[FunctionFact],
+    caller_function: usize,
+    candidates: &[usize],
+) -> Option<usize> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let caller = functions.get(caller_function)?;
+    unique_candidate(candidates.iter().copied().filter(|candidate| {
+        functions
+            .get(*candidate)
+            .is_some_and(|function| function.file_id == caller.file_id)
+    }))
+    .or_else(|| {
+        let caller_file = files.get(caller.file_id)?;
+        unique_candidate(candidates.iter().copied().filter(|candidate| {
+            let Some(function) = functions.get(*candidate) else {
+                return false;
+            };
+            let Some(file) = files.get(function.file_id) else {
+                return false;
+            };
+            top_path_component(&file.path) == top_path_component(&caller_file.path)
+        }))
+    })
+    .or_else(|| unique_candidate(candidates.iter().copied()))
+}
+
+fn unique_candidate(candidates: impl IntoIterator<Item = usize>) -> Option<usize> {
+    let mut iter = candidates.into_iter();
+    let first = iter.next()?;
+    if iter.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
+fn top_path_component(path: &Path) -> String {
+    path.components()
+        .find_map(component_to_string)
+        .unwrap_or_default()
 }
 
 fn classify_import(from_file: &FileFact, import: &ImportFact) -> ImportResolution {
@@ -1232,6 +1283,7 @@ int run(void) {
 
     #[test]
     fn resolves_unambiguous_call_edges() {
+        let files = vec![file(0, "src/a.rs", Language::Rust)];
         let functions = vec![function(0, 0, "run", 1, 3), function(1, 0, "load", 5, 7)];
         let calls = vec![CallFact {
             call_id: 9,
@@ -1241,7 +1293,7 @@ int run(void) {
             line: 2,
         }];
 
-        let edges = resolve_call_edges(&functions, &calls);
+        let edges = resolve_call_edges(&files, &functions, &calls);
 
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].call_id, 9);
@@ -1251,6 +1303,34 @@ int run(void) {
 
     #[test]
     fn skips_ambiguous_call_edges() {
+        let files = vec![
+            file(0, "src/a.rs", Language::Rust),
+            file(1, "src/b.rs", Language::Rust),
+        ];
+        let functions = vec![
+            function(0, 0, "run", 1, 3),
+            function(1, 1, "load", 5, 7),
+            function(2, 1, "load", 5, 7),
+        ];
+        let calls = vec![CallFact {
+            call_id: 9,
+            file_id: 0,
+            caller_function: Some(0),
+            target: "load".to_string(),
+            line: 2,
+        }];
+
+        let edges = resolve_call_edges(&files, &functions, &calls);
+
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn prefers_same_file_call_edges() {
+        let files = vec![
+            file(0, "src/a.rs", Language::Rust),
+            file(1, "lib/b.rs", Language::Rust),
+        ];
         let functions = vec![
             function(0, 0, "run", 1, 3),
             function(1, 0, "load", 5, 7),
@@ -1264,9 +1344,36 @@ int run(void) {
             line: 2,
         }];
 
-        let edges = resolve_call_edges(&functions, &calls);
+        let edges = resolve_call_edges(&files, &functions, &calls);
 
-        assert!(edges.is_empty());
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].callee_function, 1);
+    }
+
+    #[test]
+    fn prefers_same_top_module_call_edges() {
+        let files = vec![
+            file(0, "src/a.rs", Language::Rust),
+            file(1, "src/b.rs", Language::Rust),
+            file(2, "test/b.rs", Language::Rust),
+        ];
+        let functions = vec![
+            function(0, 0, "run", 1, 3),
+            function(1, 1, "load", 5, 7),
+            function(2, 2, "load", 5, 7),
+        ];
+        let calls = vec![CallFact {
+            call_id: 9,
+            file_id: 0,
+            caller_function: Some(0),
+            target: "load".to_string(),
+            line: 2,
+        }];
+
+        let edges = resolve_call_edges(&files, &functions, &calls);
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].callee_function, 1);
     }
 
     #[test]

@@ -28,12 +28,12 @@ Current Rayforce baseline:
 score 96
 coverage_score 100
 structural_score 92
-facts files=186 functions=5044 calls=25067 call_edges=8191 imports=1015
+facts files=186 functions=5044 calls=25067 call_edges=8624 imports=1015
 entry_points total=50 binaries=6 examples=4 tests=40
 imports local=639 external=0 system=376 unresolved=0
 graph resolved_edges=639 cycles=0
 coupling local_edges=639 cross_module_edges=238 cross_module_ratio=0.372
-calls total=25067 resolved_edges=8191 resolution_ratio=0.327 max_function_fan_in=607 max_function_fan_out=170
+calls total=25067 resolved_edges=8624 resolution_ratio=0.344 max_function_fan_in=607 max_function_fan_out=190
 size max_file_lines=6329 max_function_lines=2334 large_files=62 long_functions=423
 test_gap production_files=146 test_files=40 files_without_nearby_tests=146
 dsm modules=5 module_edges=238
