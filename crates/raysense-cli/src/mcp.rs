@@ -1643,6 +1643,7 @@ fn config_schema() -> Value {
                                 "ignored_paths": {"type": "array", "items": {"type": "string"}},
                                 "local_import_prefixes": {"type": "array", "items": {"type": "string"}},
                                 "max_function_complexity": {"type": ["integer", "null"], "minimum": 0},
+                                "max_cognitive_complexity": {"type": ["integer", "null"], "minimum": 0},
                                 "max_file_lines": {"type": ["integer", "null"], "minimum": 0},
                                 "max_function_lines": {"type": ["integer", "null"], "minimum": 0}
                             },
@@ -1663,6 +1664,7 @@ fn config_schema() -> Value {
                     "max_cycles": {"type": "integer", "minimum": 0},
                     "max_coupling_ratio": {"type": "number", "minimum": 0, "maximum": 1},
                     "max_function_complexity": {"type": "integer", "minimum": 0},
+                    "max_cognitive_complexity": {"type": "integer", "minimum": 0},
                     "max_file_lines": {"type": "integer", "minimum": 0},
                     "max_function_lines": {"type": "integer", "minimum": 0},
                     "no_god_files": {"type": "boolean"},

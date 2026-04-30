@@ -1264,6 +1264,7 @@ call_suffixes = ["("]
 test_path_patterns = ["tests/*", "test/*"]
 local_import_prefixes = ["."]
 max_function_complexity = 15
+max_cognitive_complexity = 20
 "#
     );
     fs::write(plugin_dir.join("plugin.toml"), manifest).with_context(|| {
@@ -1886,9 +1887,11 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.metrics.architecture.max_blast_radius_file
     );
     println!(
-        "complexity max={} avg={:.3} gini={:.3} dead_functions={} duplicate_groups={} redundancy_ratio={:.3}",
+        "complexity max={} avg={:.3} cognitive_max={} cognitive_avg={:.3} gini={:.3} dead_functions={} duplicate_groups={} redundancy_ratio={:.3}",
         health.metrics.complexity.max_function_complexity,
         health.metrics.complexity.average_function_complexity,
+        health.metrics.complexity.max_cognitive_complexity,
+        health.metrics.complexity.average_cognitive_complexity,
         health.metrics.complexity.complexity_gini,
         health.metrics.complexity.dead_functions.len(),
         health.metrics.complexity.duplicate_groups.len(),

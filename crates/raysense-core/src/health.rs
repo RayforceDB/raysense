@@ -106,6 +106,7 @@ pub struct LanguagePluginConfig {
     pub ignored_paths: Vec<String>,
     pub local_import_prefixes: Vec<String>,
     pub max_function_complexity: Option<usize>,
+    pub max_cognitive_complexity: Option<usize>,
     pub max_file_lines: Option<usize>,
     pub max_function_lines: Option<usize>,
 }
@@ -137,6 +138,7 @@ impl Default for LanguagePluginConfig {
             ignored_paths: Vec::new(),
             local_import_prefixes: vec![".".to_string()],
             max_function_complexity: None,
+            max_cognitive_complexity: None,
             max_file_lines: None,
             max_function_lines: None,
         }
@@ -155,6 +157,7 @@ pub struct RuleConfig {
     pub max_cycles: usize,
     pub max_coupling_ratio: f64,
     pub max_function_complexity: usize,
+    pub max_cognitive_complexity: usize,
     pub max_file_lines: usize,
     pub max_function_lines: usize,
     pub no_god_files: bool,
@@ -183,6 +186,7 @@ impl Default for RuleConfig {
             max_cycles: 0,
             max_coupling_ratio: 1.0,
             max_function_complexity: 15,
+            max_cognitive_complexity: 0,
             max_file_lines: 0,
             max_function_lines: 0,
             no_god_files: true,
@@ -295,7 +299,9 @@ pub struct ModuleStabilityMetric {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComplexityMetrics {
     pub max_function_complexity: usize,
+    pub max_cognitive_complexity: usize,
     pub average_function_complexity: f64,
+    pub average_cognitive_complexity: f64,
     pub complexity_gini: f64,
     pub all_functions: Vec<FunctionComplexityMetric>,
     pub complex_functions: Vec<FunctionComplexityMetric>,
@@ -313,6 +319,7 @@ pub struct FunctionComplexityMetric {
     pub path: String,
     pub name: String,
     pub value: usize,
+    pub cognitive_value: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -723,6 +730,7 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
     }
 
     let mut values = Vec::new();
+    let mut cognitive_values = Vec::new();
     let mut all_functions = Vec::new();
     let mut complex_functions = Vec::new();
     let mut dead_functions = Vec::new();
@@ -742,13 +750,16 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
             .unwrap_or("");
         let body = function_body(source, function);
         let value = lexical_complexity(&body, &file.language_name);
+        let cognitive_value = cognitive_complexity(&body, &file.language_name);
         values.push(value as f64);
+        cognitive_values.push(cognitive_value as f64);
         let metric = FunctionComplexityMetric {
             function_id: function.function_id,
             file_id: function.file_id,
             path,
             name: function.name.clone(),
             value,
+            cognitive_value,
         };
         all_functions.push(metric.clone());
         by_name
@@ -835,10 +846,16 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
     semantic_duplicate_groups.truncate(20);
 
     let max_function_complexity = values.iter().copied().fold(0.0, f64::max) as usize;
+    let max_cognitive_complexity = cognitive_values.iter().copied().fold(0.0, f64::max) as usize;
     let average_function_complexity = if values.is_empty() {
         0.0
     } else {
         round3(values.iter().sum::<f64>() / values.len() as f64)
+    };
+    let average_cognitive_complexity = if cognitive_values.is_empty() {
+        0.0
+    } else {
+        round3(cognitive_values.iter().sum::<f64>() / cognitive_values.len() as f64)
     };
     let duplicate_count = duplicate_groups
         .iter()
@@ -851,7 +868,9 @@ fn complexity_metrics(report: &ScanReport, config: &RaysenseConfig) -> Complexit
 
     ComplexityMetrics {
         max_function_complexity,
+        max_cognitive_complexity,
         average_function_complexity,
+        average_cognitive_complexity,
         complexity_gini: gini(&values),
         all_functions,
         complex_functions,
@@ -1134,6 +1153,50 @@ fn lexical_complexity(body: &str, language: &str) -> usize {
         value += body.matches(" or ").count();
     }
     value
+}
+
+fn cognitive_complexity(body: &str, language: &str) -> usize {
+    let mut score = 0usize;
+    let mut nesting = 0usize;
+    for line in strip_strings_and_comments(body).lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('}') {
+            nesting = nesting.saturating_sub(1);
+        }
+        let tokens = normalized_tokens(trimmed);
+        if tokens.iter().any(|token| is_branch_token(token)) {
+            score += 1 + nesting;
+        }
+        score += trimmed.matches("&&").count();
+        score += trimmed.matches("||").count();
+        if matches!(language, "python" | "ruby" | "swift") {
+            score += trimmed.matches(" and ").count();
+            score += trimmed.matches(" or ").count();
+        }
+        if trimmed.ends_with('{') || trimmed.ends_with(':') {
+            nesting += 1;
+        }
+        nesting = nesting.saturating_sub(trimmed.matches('}').count());
+    }
+    score
+}
+
+fn is_branch_token(token: &str) -> bool {
+    matches!(
+        token,
+        "if" | "elif"
+            | "else"
+            | "for"
+            | "while"
+            | "loop"
+            | "match"
+            | "case"
+            | "catch"
+            | "except"
+            | "switch"
+            | "guard"
+            | "when"
+    )
 }
 
 fn normalized_body_fingerprint(body: &str) -> Option<String> {
@@ -1804,6 +1867,36 @@ fn rules(
         });
     }
 
+    for function in metrics
+        .complexity
+        .all_functions
+        .iter()
+        .filter(|function| {
+            let threshold = report
+                .files
+                .get(function.file_id)
+                .map(|file| cognitive_complexity_limit(file, config))
+                .unwrap_or(rules.max_cognitive_complexity);
+            threshold > 0 && function.cognitive_value > threshold
+        })
+        .take(rules.max_call_hotspot_findings.max(1))
+    {
+        let threshold = report
+            .files
+            .get(function.file_id)
+            .map(|file| cognitive_complexity_limit(file, config))
+            .unwrap_or(rules.max_cognitive_complexity);
+        findings.push(RuleFinding {
+            severity: RuleSeverity::Warning,
+            code: "max_cognitive_complexity".to_string(),
+            path: function.path.clone(),
+            message: format!(
+                "{} cognitive complexity {} exceeds max {}",
+                function.name, function.cognitive_value, threshold
+            ),
+        });
+    }
+
     for (file, limit) in report
         .files
         .iter()
@@ -2011,6 +2104,12 @@ fn function_complexity_limit(file: &FileFact, config: &RaysenseConfig) -> usize 
         .unwrap_or(config.rules.max_function_complexity)
 }
 
+fn cognitive_complexity_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
+    plugin_for_file(file, config)
+        .and_then(|plugin| plugin.max_cognitive_complexity)
+        .unwrap_or(config.rules.max_cognitive_complexity)
+}
+
 fn file_line_limit(file: &FileFact, config: &RaysenseConfig) -> Option<usize> {
     plugin_for_file(file, config)
         .and_then(|plugin| plugin.max_file_lines)
@@ -2072,6 +2171,9 @@ fn remediations(rules: &[RuleFinding], metrics: &MetricsSummary) -> Vec<Remediat
             "max_function_lines" => "extract helpers or split the function into smaller steps",
             "max_function_complexity" => {
                 "split the function, extract decision branches, or add a local policy override"
+            }
+            "max_cognitive_complexity" => {
+                "flatten nesting, return early, or extract nested decision branches"
             }
             "high_fan_in" => "introduce a facade boundary or split shared responsibilities",
             "production_depends_on_test" => {

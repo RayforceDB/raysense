@@ -233,6 +233,7 @@ source_roots = ["src"]
 ignored_paths = ["build/*"]
 local_import_prefixes = ["."]
 max_function_complexity = 15
+max_cognitive_complexity = 20
 max_file_lines = 500
 max_function_lines = 80
 
@@ -246,6 +247,7 @@ min_redundancy = 0.0
 max_cycles = 0
 max_coupling_ratio = 1.0
 max_function_complexity = 15
+max_cognitive_complexity = 0
 max_file_lines = 0
 max_function_lines = 0
 no_god_files = true
