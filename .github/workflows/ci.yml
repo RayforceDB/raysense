@@ -38,10 +38,10 @@ jobs:
 
     steps:
       - name: Checkout raysense
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout rayforce
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: RayforceDB/rayforce
           path: deps/rayforce
