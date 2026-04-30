@@ -1119,7 +1119,7 @@ fn build_health_table(
     health: &HealthSummary,
 ) -> Result<RayObject, MemoryError> {
     table(
-        41,
+        48,
         [
             ("score", i64_vec(1, [health.score as i64])?),
             (
@@ -1311,6 +1311,31 @@ fn build_health_table(
                     1,
                     [(health.root_causes.structural_uniformity * 1000.0).round() as i64],
                 )?,
+            ),
+            (
+                "grade_overall",
+                str_vec(1, [health.grades.overall.clone()])?,
+            ),
+            (
+                "grade_modularity",
+                str_vec(1, [health.grades.modularity.clone()])?,
+            ),
+            (
+                "grade_acyclicity",
+                str_vec(1, [health.grades.acyclicity.clone()])?,
+            ),
+            ("grade_depth", str_vec(1, [health.grades.depth.clone()])?),
+            (
+                "grade_equality",
+                str_vec(1, [health.grades.equality.clone()])?,
+            ),
+            (
+                "grade_redundancy",
+                str_vec(1, [health.grades.redundancy.clone()])?,
+            ),
+            (
+                "grade_structural_uniformity",
+                str_vec(1, [health.grades.structural_uniformity.clone()])?,
             ),
         ],
     )
@@ -1566,7 +1591,7 @@ mod tests {
         assert_eq!(summary.types.rows as usize, report.types.len());
         assert_eq!(summary.types.columns, 5);
         assert_eq!(summary.health.rows, 1);
-        assert_eq!(summary.health.columns, 41);
+        assert_eq!(summary.health.columns, 48);
         assert_eq!(summary.hotspots.columns, 5);
         assert_eq!(summary.rules.columns, 4);
         assert_eq!(summary.module_edges.columns, 3);

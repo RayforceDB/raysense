@@ -1900,6 +1900,16 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.root_causes.structural_uniformity
     );
     println!(
+        "grades overall={} modularity={} acyclicity={} depth={} equality={} redundancy={} structural_uniformity={}",
+        health.grades.overall,
+        health.grades.modularity,
+        health.grades.acyclicity,
+        health.grades.depth,
+        health.grades.equality,
+        health.grades.redundancy,
+        health.grades.structural_uniformity
+    );
+    println!(
         "architecture depth={} max_blast_radius={} max_blast_radius_file={} max_non_foundation_blast_radius={} max_non_foundation_blast_radius_file={} attack_surface_files={} attack_surface_ratio={:.3} upward_violations={} upward_violation_ratio={:.3} average_distance_from_main_sequence={:.3}",
         health.metrics.architecture.module_depth,
         health.metrics.architecture.max_blast_radius,

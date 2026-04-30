@@ -36,6 +36,7 @@ pub struct RaysenseConfig {
     pub rules: RuleConfig,
     pub boundaries: BoundaryConfig,
     pub score: ScoreConfig,
+    pub grades: GradeThresholds,
 }
 
 impl RaysenseConfig {
@@ -63,6 +64,26 @@ pub struct ScanConfig {
     pub test_roots: Vec<String>,
     pub public_api_paths: Vec<String>,
     pub plugins: Vec<LanguagePluginConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GradeThresholds {
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+    pub d: f64,
+}
+
+impl Default for GradeThresholds {
+    fn default() -> Self {
+        Self {
+            a: 0.9,
+            b: 0.8,
+            c: 0.7,
+            d: 0.5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,11 +320,24 @@ pub struct HealthSummary {
     pub coverage_score: u8,
     pub structural_score: u8,
     pub root_causes: RootCauseScores,
+    #[serde(default)]
+    pub grades: GradeSummary,
     pub metrics: MetricsSummary,
     pub resolution: ResolutionBreakdown,
     pub hotspots: Vec<FileHotspot>,
     pub rules: Vec<RuleFinding>,
     pub remediations: Vec<Remediation>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GradeSummary {
+    pub overall: String,
+    pub modularity: String,
+    pub acyclicity: String,
+    pub depth: String,
+    pub equality: String,
+    pub redundancy: String,
+    pub structural_uniformity: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -621,18 +655,52 @@ pub fn compute_health_with_config(report: &ScanReport, config: &RaysenseConfig) 
     let remediations = remediations(&rules, &metrics);
     let root_causes = root_causes(report, &metrics);
     let quality_signal = quality_signal(&root_causes, &config.score);
+    let score = ((quality_signal as f64 / 10000.0) * 100.0).round() as u8;
+    let grades = compute_grades(score, &root_causes, &config.grades);
 
     HealthSummary {
-        score: ((quality_signal as f64 / 10000.0) * 100.0).round() as u8,
+        score,
         quality_signal,
         coverage_score: coverage_score(report, &resolution),
         structural_score: structural_score(report, &rules),
         root_causes,
+        grades,
         metrics,
         resolution,
         hotspots,
         rules,
         remediations,
+    }
+}
+
+fn compute_grades(
+    score: u8,
+    root_causes: &RootCauseScores,
+    thresholds: &GradeThresholds,
+) -> GradeSummary {
+    let overall = grade_for(score as f64 / 100.0, thresholds).to_string();
+    GradeSummary {
+        overall,
+        modularity: grade_for(root_causes.modularity, thresholds).to_string(),
+        acyclicity: grade_for(root_causes.acyclicity, thresholds).to_string(),
+        depth: grade_for(root_causes.depth, thresholds).to_string(),
+        equality: grade_for(root_causes.equality, thresholds).to_string(),
+        redundancy: grade_for(root_causes.redundancy, thresholds).to_string(),
+        structural_uniformity: grade_for(root_causes.structural_uniformity, thresholds).to_string(),
+    }
+}
+
+fn grade_for(value: f64, thresholds: &GradeThresholds) -> &'static str {
+    if value >= thresholds.a {
+        "A"
+    } else if value >= thresholds.b {
+        "B"
+    } else if value >= thresholds.c {
+        "C"
+    } else if value >= thresholds.d {
+        "D"
+    } else {
+        "F"
     }
 }
 
@@ -3859,6 +3927,34 @@ mod tests {
             h_uniform.root_causes.redundancy,
             h_spread.root_causes.redundancy
         );
+    }
+
+    #[test]
+    fn grade_thresholds_map_scores_to_letter_grades() {
+        let thresholds = GradeThresholds::default();
+        assert_eq!(grade_for(0.95, &thresholds), "A");
+        assert_eq!(grade_for(0.9, &thresholds), "A");
+        assert_eq!(grade_for(0.85, &thresholds), "B");
+        assert_eq!(grade_for(0.8, &thresholds), "B");
+        assert_eq!(grade_for(0.75, &thresholds), "C");
+        assert_eq!(grade_for(0.7, &thresholds), "C");
+        assert_eq!(grade_for(0.6, &thresholds), "D");
+        assert_eq!(grade_for(0.5, &thresholds), "D");
+        assert_eq!(grade_for(0.4, &thresholds), "F");
+    }
+
+    #[test]
+    fn custom_grade_thresholds_are_respected() {
+        let thresholds = GradeThresholds {
+            a: 0.95,
+            b: 0.9,
+            c: 0.85,
+            d: 0.7,
+        };
+        // Score 0.92 would be A by default, but B under stricter thresholds.
+        assert_eq!(grade_for(0.92, &thresholds), "B");
+        // Score 0.74 would be C by default, but D under stricter thresholds.
+        assert_eq!(grade_for(0.74, &thresholds), "D");
     }
 
     #[test]
