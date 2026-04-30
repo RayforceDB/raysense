@@ -21,6 +21,8 @@
  *   SOFTWARE.
  */
 
+#![recursion_limit = "256"]
+
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use raysense_core::{
@@ -192,6 +194,11 @@ enum PluginCommand {
         path: PathBuf,
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+    Validate {
+        dir: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
     Init {
         name: String,
@@ -370,6 +377,17 @@ pub fn run() -> Result<()> {
             }
             PluginCommand::Remove { name, path, config } => {
                 remove_plugin(&path, config.as_deref(), &name)?
+            }
+            PluginCommand::Validate { dir, json } => {
+                let validation = validate_plugin_dir(&dir)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&validation)?);
+                } else {
+                    print_plugin_validation(&validation);
+                }
+                if !validation["valid"].as_bool().unwrap_or(false) {
+                    return Err(anyhow!("plugin validation failed"));
+                }
             }
             PluginCommand::Init {
                 name,
@@ -1085,6 +1103,124 @@ fn remove_plugin(root: &Path, config_path: Option<&Path>, name: &str) -> Result<
     fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
     println!("plugin_removed {} {} {}", name, removed, path.display());
     Ok(())
+}
+
+pub(crate) fn validate_plugin_dir(dir: &Path) -> Result<Value> {
+    let manifest_path = dir.join("plugin.toml");
+    let content = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let plugin: raysense_core::LanguagePluginConfig =
+        match toml::from_str(&content).context("failed to parse plugin manifest") {
+            Ok(plugin) => plugin,
+            Err(error) => {
+                return Ok(json!({
+                    "dir": dir,
+                    "valid": false,
+                    "errors": [error.to_string()],
+                    "warnings": warnings
+                }));
+            }
+        };
+
+    if plugin.name.trim().is_empty() {
+        errors.push("plugin name must not be empty".to_string());
+    }
+    if plugin.extensions.is_empty() && plugin.file_names.is_empty() {
+        errors.push("extensions or file_names must not be empty".to_string());
+    }
+    if plugin.function_prefixes.is_empty() && plugin.tags_query.is_none() {
+        warnings.push("no function_prefixes or inline tags_query configured".to_string());
+    }
+
+    let query_path = dir.join("queries/tags.scm");
+    let query = if let Some(query) = plugin.tags_query.as_ref() {
+        Some(query.clone())
+    } else if query_path.exists() {
+        Some(
+            fs::read_to_string(&query_path)
+                .with_context(|| format!("failed to read {}", query_path.display()))?,
+        )
+    } else {
+        None
+    };
+    if let Some(query) = query.as_ref() {
+        if !has_supported_query_capture(query) {
+            warnings.push(
+                "tags query has no recognized function, name, or import captures".to_string(),
+            );
+        }
+        if !plugin_has_query_language(&plugin) {
+            warnings
+                .push("tags query requires a supported grammar or grammar_path to run".to_string());
+        }
+    }
+
+    let grammar_path = plugin.grammar_path.as_ref().map(|path| {
+        let path = PathBuf::from(path);
+        if path.is_relative() {
+            dir.join(path)
+        } else {
+            path
+        }
+    });
+    if let Some(path) = grammar_path.as_ref() {
+        if !path.exists() {
+            errors.push(format!("grammar_path does not exist: {}", path.display()));
+        }
+    }
+
+    Ok(json!({
+        "dir": dir,
+        "valid": errors.is_empty(),
+        "plugin": plugin,
+        "has_query_file": query_path.exists(),
+        "has_query": query.is_some(),
+        "grammar_path": grammar_path,
+        "errors": errors,
+        "warnings": warnings
+    }))
+}
+
+fn has_supported_query_capture(query: &str) -> bool {
+    [
+        "@definition.function",
+        "@definition.method",
+        "@function",
+        "@method",
+        "@name",
+        "@import",
+        "@reference.import",
+        "@module",
+        "@source",
+    ]
+    .iter()
+    .any(|capture| query.contains(capture))
+}
+
+fn plugin_has_query_language(plugin: &raysense_core::LanguagePluginConfig) -> bool {
+    plugin.grammar_path.is_some()
+        || matches!(
+            plugin.grammar.as_deref().unwrap_or(plugin.name.as_str()),
+            "c" | "cpp" | "c++" | "python" | "rust" | "typescript" | "javascript" | "tsx" | "jsx"
+        )
+}
+
+fn print_plugin_validation(validation: &Value) {
+    println!("valid {}", validation["valid"].as_bool().unwrap_or(false));
+    if let Some(plugin) = validation["plugin"].as_object() {
+        println!(
+            "name {}",
+            plugin.get("name").and_then(Value::as_str).unwrap_or("")
+        );
+    }
+    for error in validation["errors"].as_array().into_iter().flatten() {
+        println!("error {}", error.as_str().unwrap_or(""));
+    }
+    for warning in validation["warnings"].as_array().into_iter().flatten() {
+        println!("warning {}", warning.as_str().unwrap_or(""));
+    }
 }
 
 fn list_policies() {
