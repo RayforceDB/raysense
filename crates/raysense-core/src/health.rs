@@ -95,6 +95,11 @@ pub struct LanguagePluginConfig {
     pub function_prefixes: Vec<String>,
     pub import_prefixes: Vec<String>,
     pub call_suffixes: Vec<String>,
+    pub package_index_files: Vec<String>,
+    pub test_path_patterns: Vec<String>,
+    pub source_roots: Vec<String>,
+    pub ignored_paths: Vec<String>,
+    pub local_import_prefixes: Vec<String>,
 }
 
 impl Default for LanguagePluginConfig {
@@ -113,6 +118,11 @@ impl Default for LanguagePluginConfig {
                 "require ".to_string(),
             ],
             call_suffixes: vec!["(".to_string()],
+            package_index_files: Vec::new(),
+            test_path_patterns: Vec::new(),
+            source_roots: Vec::new(),
+            ignored_paths: Vec::new(),
+            local_import_prefixes: vec![".".to_string()],
         }
     }
 }

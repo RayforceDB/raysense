@@ -1293,7 +1293,12 @@ fn config_schema() -> Value {
                                 "extensions": {"type": "array", "items": {"type": "string"}},
                                 "function_prefixes": {"type": "array", "items": {"type": "string"}},
                                 "import_prefixes": {"type": "array", "items": {"type": "string"}},
-                                "call_suffixes": {"type": "array", "items": {"type": "string"}}
+                                "call_suffixes": {"type": "array", "items": {"type": "string"}},
+                                "package_index_files": {"type": "array", "items": {"type": "string"}},
+                                "test_path_patterns": {"type": "array", "items": {"type": "string"}},
+                                "source_roots": {"type": "array", "items": {"type": "string"}},
+                                "ignored_paths": {"type": "array", "items": {"type": "string"}},
+                                "local_import_prefixes": {"type": "array", "items": {"type": "string"}}
                             },
                             "required": ["name", "extensions"]
                         }

@@ -199,6 +199,11 @@ extensions = ["foo"]
 function_prefixes = ["function "]
 import_prefixes = ["load "]
 call_suffixes = ["("]
+package_index_files = ["index.foo"]
+test_path_patterns = ["tests/*", "*_test.foo"]
+source_roots = ["src"]
+ignored_paths = ["build/*"]
+local_import_prefixes = ["."]
 
 [rules]
 max_cycles = 0

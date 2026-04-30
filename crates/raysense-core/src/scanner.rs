@@ -100,6 +100,12 @@ pub fn scan_path_with_config(
 
         let language = Language::from_path(path);
         let plugin = matching_plugin(&relative_path, config);
+        if plugin
+            .as_ref()
+            .is_some_and(|plugin| is_ignored_path(&relative_path, &plugin.ignored_paths))
+        {
+            continue;
+        }
         if !language.is_supported() && plugin.is_none() {
             continue;
         }
@@ -119,7 +125,7 @@ pub fn scan_path_with_config(
         let file_id = files.len();
         let file_fact = FileFact {
             file_id,
-            module: module_name(&relative_path, language),
+            module: module_name(&relative_path, language, plugin.as_ref()),
             path: relative_path.clone(),
             language,
             language_name: language_label,
@@ -138,8 +144,13 @@ pub fn scan_path_with_config(
             functions.push(function.clone());
         }
 
-        let mut file_entry_points =
-            extract_entry_points(file_id, language, &relative_path, &file_functions);
+        let mut file_entry_points = extract_entry_points(
+            file_id,
+            language,
+            &relative_path,
+            &file_functions,
+            plugin.as_ref(),
+        );
         for entry_point in &mut file_entry_points {
             entry_point.entry_id = entry_points.len();
             entry_points.push(entry_point.clone());
@@ -168,7 +179,7 @@ pub fn scan_path_with_config(
         files.push(file_fact);
     }
 
-    resolve_imports(&files, &mut imports);
+    resolve_imports(&files, &mut imports, config);
     let call_edges = resolve_call_edges(&files, &functions, &calls);
 
     let snapshot_id = snapshot_id(&files);
@@ -286,6 +297,20 @@ fn matching_plugin(path: &Path, config: &RaysenseConfig) -> Option<LanguagePlugi
         .or_else(|| builtin_language_plugin(ext))
 }
 
+fn plugin_by_language_name(name: &str, config: &RaysenseConfig) -> Option<LanguagePluginConfig> {
+    config
+        .scan
+        .plugins
+        .iter()
+        .find(|plugin| plugin.name.eq_ignore_ascii_case(name))
+        .cloned()
+        .or_else(|| {
+            builtin_language_catalog()
+                .into_iter()
+                .find(|plugin| plugin.name.eq_ignore_ascii_case(name))
+        })
+}
+
 fn plugin_matches_extension(plugin: &LanguagePluginConfig, ext: &str) -> bool {
     !plugin.name.trim().is_empty()
         && plugin
@@ -295,6 +320,15 @@ fn plugin_matches_extension(plugin: &LanguagePluginConfig, ext: &str) -> bool {
 }
 
 fn builtin_language_plugin(ext: &str) -> Option<LanguagePluginConfig> {
+    builtin_language_catalog().into_iter().find(|plugin| {
+        plugin
+            .extensions
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(ext))
+    })
+}
+
+fn builtin_language_catalog() -> Vec<LanguagePluginConfig> {
     let catalog = [
         ("go", &["go"][..], &["func "][..], &["import "][..]),
         (
@@ -451,13 +485,8 @@ fn builtin_language_plugin(ext: &str) -> Option<LanguagePluginConfig> {
     ];
     catalog
         .iter()
-        .find(|(_, extensions, _, _)| {
-            extensions
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(ext))
-        })
-        .map(
-            |(name, extensions, function_prefixes, import_prefixes)| LanguagePluginConfig {
+        .map(|(name, extensions, function_prefixes, import_prefixes)| {
+            let mut plugin = LanguagePluginConfig {
                 name: (*name).to_string(),
                 extensions: extensions.iter().map(|item| (*item).to_string()).collect(),
                 function_prefixes: function_prefixes
@@ -469,8 +498,70 @@ fn builtin_language_plugin(ext: &str) -> Option<LanguagePluginConfig> {
                     .map(|item| (*item).to_string())
                     .collect(),
                 call_suffixes: vec!["(".to_string()],
-            },
-        )
+                ..LanguagePluginConfig::default()
+            };
+            apply_builtin_profile_defaults(&mut plugin);
+            plugin
+        })
+        .collect()
+}
+
+fn apply_builtin_profile_defaults(plugin: &mut LanguagePluginConfig) {
+    plugin.package_index_files = match plugin.name.as_str() {
+        "python" => vec!["__init__.py".to_string()],
+        "typescript" | "javascript" | "vue" | "svelte" => {
+            vec![
+                "index.ts".to_string(),
+                "index.tsx".to_string(),
+                "index.js".to_string(),
+            ]
+        }
+        "rust" => vec!["mod.rs".to_string()],
+        _ => Vec::new(),
+    };
+    plugin.test_path_patterns = match plugin.name.as_str() {
+        "rust" => vec![
+            "tests/*".to_string(),
+            "*_test.rs".to_string(),
+            "*/tests.rs".to_string(),
+        ],
+        "python" => vec![
+            "tests/*".to_string(),
+            "test_*.py".to_string(),
+            "*_test.py".to_string(),
+        ],
+        "typescript" | "javascript" => {
+            vec![
+                "*.test.*".to_string(),
+                "*.spec.*".to_string(),
+                "tests/*".to_string(),
+            ]
+        }
+        _ => vec!["tests/*".to_string(), "test/*".to_string()],
+    };
+    plugin.source_roots = match plugin.name.as_str() {
+        "rust" | "typescript" | "javascript" | "python" => vec!["src".to_string()],
+        "java" | "kotlin" | "scala" => {
+            vec!["src/main/java".to_string(), "src/main/kotlin".to_string()]
+        }
+        "go" => vec!["cmd".to_string(), "pkg".to_string(), "internal".to_string()],
+        _ => Vec::new(),
+    };
+    plugin.ignored_paths = match plugin.name.as_str() {
+        "typescript" | "javascript" => vec!["node_modules/*".to_string(), "dist/*".to_string()],
+        "rust" => vec!["target/*".to_string()],
+        "python" => vec!["__pycache__/*".to_string(), ".venv/*".to_string()],
+        _ => Vec::new(),
+    };
+    plugin.local_import_prefixes = match plugin.name.as_str() {
+        "rust" => vec![
+            "crate::".to_string(),
+            "self::".to_string(),
+            "super::".to_string(),
+        ],
+        "typescript" | "javascript" | "python" => vec![".".to_string()],
+        _ => vec![".".to_string()],
+    };
 }
 
 fn language_name(language: Language) -> &'static str {
@@ -499,8 +590,23 @@ fn snapshot_id(files: &[FileFact]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn module_name(path: &Path, language: Language) -> String {
+fn module_name(path: &Path, language: Language, plugin: Option<&LanguagePluginConfig>) -> String {
     let mut components: Vec<String> = path.components().filter_map(component_to_string).collect();
+    if let Some(plugin) = plugin {
+        for root in &plugin.source_roots {
+            let root_parts: Vec<&str> = root.split('/').filter(|part| !part.is_empty()).collect();
+            if !root_parts.is_empty()
+                && components
+                    .iter()
+                    .map(String::as_str)
+                    .take(root_parts.len())
+                    .eq(root_parts.iter().copied())
+            {
+                components.drain(..root_parts.len());
+                break;
+            }
+        }
+    }
 
     if let Some(last) = components.last_mut() {
         if let Some(stem) = Path::new(last).file_stem().and_then(|stem| stem.to_str()) {
@@ -520,6 +626,19 @@ fn module_name(path: &Path, language: Language) -> String {
             components.pop();
         }
         _ => {}
+    }
+    if let Some(plugin) = plugin {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if plugin
+            .package_index_files
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(file_name))
+        {
+            components.pop();
+        }
     }
 
     components.join(".")
@@ -685,6 +804,7 @@ fn extract_entry_points(
     language: Language,
     path: &Path,
     functions: &[FunctionFact],
+    plugin: Option<&LanguagePluginConfig>,
 ) -> Vec<EntryPointFact> {
     let mut entries = Vec::new();
 
@@ -704,7 +824,7 @@ fn extract_entry_points(
             path_symbol(path),
         ));
     }
-    if is_test_path(&normalized) {
+    if is_test_path_profile(&normalized, plugin) {
         entries.push(new_entry(file_id, EntryPointKind::Test, path_symbol(path)));
     }
 
@@ -1434,7 +1554,7 @@ fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
     }
 }
 
-fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
+fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact], config: &RaysenseConfig) {
     let mut by_path = HashMap::new();
     let mut by_module = HashMap::new();
     let profile = ProjectProfile::infer(files);
@@ -1457,8 +1577,9 @@ fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact]) {
             &by_path,
             &by_module,
             &profile.include_roots,
+            config,
         );
-        import.resolution = classify_import(from_file, import);
+        import.resolution = classify_import(from_file, import, config);
     }
 }
 
@@ -1543,9 +1664,21 @@ fn top_path_component(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn classify_import(from_file: &FileFact, import: &ImportFact) -> ImportResolution {
+fn classify_import(
+    from_file: &FileFact,
+    import: &ImportFact,
+    config: &RaysenseConfig,
+) -> ImportResolution {
     if import.resolved_file.is_some() {
         return ImportResolution::Local;
+    }
+    if plugin_by_language_name(&from_file.language_name, config).is_some_and(|plugin| {
+        plugin
+            .local_import_prefixes
+            .iter()
+            .any(|prefix| !prefix.is_empty() && import.target.starts_with(prefix))
+    }) {
+        return ImportResolution::Unresolved;
     }
 
     match from_file.language {
@@ -1569,8 +1702,9 @@ fn resolve_import(
     by_path: &HashMap<String, usize>,
     by_module: &HashMap<String, usize>,
     include_roots: &[PathBuf],
+    config: &RaysenseConfig,
 ) -> Option<usize> {
-    let candidates = import_candidates(from_file, import, include_roots);
+    let candidates = import_candidates(from_file, import, include_roots, config);
     candidates
         .iter()
         .find_map(|candidate| by_path.get(candidate).copied())
@@ -1583,6 +1717,7 @@ fn import_candidates(
     from_file: &FileFact,
     import: &ImportFact,
     include_roots: &[PathBuf],
+    config: &RaysenseConfig,
 ) -> Vec<String> {
     match from_file.language {
         Language::Rust => rust_import_candidates(&from_file.path, &import.target),
@@ -1591,8 +1726,60 @@ fn import_candidates(
         Language::C | Language::Cpp => {
             c_import_candidates(&from_file.path, &import.target, include_roots)
         }
-        Language::Unknown => Vec::new(),
+        Language::Unknown => plugin_import_candidates(from_file, import, config),
     }
+}
+
+fn plugin_import_candidates(
+    from_file: &FileFact,
+    import: &ImportFact,
+    config: &RaysenseConfig,
+) -> Vec<String> {
+    let Some(plugin) = plugin_by_language_name(&from_file.language_name, config) else {
+        return Vec::new();
+    };
+    let target = import
+        .target
+        .trim()
+        .trim_matches(['"', '\'', ';'])
+        .replace('.', "/");
+    if target.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = Vec::new();
+    let base_paths = if import.target.starts_with('.') {
+        relative_base(&from_file.path, &import.target)
+            .map(|path| vec![normalize_path(path)])
+            .unwrap_or_default()
+    } else {
+        let mut paths = vec![target.clone()];
+        paths.extend(
+            plugin
+                .source_roots
+                .iter()
+                .map(|root| format!("{}/{}", root.trim_matches('/'), target)),
+        );
+        paths
+    };
+    for base in base_paths {
+        if has_known_extension_vec(&base, &plugin.extensions) {
+            candidates.push(base.clone());
+        } else {
+            candidates.extend(
+                plugin
+                    .extensions
+                    .iter()
+                    .map(|ext| format!("{base}.{}", ext.trim_start_matches('.'))),
+            );
+        }
+        candidates.extend(
+            plugin
+                .package_index_files
+                .iter()
+                .map(|index| format!("{base}/{index}")),
+        );
+    }
+    candidates
 }
 
 fn rust_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
@@ -1778,11 +1965,52 @@ fn has_known_extension(path: &str, extensions: &[&str]) -> bool {
         .is_some_and(|ext| extensions.contains(&ext))
 }
 
+fn has_known_extension_vec(path: &str, extensions: &[String]) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            extensions
+                .iter()
+                .any(|candidate| candidate.trim_start_matches('.').eq_ignore_ascii_case(ext))
+        })
+}
+
 fn component_to_string(component: Component<'_>) -> Option<String> {
     match component {
         Component::Normal(value) => value.to_str().map(ToOwned::to_owned),
         _ => None,
     }
+}
+
+fn is_test_path_profile(path: &str, plugin: Option<&LanguagePluginConfig>) -> bool {
+    is_test_path(path)
+        || plugin.is_some_and(|plugin| {
+            plugin
+                .test_path_patterns
+                .iter()
+                .any(|pattern| path_matches_pattern(path, pattern))
+        })
+}
+
+fn path_matches_pattern(path: &str, pattern: &str) -> bool {
+    let pattern = pattern.trim().trim_matches('/');
+    if pattern.is_empty() {
+        return false;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        return path == prefix || path.starts_with(&format!("{prefix}/"));
+    }
+    if pattern.starts_with('*') && pattern.ends_with('*') && pattern.len() > 2 {
+        return path.contains(pattern.trim_matches('*'));
+    }
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return path.ends_with(suffix) || path.contains(suffix);
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return path.starts_with(prefix) || path.contains(prefix);
+    }
+    path == pattern || path.ends_with(&format!("/{pattern}"))
 }
 
 fn is_test_path(path: &str) -> bool {
@@ -1975,6 +2203,56 @@ call_suffixes = ["("]
         assert_eq!(report.functions[0].name, "run");
         assert_eq!(report.imports[0].target, "core");
         assert_eq!(report.calls[0].target, "start");
+    }
+
+    #[test]
+    fn plugin_profiles_drive_module_tests_ignores_and_resolution() {
+        let root = temp_scan_root("plugin_profile");
+        fs::create_dir_all(root.join("lib/pkg")).unwrap();
+        fs::create_dir_all(root.join("spec")).unwrap();
+        fs::create_dir_all(root.join("build")).unwrap();
+        fs::write(root.join("lib/pkg/index.toy"), "import ../util\nfn run\n").unwrap();
+        fs::write(root.join("lib/util.toy"), "fn helper\n").unwrap();
+        fs::write(root.join("spec/pkg_test.toy"), "fn test_pkg\n").unwrap();
+        fs::write(root.join("build/generated.toy"), "fn generated\n").unwrap();
+
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[[scan.plugins]]
+name = "toy"
+extensions = ["toy"]
+function_prefixes = ["fn "]
+import_prefixes = ["import "]
+call_suffixes = ["("]
+package_index_files = ["index.toy"]
+test_path_patterns = ["spec/*"]
+source_roots = ["lib"]
+ignored_paths = ["build/*"]
+local_import_prefixes = ["."]
+"#,
+        )
+        .unwrap();
+        let report = scan_path_with_config(&root, &config).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(report.files.len(), 3);
+        assert!(report
+            .files
+            .iter()
+            .any(|file| file.path == PathBuf::from("spec/pkg_test.toy")));
+        assert!(!report
+            .files
+            .iter()
+            .any(|file| file.path == PathBuf::from("build/generated.toy")));
+        assert!(report
+            .files
+            .iter()
+            .any(|file| file.path == PathBuf::from("lib/pkg/index.toy") && file.module == "pkg"));
+        assert!(report
+            .entry_points
+            .iter()
+            .any(|entry| entry.kind == EntryPointKind::Test));
+        assert_eq!(report.imports[0].resolution, ImportResolution::Local);
     }
 
     #[test]
@@ -2267,7 +2545,7 @@ int run(void) {
         ];
         let mut imports = vec![new_import(0, "crate::graph", "use")];
 
-        resolve_imports(&files, &mut imports);
+        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
 
         assert_eq!(imports[0].resolved_file, Some(1));
         assert_eq!(imports[0].resolution, ImportResolution::Local);
@@ -2285,7 +2563,7 @@ int run(void) {
             new_import(0, "../widgets", "import"),
         ];
 
-        resolve_imports(&files, &mut imports);
+        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
 
         assert_eq!(imports[0].resolved_file, Some(1));
         assert_eq!(imports[1].resolved_file, Some(2));
@@ -2301,7 +2579,7 @@ int run(void) {
         ];
         let mut imports = vec![new_import(0, "crate::memory", "use")];
 
-        resolve_imports(&files, &mut imports);
+        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
 
         assert_eq!(imports[0].resolved_file, Some(1));
         assert_eq!(imports[0].resolution, ImportResolution::Local);
@@ -2312,7 +2590,7 @@ int run(void) {
         let files = vec![file(0, "src/main.rs", Language::Rust)];
         let mut imports = vec![new_import(0, "serde::Serialize", "use")];
 
-        resolve_imports(&files, &mut imports);
+        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
 
         assert_eq!(imports[0].resolved_file, None);
         assert_eq!(imports[0].resolution, ImportResolution::External);
@@ -2332,7 +2610,7 @@ int run(void) {
             new_import(0, "missing.h", "include"),
         ];
 
-        resolve_imports(&files, &mut imports);
+        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
 
         assert_eq!(imports[0].resolution, ImportResolution::System);
         assert_eq!(imports[1].resolved_file, Some(1));
@@ -2404,8 +2682,13 @@ int run(void) {
             end_line: 1,
         }];
 
-        let entries =
-            extract_entry_points(0, Language::Rust, Path::new("examples/demo.rs"), &functions);
+        let entries = extract_entry_points(
+            0,
+            Language::Rust,
+            Path::new("examples/demo.rs"),
+            &functions,
+            None,
+        );
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].kind, EntryPointKind::Binary);
@@ -2415,15 +2698,19 @@ int run(void) {
     #[test]
     fn derives_module_names() {
         assert_eq!(
-            module_name(Path::new("src/memory/mod.rs"), Language::Rust),
+            module_name(Path::new("src/memory/mod.rs"), Language::Rust, None),
             "src.memory"
         );
         assert_eq!(
-            module_name(Path::new("src/widgets/index.ts"), Language::TypeScript),
+            module_name(
+                Path::new("src/widgets/index.ts"),
+                Language::TypeScript,
+                None
+            ),
             "src.widgets"
         );
         assert_eq!(
-            module_name(Path::new("pkg/__init__.py"), Language::Python),
+            module_name(Path::new("pkg/__init__.py"), Language::Python, None),
             "pkg"
         );
     }
@@ -2434,7 +2721,7 @@ int run(void) {
             path: PathBuf::from(path),
             language,
             language_name: language_name(language).to_string(),
-            module: module_name(Path::new(path), language),
+            module: module_name(Path::new(path), language, None),
             lines: 1,
             bytes: 1,
             content_hash: String::new(),
