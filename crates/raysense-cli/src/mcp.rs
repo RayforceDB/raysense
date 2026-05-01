@@ -43,7 +43,31 @@ struct McpState {
     last_path: Option<PathBuf>,
     last_config: Option<RaysenseConfig>,
     baseline: Option<ProjectBaseline>,
+    cached_health: Option<HealthCache>,
 }
+
+struct HealthCache {
+    root: PathBuf,
+    signature: String,
+    report_root: PathBuf,
+    health: raysense_core::HealthSummary,
+}
+
+/// Tools that mutate scan inputs (config, baselines, plugins, sessions) or
+/// the on-disk repo state must clear the cached health before they run, so
+/// the next read tool re-scans.
+const HEALTH_INVALIDATING_TOOLS: &[&str] = &[
+    "raysense_session_start",
+    "raysense_session_end",
+    "raysense_rescan",
+    "raysense_what_if",
+    "raysense_baseline_save",
+    "raysense_config_write",
+    "raysense_plugin_add",
+    "raysense_plugin_add_standard",
+    "raysense_plugin_sync",
+    "raysense_plugin_remove",
+];
 
 pub fn run() -> Result<()> {
     let stdin = io::stdin();
@@ -374,16 +398,20 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         .cloned()
         .unwrap_or_else(|| json!({}));
 
+    if HEALTH_INVALIDATING_TOOLS.contains(&name) {
+        state.cached_health = None;
+    }
+
     match name {
         "raysense_config_read" => read_config_tool(&args),
         "raysense_config_write" => write_config_tool(&args),
-        "raysense_health" => health_tool(&args),
+        "raysense_health" => health_tool(&args, state),
         "raysense_scan" => scan_tool(&args),
         "raysense_edges" => edges_tool(&args),
-        "raysense_hotspots" => hotspots_tool(&args),
+        "raysense_hotspots" => hotspots_tool(&args, state),
         "raysense_rules" => rules_tool(&args),
         "raysense_module_edges" => module_edges_tool(&args),
-        "raysense_architecture" => architecture_tool(&args),
+        "raysense_architecture" => architecture_tool(&args, state),
         "raysense_coupling" => coupling_tool(&args),
         "raysense_cycles" => cycles_tool(&args),
         "raysense_hottest" => hottest_tool(&args),
@@ -393,8 +421,8 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_session_end" => session_end_tool(&args, state),
         "raysense_rescan" => rescan_tool(&args, state),
         "raysense_check_rules" => check_rules_tool(&args),
-        "raysense_evolution" => evolution_tool(&args),
-        "raysense_dsm" => dsm_tool(&args),
+        "raysense_evolution" => evolution_tool(&args, state),
+        "raysense_dsm" => dsm_tool(&args, state),
         "raysense_test_gaps" => test_gaps_tool(&args),
         "raysense_visualize" => visualize_tool(&args),
         "raysense_sarif" => sarif_tool(&args),
@@ -443,14 +471,11 @@ fn write_config_tool(args: &Value) -> Result<Value> {
     }))
 }
 
-fn health_tool(args: &Value) -> Result<Value> {
-    let root = root_arg(args)?;
-    let config = effective_config(args, &root)?;
-    let report = scan_path_with_config(&root, &config)?;
-    let health = compute_health_with_config(&report, &config);
+fn health_tool(args: &Value, state: &mut McpState) -> Result<Value> {
+    let (root, health) = health_from_args_cached(args, state)?;
 
     Ok(json!({
-        "root": report.snapshot.root,
+        "root": root,
         "health": health
     }))
 }
@@ -529,8 +554,8 @@ fn edges_tool(args: &Value) -> Result<Value> {
     }))
 }
 
-fn hotspots_tool(args: &Value) -> Result<Value> {
-    let (root, health) = health_from_args(args)?;
+fn hotspots_tool(args: &Value, state: &mut McpState) -> Result<Value> {
+    let (root, health) = health_from_args_cached(args, state)?;
     let limit = limit_arg(args, 100)?;
 
     Ok(json!({
@@ -565,8 +590,8 @@ fn module_edges_tool(args: &Value) -> Result<Value> {
     }))
 }
 
-fn architecture_tool(args: &Value) -> Result<Value> {
-    let (root, health) = health_from_args(args)?;
+fn architecture_tool(args: &Value, state: &mut McpState) -> Result<Value> {
+    let (root, health) = health_from_args_cached(args, state)?;
     let limit = limit_arg(args, 100)?;
 
     Ok(json!({
@@ -815,8 +840,8 @@ fn check_rules_tool(args: &Value) -> Result<Value> {
     }))
 }
 
-fn evolution_tool(args: &Value) -> Result<Value> {
-    let (root, health) = health_from_args(args)?;
+fn evolution_tool(args: &Value, state: &mut McpState) -> Result<Value> {
+    let (root, health) = health_from_args_cached(args, state)?;
     let limit = limit_arg(args, 100)?;
     Ok(json!({
         "root": root,
@@ -836,8 +861,8 @@ fn evolution_tool(args: &Value) -> Result<Value> {
     }))
 }
 
-fn dsm_tool(args: &Value) -> Result<Value> {
-    let (root, health) = health_from_args(args)?;
+fn dsm_tool(args: &Value, state: &mut McpState) -> Result<Value> {
+    let (root, health) = health_from_args_cached(args, state)?;
     let limit = limit_arg(args, 100)?;
     Ok(json!({
         "root": root,
@@ -1488,6 +1513,41 @@ fn health_from_args(args: &Value) -> Result<(PathBuf, raysense_core::HealthSumma
     let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
     Ok((report.snapshot.root, health))
+}
+
+/// Cached variant of `health_from_args` — stores the most-recent
+/// `(root, config)` health on the state and returns it on subsequent calls
+/// without re-scanning, until a tool in `HEALTH_INVALIDATING_TOOLS` runs.
+fn health_from_args_cached(
+    args: &Value,
+    state: &mut McpState,
+) -> Result<(PathBuf, raysense_core::HealthSummary)> {
+    let root = root_arg(args)?;
+    let config = effective_config(args, &root)?;
+    let signature = config_signature(&root, &config);
+    if let Some(cached) = &state.cached_health {
+        if cached.root == root && cached.signature == signature {
+            return Ok((cached.report_root.clone(), cached.health.clone()));
+        }
+    }
+    let report = scan_path_with_config(&root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let report_root = report.snapshot.root;
+    state.cached_health = Some(HealthCache {
+        root: root.clone(),
+        signature,
+        report_root: report_root.clone(),
+        health: health.clone(),
+    });
+    Ok((report_root, health))
+}
+
+/// Stable signature of the effective config for cache-key purposes. Falls
+/// back to the empty string if serialization fails — a cache miss is always
+/// safe.
+fn config_signature(root: &Path, config: &RaysenseConfig) -> String {
+    let payload = serde_json::to_string(config).unwrap_or_default();
+    format!("{}::{}", root.display(), payload)
 }
 
 fn effective_config(args: &Value, root: &Path) -> Result<RaysenseConfig> {
@@ -2373,6 +2433,41 @@ mod tests {
                 .unwrap()
                 .len(),
             0
+        );
+    }
+
+    #[test]
+    fn health_cache_populates_and_invalidates() {
+        let mut state = McpState::default();
+        assert!(state.cached_health.is_none(), "fresh state has no cache");
+
+        let args = json!({"root": env!("CARGO_MANIFEST_DIR")});
+        let _ = health_from_args_cached(&args, &mut state).unwrap();
+        assert!(state.cached_health.is_some(), "cache populated after read");
+
+        let signature_before = state
+            .cached_health
+            .as_ref()
+            .map(|c| c.signature.clone())
+            .unwrap();
+        let _ = health_from_args_cached(&args, &mut state).unwrap();
+        let signature_after = state
+            .cached_health
+            .as_ref()
+            .map(|c| c.signature.clone())
+            .unwrap();
+        assert_eq!(
+            signature_before, signature_after,
+            "second call must reuse the cached signature, not invalidate it",
+        );
+
+        // Simulate a mutating tool by clearing the cache the way call_tool would.
+        if HEALTH_INVALIDATING_TOOLS.contains(&"raysense_rescan") {
+            state.cached_health = None;
+        }
+        assert!(
+            state.cached_health.is_none(),
+            "invalidating tool must drop the cache",
         );
     }
 }
