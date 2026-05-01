@@ -21,15 +21,15 @@
  *   SOFTWARE.
  */
 
-use anyhow::{anyhow, Context, Result};
-use crate::{
-    build_baseline, compute_health_with_config, diff_baselines, is_foundation_file,
-    scan_path_with_config, ImportResolution, ProjectBaseline, RaysenseConfig,
-};
 use crate::memory::{
     BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
     BaselineTableQuery, BaselineTableSort,
 };
+use crate::{
+    build_baseline, compute_health_with_config, diff_baselines, is_foundation_file,
+    scan_path_with_config, ImportResolution, ProjectBaseline, RaysenseConfig,
+};
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -987,15 +987,12 @@ fn plugin_add_tool(args: &Value) -> Result<Value> {
     let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
     let mut config = load_or_default_config(&path)?;
     config.scan.plugins.retain(|plugin| plugin.name != name);
-    config
-        .scan
-        .plugins
-        .push(crate::LanguagePluginConfig {
-            name: name.to_string(),
-            extensions,
-            file_names,
-            ..crate::LanguagePluginConfig::default()
-        });
+    config.scan.plugins.push(crate::LanguagePluginConfig {
+        name: name.to_string(),
+        extensions,
+        file_names,
+        ..crate::LanguagePluginConfig::default()
+    });
     write_config_path(&path, &config)?;
 
     Ok(json!({
@@ -1308,8 +1305,7 @@ fn break_cycle_recommendations_tool(args: &Value) -> Result<Value> {
         .map(|n| n as usize)
         .unwrap_or(500);
     let report = scan_path_with_config(&root, &config)?;
-    let recommendations =
-        crate::break_cycle_recommendations(&report, limit, max_candidates);
+    let recommendations = crate::break_cycle_recommendations(&report, limit, max_candidates);
     Ok(json!({
         "root": report.snapshot.root,
         "cycle_count_before": report.graph.cycle_count,
@@ -1331,9 +1327,8 @@ fn what_if_sequence_tool(actions: &[Value], root: &Path, config: &RaysenseConfig
     let before_health = compute_health_with_config(&before_report, config);
     let before = build_baseline(&before_report, &before_health);
 
-    let after_report =
-        crate::simulate::simulate_sequence(&before_report, config, &parsed_actions)
-            .map_err(|err| anyhow!(err.to_string()))?;
+    let after_report = crate::simulate::simulate_sequence(&before_report, config, &parsed_actions)
+        .map_err(|err| anyhow!(err.to_string()))?;
 
     let after_health = compute_health_with_config(&after_report, config);
     let after = build_baseline(&after_report, &after_health);
