@@ -111,10 +111,7 @@ fn link_external(rayforce_dir: PathBuf) {
         );
     }
     println!("cargo:include={}", include_dir.display());
-    println!(
-        "cargo:rustc-link-search=native={}",
-        rayforce_dir.display()
-    );
+    println!("cargo:rustc-link-search=native={}", rayforce_dir.display());
     println!("cargo:rustc-link-lib=static=rayforce");
     println!("cargo:rerun-if-changed={}", lib_path.display());
     println!(
