@@ -825,7 +825,13 @@ fn evolution_tool(args: &Value) -> Result<Value> {
             "reason": health.metrics.evolution.reason,
             "commits_sampled": health.metrics.evolution.commits_sampled,
             "changed_files": health.metrics.evolution.changed_files,
-            "top_changed_files": limited(&health.metrics.evolution.top_changed_files, limit)
+            "top_changed_files": limited(&health.metrics.evolution.top_changed_files, limit),
+            "author_count": health.metrics.evolution.author_count,
+            "top_authors": limited(&health.metrics.evolution.top_authors, limit),
+            "file_ownership": limited(&health.metrics.evolution.file_ownership, limit),
+            "temporal_hotspots": limited(&health.metrics.evolution.temporal_hotspots, limit),
+            "file_ages": limited(&health.metrics.evolution.file_ages, limit),
+            "change_coupling": limited(&health.metrics.evolution.change_coupling, limit)
         }
     }))
 }
@@ -1288,79 +1294,31 @@ fn break_cycle_recommendations_tool(args: &Value) -> Result<Value> {
 }
 
 fn what_if_sequence_tool(actions: &[Value], root: &Path, config: &RaysenseConfig) -> Result<Value> {
+    let parsed_actions: Vec<raysense_core::simulate::Action> = actions
+        .iter()
+        .enumerate()
+        .map(|(idx, step)| {
+            serde_json::from_value(step.clone()).map_err(|err| anyhow!("step {idx}: {err}"))
+        })
+        .collect::<Result<_>>()?;
+
     let before_report = scan_path_with_config(root, config)?;
     let before_health = compute_health_with_config(&before_report, config);
     let before = build_baseline(&before_report, &before_health);
 
-    let mut current = before_report.clone();
-    let mut applied = Vec::new();
-    for (idx, step) in actions.iter().enumerate() {
-        let kind = step
-            .get("action")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("step {idx}: missing action"))?;
-        let outcome = apply_simulate_step(&current, config, step, kind)
-            .map_err(|err| anyhow!("step {idx} ({kind}): {err}"))?;
-        current = outcome;
-        applied.push(step.clone());
-    }
+    let after_report =
+        raysense_core::simulate::simulate_sequence(&before_report, config, &parsed_actions)
+            .map_err(|err| anyhow!(err.to_string()))?;
 
-    let after_health = compute_health_with_config(&current, config);
-    let after = build_baseline(&current, &after_health);
+    let after_health = compute_health_with_config(&after_report, config);
+    let after = build_baseline(&after_report, &after_health);
     Ok(json!({
         "root": before_report.snapshot.root,
-        "actions": applied,
+        "actions": actions,
         "before": what_if_health_summary(&before_health),
         "after": what_if_health_summary(&after_health),
         "diff": diff_baselines(&before, &after)
     }))
-}
-
-fn apply_simulate_step(
-    current: &raysense_core::ScanReport,
-    config: &RaysenseConfig,
-    step: &Value,
-    kind: &str,
-) -> Result<raysense_core::ScanReport> {
-    match kind {
-        "remove_edge" => {
-            let from = required_str(step, "from")?;
-            let to = required_str(step, "to")?;
-            raysense_core::simulate::remove_edge(current, from, to)
-                .map_err(|err| anyhow!(err.to_string()))
-        }
-        "add_edge" => {
-            let from = required_str(step, "from")?;
-            let to = required_str(step, "to")?;
-            raysense_core::simulate::add_edge(current, from, to)
-                .map_err(|err| anyhow!(err.to_string()))
-        }
-        "remove_file" => {
-            let file = required_str(step, "file")?;
-            raysense_core::simulate_remove_file(current, file)
-                .map_err(|err| anyhow!(err.to_string()))
-        }
-        "move_file" => {
-            let from = required_str(step, "from")?;
-            let to = required_str(step, "to")?;
-            raysense_core::simulate_move_file(current, config, from, to)
-                .map_err(|err| anyhow!(err.to_string()))
-        }
-        "break_cycle" => {
-            let from = required_str(step, "from")?;
-            let to = required_str(step, "to")?;
-            raysense_core::simulate_break_cycle(current, from, to)
-                .map_err(|err| anyhow!(err.to_string()))
-        }
-        other => Err(anyhow!("unsupported what-if action: {other}")),
-    }
-}
-
-fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("missing {field}"))
 }
 
 fn what_if_health_summary(health: &raysense_core::HealthSummary) -> Value {

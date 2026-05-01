@@ -515,6 +515,12 @@ pub struct SizeMetrics {
     pub long_functions: usize,
     pub file_size_entropy: f64,
     pub file_size_entropy_bits: f64,
+    #[serde(default)]
+    pub total_lines: usize,
+    #[serde(default)]
+    pub total_comment_lines: usize,
+    #[serde(default)]
+    pub comment_ratio: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -585,6 +591,12 @@ pub struct EvolutionMetrics {
     pub top_authors: Vec<EvolutionAuthorMetric>,
     #[serde(default)]
     pub file_ownership: Vec<EvolutionFileOwnership>,
+    #[serde(default)]
+    pub temporal_hotspots: Vec<EvolutionTemporalHotspot>,
+    #[serde(default)]
+    pub file_ages: Vec<EvolutionFileAge>,
+    #[serde(default)]
+    pub change_coupling: Vec<EvolutionChangeCoupling>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,6 +609,38 @@ pub struct EvolutionFileMetric {
 pub struct EvolutionAuthorMetric {
     pub author: String,
     pub commits: usize,
+}
+
+/// `risk_score = commits * max_cyclomatic_complexity` — high values flag files
+/// that are both volatile and intricate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionTemporalHotspot {
+    pub path: String,
+    pub commits: usize,
+    pub max_complexity: usize,
+    pub risk_score: usize,
+}
+
+/// Per-file commit-age window. Timestamps are bounded by the git log lookback,
+/// so `first_commit_unix` is the oldest commit *within the sample*, not
+/// necessarily the file's true creation date.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionFileAge {
+    pub path: String,
+    pub first_commit_unix: i64,
+    pub last_commit_unix: i64,
+    pub age_days: u64,
+    pub last_changed_days: u64,
+}
+
+/// Pair of files that change together. `coupling_strength` is the Jaccard
+/// similarity of their commit sets in `[0, 1]` (1.0 = always co-changed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionChangeCoupling {
+    pub left: String,
+    pub right: String,
+    pub co_commits: usize,
+    pub coupling_strength: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -791,16 +835,18 @@ fn metrics(
     hotspots: &[FileHotspot],
     config: &RaysenseConfig,
 ) -> MetricsSummary {
+    let complexity = complexity_metrics(report, config);
+    let evolution = evolution_metrics(report, &complexity);
     MetricsSummary {
         coupling: coupling_metrics(report, hotspots, config),
         calls: call_metrics(report),
         architecture: architecture_metrics(report, config),
-        complexity: complexity_metrics(report, config),
+        complexity,
         size: size_metrics(report),
         entry_points: entry_point_metrics(report),
         test_gap: test_gap_metrics(report, config),
         dsm: dsm_metrics(report, config),
-        evolution: evolution_metrics(report),
+        evolution,
         trend: trend_metrics(report),
     }
 }
@@ -2310,6 +2356,14 @@ fn size_metrics(report: &ScanReport) -> SizeMetrics {
 
     let (file_size_entropy, file_size_entropy_bits) = file_size_distribution_entropy(report);
 
+    let total_lines: usize = report.files.iter().map(|file| file.lines).sum();
+    let total_comment_lines: usize = report.files.iter().map(|file| file.comment_lines).sum();
+    let comment_ratio = if total_lines == 0 {
+        0.0
+    } else {
+        round3(total_comment_lines as f64 / total_lines as f64)
+    };
+
     SizeMetrics {
         max_file_lines,
         max_function_lines,
@@ -2321,6 +2375,9 @@ fn size_metrics(report: &ScanReport) -> SizeMetrics {
             .count(),
         file_size_entropy,
         file_size_entropy_bits,
+        total_lines,
+        total_comment_lines,
+        comment_ratio,
     }
 }
 
@@ -2520,7 +2577,7 @@ fn dsm_metrics(report: &ScanReport, config: &RaysenseConfig) -> DsmMetrics {
     }
 }
 
-fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
+fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> EvolutionMetrics {
     let root = &report.snapshot.root;
     let prefix = match git_output(root, ["rev-parse", "--show-prefix"]) {
         Ok(output) => output.trim().replace('\\', "/"),
@@ -2535,7 +2592,13 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
 
     let log = match git_output(
         root,
-        ["log", "-n", "500", "--format=commit:%H|%ae", "--name-only"],
+        [
+            "log",
+            "-n",
+            "500",
+            "--format=commit:%H|%ae|%at",
+            "--name-only",
+        ],
     ) {
         Ok(output) => output,
         Err(reason) => {
@@ -2556,7 +2619,10 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
     let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
     let mut author_commits: BTreeMap<String, usize> = BTreeMap::new();
     let mut file_author_commits: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut file_age_window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+    let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut current_author: Option<String> = None;
+    let mut current_timestamp: Option<i64> = None;
     let mut commit_files = HashSet::new();
 
     for line in log.lines() {
@@ -2568,19 +2634,24 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
             flush_commit_files_with_author(
                 &mut file_commits,
                 &mut file_author_commits,
+                &mut file_age_window,
+                &mut pair_counts,
                 &mut commit_files,
                 current_author.as_deref(),
+                current_timestamp,
             );
             commits_sampled += 1;
-            let author = rest
-                .split_once('|')
-                .map(|(_, email)| email.trim().to_string());
+            let mut parts = rest.splitn(3, '|');
+            let _hash = parts.next();
+            let author = parts.next().map(|email| email.trim().to_string());
+            let timestamp = parts.next().and_then(|raw| raw.trim().parse::<i64>().ok());
             if let Some(author) = author.as_ref() {
                 if !author.is_empty() {
                     *author_commits.entry(author.clone()).or_default() += 1;
                 }
             }
             current_author = author;
+            current_timestamp = timestamp;
             continue;
         }
 
@@ -2593,8 +2664,11 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
     flush_commit_files_with_author(
         &mut file_commits,
         &mut file_author_commits,
+        &mut file_age_window,
+        &mut pair_counts,
         &mut commit_files,
         current_author.as_deref(),
+        current_timestamp,
     );
 
     let mut top_changed_files: Vec<EvolutionFileMetric> = file_commits
@@ -2652,6 +2726,14 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
     });
     file_ownership.truncate(20);
 
+    let temporal_hotspots = temporal_hotspots(&file_commits, complexity);
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|dur| dur.as_secs() as i64)
+        .unwrap_or(0);
+    let file_ages = file_ages(&file_age_window, now_unix);
+    let change_coupling = change_coupling(&pair_counts, &file_commits);
+
     EvolutionMetrics {
         available: true,
         reason: String::new(),
@@ -2661,7 +2743,134 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
         author_count,
         top_authors,
         file_ownership,
+        temporal_hotspots,
+        file_ages,
+        change_coupling,
     }
+}
+
+/// Files with at least 3 co-commits, ranked by Jaccard similarity. Pairs that
+/// only ever appear together are at strength 1.0; pairs that share a few
+/// commits but each change independently are much lower.
+fn change_coupling(
+    pair_counts: &BTreeMap<(String, String), usize>,
+    file_commits: &BTreeMap<String, usize>,
+) -> Vec<EvolutionChangeCoupling> {
+    const MIN_CO_COMMITS: usize = 3;
+    let mut pairs: Vec<EvolutionChangeCoupling> = pair_counts
+        .iter()
+        .filter_map(|((a, b), count)| {
+            if *count < MIN_CO_COMMITS {
+                return None;
+            }
+            let count_a = file_commits.get(a).copied().unwrap_or(0);
+            let count_b = file_commits.get(b).copied().unwrap_or(0);
+            let union = count_a + count_b - count;
+            if union == 0 {
+                return None;
+            }
+            let strength = (*count as f64) / (union as f64);
+            Some(EvolutionChangeCoupling {
+                left: a.clone(),
+                right: b.clone(),
+                co_commits: *count,
+                coupling_strength: round3(strength),
+            })
+        })
+        .collect();
+    pairs.sort_by(|a, b| {
+        b.coupling_strength
+            .partial_cmp(&a.coupling_strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.co_commits.cmp(&a.co_commits))
+            .then_with(|| a.left.cmp(&b.left))
+            .then_with(|| a.right.cmp(&b.right))
+    });
+    pairs.truncate(20);
+    pairs
+}
+
+/// Build the top-N oldest files within the git log window. Returns at most 20
+/// entries sorted by `age_days` descending. Files with a zero or future
+/// timestamp (clock skew, missing data) are skipped.
+fn file_ages(window: &BTreeMap<String, (i64, i64)>, now_unix: i64) -> Vec<EvolutionFileAge> {
+    if window.is_empty() || now_unix <= 0 {
+        return Vec::new();
+    }
+    const SECONDS_PER_DAY: i64 = 86_400;
+    let mut ages: Vec<EvolutionFileAge> = window
+        .iter()
+        .filter_map(|(path, (first, last))| {
+            if *first <= 0 || *last <= 0 || *first > now_unix {
+                return None;
+            }
+            let age_days = ((now_unix - *first).max(0) / SECONDS_PER_DAY) as u64;
+            let last_changed_days = ((now_unix - *last).max(0) / SECONDS_PER_DAY) as u64;
+            Some(EvolutionFileAge {
+                path: path.clone(),
+                first_commit_unix: *first,
+                last_commit_unix: *last,
+                age_days,
+                last_changed_days,
+            })
+        })
+        .collect();
+    ages.sort_by(|a, b| {
+        b.age_days
+            .cmp(&a.age_days)
+            .then_with(|| b.last_changed_days.cmp(&a.last_changed_days))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    ages.truncate(20);
+    ages
+}
+
+/// Cross-reference commit churn with cyclomatic complexity to surface files
+/// that are both volatile and intricate. Risk = commits × max-cyclomatic;
+/// files with risk == 0 (no commits or trivial complexity) are dropped.
+fn temporal_hotspots(
+    file_commits: &BTreeMap<String, usize>,
+    complexity: &ComplexityMetrics,
+) -> Vec<EvolutionTemporalHotspot> {
+    if file_commits.is_empty() || complexity.all_functions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut max_complexity_per_file: HashMap<&str, usize> = HashMap::new();
+    for func in &complexity.all_functions {
+        let entry = max_complexity_per_file
+            .entry(func.path.as_str())
+            .or_default();
+        if func.value > *entry {
+            *entry = func.value;
+        }
+    }
+
+    let mut hotspots: Vec<EvolutionTemporalHotspot> = file_commits
+        .iter()
+        .filter_map(|(path, commits)| {
+            let max_cc = max_complexity_per_file.get(path.as_str()).copied()?;
+            let risk = commits.saturating_mul(max_cc);
+            if risk == 0 {
+                return None;
+            }
+            Some(EvolutionTemporalHotspot {
+                path: path.clone(),
+                commits: *commits,
+                max_complexity: max_cc,
+                risk_score: risk,
+            })
+        })
+        .collect();
+
+    hotspots.sort_by(|a, b| {
+        b.risk_score
+            .cmp(&a.risk_score)
+            .then_with(|| b.commits.cmp(&a.commits))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    hotspots.truncate(10);
+    hotspots
 }
 
 fn bus_factor_for(sorted: &[(&String, &usize)], total: usize) -> usize {
@@ -2679,22 +2888,56 @@ fn bus_factor_for(sorted: &[(&String, &usize)], total: usize) -> usize {
     sorted.len().max(1)
 }
 
+/// Cap on files-per-commit considered for pair counting. A merge or
+/// repo-wide rename touches hundreds of files but expresses no real coupling
+/// signal; capping keeps pair generation `O(N²)` bounded.
+const MAX_FILES_PER_COMMIT_FOR_COUPLING: usize = 50;
+
 fn flush_commit_files_with_author(
     file_commits: &mut BTreeMap<String, usize>,
     file_author_commits: &mut BTreeMap<String, BTreeMap<String, usize>>,
+    file_age_window: &mut BTreeMap<String, (i64, i64)>,
+    pair_counts: &mut BTreeMap<(String, String), usize>,
     commit_files: &mut HashSet<String>,
     author: Option<&str>,
+    timestamp: Option<i64>,
 ) {
+    if commit_files.len() <= MAX_FILES_PER_COMMIT_FOR_COUPLING {
+        let sorted: Vec<&String> = {
+            let mut v: Vec<&String> = commit_files.iter().collect();
+            v.sort();
+            v
+        };
+        for i in 0..sorted.len() {
+            for j in (i + 1)..sorted.len() {
+                let key = (sorted[i].clone(), sorted[j].clone());
+                *pair_counts.entry(key).or_default() += 1;
+            }
+        }
+    }
     for path in commit_files.drain() {
         *file_commits.entry(path.clone()).or_default() += 1;
         if let Some(author) = author {
             if !author.is_empty() {
                 *file_author_commits
-                    .entry(path)
+                    .entry(path.clone())
                     .or_default()
                     .entry(author.to_string())
                     .or_default() += 1;
             }
+        }
+        if let Some(ts) = timestamp {
+            file_age_window
+                .entry(path)
+                .and_modify(|(first, last)| {
+                    if ts < *first {
+                        *first = ts;
+                    }
+                    if ts > *last {
+                        *last = ts;
+                    }
+                })
+                .or_insert((ts, ts));
         }
     }
 }
@@ -4833,6 +5076,7 @@ order = 2
             lines: 1,
             bytes: 1,
             content_hash: String::new(),
+            comment_lines: 0,
         }
     }
 
@@ -4897,5 +5141,161 @@ order = 2
             caller_function,
             callee_function,
         }
+    }
+
+    fn complexity_metric(file_id: usize, path: &str, value: usize) -> FunctionComplexityMetric {
+        FunctionComplexityMetric {
+            function_id: 0,
+            file_id,
+            path: path.to_string(),
+            name: format!("fn_{file_id}"),
+            value,
+            cognitive_value: value,
+        }
+    }
+
+    #[test]
+    fn temporal_hotspots_rank_by_churn_times_complexity() {
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("src/hot.rs".to_string(), 12);
+        file_commits.insert("src/quiet.rs".to_string(), 1);
+        file_commits.insert("src/simple.rs".to_string(), 50);
+        file_commits.insert("src/orphan.rs".to_string(), 3);
+
+        let complexity = ComplexityMetrics {
+            all_functions: vec![
+                complexity_metric(0, "src/hot.rs", 4),
+                complexity_metric(0, "src/hot.rs", 9),
+                complexity_metric(1, "src/quiet.rs", 20),
+                complexity_metric(2, "src/simple.rs", 1),
+            ],
+            ..ComplexityMetrics::default()
+        };
+
+        let hotspots = temporal_hotspots(&file_commits, &complexity);
+
+        assert_eq!(hotspots.len(), 3, "orphan.rs has no complexity → dropped");
+        assert!(
+            hotspots.iter().all(|h| h.path != "src/orphan.rs"),
+            "files with no functions must not appear",
+        );
+
+        let top = &hotspots[0];
+        assert_eq!(top.path, "src/hot.rs");
+        assert_eq!(top.commits, 12);
+        assert_eq!(
+            top.max_complexity, 9,
+            "uses max function complexity per file"
+        );
+        assert_eq!(top.risk_score, 12 * 9);
+
+        let simple = hotspots.iter().find(|h| h.path == "src/simple.rs").unwrap();
+        let quiet = hotspots.iter().find(|h| h.path == "src/quiet.rs").unwrap();
+        assert_eq!(simple.risk_score, 50);
+        assert_eq!(quiet.risk_score, 20);
+        assert!(
+            hotspots[1].risk_score >= hotspots[2].risk_score,
+            "results are sorted by risk_score descending",
+        );
+    }
+
+    #[test]
+    fn file_ages_rank_oldest_first_and_drop_invalid() {
+        const DAY: i64 = 86_400;
+        let now: i64 = 100 * DAY;
+        let mut window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+        window.insert("ancient.rs".to_string(), (10 * DAY, 90 * DAY));
+        window.insert("recent.rs".to_string(), (95 * DAY, 99 * DAY));
+        window.insert("middle.rs".to_string(), (50 * DAY, 60 * DAY));
+        // Future timestamp from clock skew is dropped.
+        window.insert("future.rs".to_string(), (110 * DAY, 110 * DAY));
+        // Zero timestamp (no data) is dropped.
+        window.insert("zero.rs".to_string(), (0, 0));
+
+        let ages = file_ages(&window, now);
+
+        assert_eq!(ages.len(), 3, "future.rs and zero.rs must be skipped");
+        assert_eq!(ages[0].path, "ancient.rs");
+        assert_eq!(ages[0].age_days, 90);
+        assert_eq!(ages[0].last_changed_days, 10);
+        assert_eq!(ages[1].path, "middle.rs");
+        assert_eq!(ages[2].path, "recent.rs");
+        assert_eq!(ages[2].age_days, 5);
+    }
+
+    #[test]
+    fn file_ages_returns_empty_when_now_is_unknown() {
+        let mut window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+        window.insert("a.rs".to_string(), (1, 2));
+        assert!(file_ages(&window, 0).is_empty());
+    }
+
+    #[test]
+    fn change_coupling_ranks_pairs_by_jaccard_above_min_threshold() {
+        let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+        pair_counts.insert(("a.rs".to_string(), "b.rs".to_string()), 5);
+        pair_counts.insert(("a.rs".to_string(), "c.rs".to_string()), 4);
+        pair_counts.insert(("b.rs".to_string(), "c.rs".to_string()), 2);
+        pair_counts.insert(("d.rs".to_string(), "e.rs".to_string()), 3);
+
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("a.rs".to_string(), 5);
+        file_commits.insert("b.rs".to_string(), 5);
+        file_commits.insert("c.rs".to_string(), 6);
+        file_commits.insert("d.rs".to_string(), 3);
+        file_commits.insert("e.rs".to_string(), 3);
+
+        let pairs = change_coupling(&pair_counts, &file_commits);
+
+        assert_eq!(
+            pairs.len(),
+            3,
+            "the 2-co-commit pair is below MIN_CO_COMMITS"
+        );
+        assert_eq!(pairs[0].left, "a.rs");
+        assert_eq!(pairs[0].right, "b.rs");
+        assert!(
+            (pairs[0].coupling_strength - 1.0).abs() < 1e-9,
+            "always co-changed"
+        );
+        let de = pairs.iter().find(|p| p.left == "d.rs").unwrap();
+        assert!((de.coupling_strength - 1.0).abs() < 1e-9);
+        let ac = pairs
+            .iter()
+            .find(|p| p.left == "a.rs" && p.right == "c.rs")
+            .unwrap();
+        assert!(ac.coupling_strength < 1.0);
+    }
+
+    #[test]
+    fn change_coupling_returns_empty_when_no_pair_meets_threshold() {
+        let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+        pair_counts.insert(("a.rs".to_string(), "b.rs".to_string()), 1);
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("a.rs".to_string(), 1);
+        file_commits.insert("b.rs".to_string(), 1);
+        let pairs = change_coupling(&pair_counts, &file_commits);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn temporal_hotspots_skip_zero_risk() {
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("src/zero.rs".to_string(), 0);
+        file_commits.insert("src/some.rs".to_string(), 4);
+
+        let complexity = ComplexityMetrics {
+            all_functions: vec![
+                complexity_metric(0, "src/zero.rs", 5),
+                complexity_metric(1, "src/some.rs", 0),
+            ],
+            ..ComplexityMetrics::default()
+        };
+
+        let hotspots = temporal_hotspots(&file_commits, &complexity);
+        assert!(
+            hotspots.is_empty(),
+            "either factor being zero means no risk score",
+        );
     }
 }

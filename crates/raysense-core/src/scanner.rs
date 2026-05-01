@@ -147,6 +147,7 @@ pub fn scan_path_with_config(
             lines: content.lines().count(),
             bytes: content.len(),
             content_hash: hash_content(&content),
+            comment_lines: count_comment_lines(&content),
         };
 
         let mut file_functions = if let Some(plugin) = plugin.as_ref() {
@@ -1589,7 +1590,9 @@ fn collect_tree_sitter_imports(
     match node.kind() {
         "use_declaration" => {
             if let Some(target) = rust_use_target(content, node) {
-                imports.push(new_import(file_id, &target, "use"));
+                for expanded in expand_brace_targets(&target) {
+                    imports.push(new_import(file_id, &expanded, "use"));
+                }
             }
         }
         "mod_item" => {
@@ -1633,6 +1636,68 @@ fn rust_use_target(content: &str, node: Node<'_>) -> Option<String> {
             .trim()
             .to_string(),
     )
+}
+
+/// Heuristic count of comment lines. A line is treated as a comment if its
+/// first non-whitespace token is one of `//`, `#`, `--`, `;` (lisp/asm),
+/// `*` (continuation of a `/*` block), or if the line falls between `/* */`
+/// markers. Cross-language and conservative — the goal is a comparable ratio,
+/// not exact counts.
+fn count_comment_lines(content: &str) -> usize {
+    let mut count = 0;
+    let mut in_block = false;
+    for raw_line in content.lines() {
+        let line = raw_line.trim_start();
+        if in_block {
+            count += 1;
+            if line.contains("*/") {
+                in_block = false;
+            }
+            continue;
+        }
+        if line.starts_with("/*") {
+            count += 1;
+            if !line.contains("*/") {
+                in_block = true;
+            }
+            continue;
+        }
+        if line.starts_with("//")
+            || line.starts_with('#')
+            || line.starts_with("--")
+            || line.starts_with(';')
+            || line.starts_with('*')
+        {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Fan a single `prefix::{a, b, c}` style target out into `["prefix::a",
+/// "prefix::b", "prefix::c"]`. Inputs without braces pass through unchanged
+/// so callers can use this unconditionally. Nested braces are not supported —
+/// only the first brace group is expanded.
+fn expand_brace_targets(target: &str) -> Vec<String> {
+    let Some(open) = target.find('{') else {
+        return vec![target.to_string()];
+    };
+    let Some(close_rel) = target[open..].find('}') else {
+        return vec![target.to_string()];
+    };
+    let close = open + close_rel;
+    let prefix = &target[..open];
+    let suffix = &target[close + 1..];
+    let items: Vec<String> = target[open + 1..close]
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|item| format!("{prefix}{item}{suffix}"))
+        .collect();
+    if items.is_empty() {
+        return vec![target.to_string()];
+    }
+    items
 }
 
 fn rust_mod_target(content: &str, node: Node<'_>) -> Option<String> {
@@ -1939,15 +2004,111 @@ fn extract_types(
             continue;
         }
         let name = type_name_from_line(clean).unwrap_or_default();
+        let bases = extract_base_class_names(clean);
+        let abstract_by_base = plugin.is_some_and(|plugin| {
+            !plugin.abstract_base_classes.is_empty()
+                && bases.iter().any(|base| {
+                    plugin
+                        .abstract_base_classes
+                        .iter()
+                        .any(|known| known == base)
+                })
+        });
         out.push(TypeFact {
             type_id: 0,
             file_id,
             name,
-            is_abstract,
+            is_abstract: is_abstract || abstract_by_base,
             line: idx + 1,
+            bases,
         });
     }
     out
+}
+
+/// Generic base-class parser. Handles four common shapes that put
+/// inheritance on the same line as the type name:
+///   `class Foo extends Bar implements Baz, Qux` (Java/Kotlin/TS/JS)
+///   `class Foo with Bar with Baz` (Scala — also extends/with)
+///   `class Foo : public Bar, virtual Baz` (C++/C#)
+///   `class Foo(Bar, Baz):` (Python)
+/// Returns identifiers stripped of access keywords (`public`, `virtual`,
+/// `protected`, `private`).
+fn extract_base_class_names(line: &str) -> Vec<String> {
+    const TERMINATORS: &[char] = &['{', ';', '\n'];
+    const STOP_KEYWORDS: &[&str] = &[" extends ", " implements ", " with "];
+
+    let mut bases: Vec<String> = Vec::new();
+
+    if let Some(start) = line.find('(') {
+        if let Some(end_rel) = line[start..].find(')') {
+            for token in split_base_tokens(&line[start + 1..start + end_rel]) {
+                bases.push(token);
+            }
+        }
+    }
+
+    for keyword in STOP_KEYWORDS {
+        let mut cursor = 0;
+        while let Some(idx) = line[cursor..].find(keyword) {
+            let after = &line[cursor + idx + keyword.len()..];
+            let mut segment_end = after.find(TERMINATORS).unwrap_or(after.len());
+            for other in STOP_KEYWORDS {
+                if let Some(other_idx) = after.find(other) {
+                    if other_idx < segment_end {
+                        segment_end = other_idx;
+                    }
+                }
+            }
+            for token in split_base_tokens(&after[..segment_end]) {
+                bases.push(token);
+            }
+            cursor += idx + keyword.len() + segment_end;
+        }
+    }
+
+    if let Some(colon) = line.find(':') {
+        let leading = &line[..colon];
+        let looks_like_class = leading.contains("class ") || leading.contains("struct ");
+        if looks_like_class && !leading.contains('(') {
+            let after = &line[colon + 1..];
+            let segment_end = after.find(TERMINATORS).unwrap_or(after.len());
+            for token in split_base_tokens(&after[..segment_end]) {
+                bases.push(token);
+            }
+        }
+    }
+
+    bases.retain(|name| !name.is_empty());
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+fn split_base_tokens(segment: &str) -> Vec<String> {
+    segment
+        .split(',')
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            let mut words: Vec<&str> = item
+                .split_whitespace()
+                .filter(|word| {
+                    !matches!(
+                        *word,
+                        "public" | "protected" | "private" | "virtual" | "static" | "final"
+                    )
+                })
+                .collect();
+            if words.is_empty() {
+                String::new()
+            } else {
+                let last = words.pop().unwrap();
+                last.trim_end_matches([',', ';', '{']).to_string()
+            }
+        })
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 fn type_name_from_line(line: &str) -> Option<String> {
@@ -2591,6 +2752,62 @@ fn helper() {}
         assert_eq!(functions[1].name, "helper");
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].target, "crate::graph");
+    }
+
+    #[test]
+    fn count_comment_lines_handles_common_languages() {
+        let rust = "// header\nfn main() {}\n/// doc\n/* block\n  inside\n*/\nlet x = 1;\n";
+        assert_eq!(
+            count_comment_lines(rust),
+            5,
+            "// + /// + /* + inside + */ all count",
+        );
+        let python = "# top\n\"\"\"hi\"\"\"\nx = 1  # trailing\n# another\n";
+        assert_eq!(
+            count_comment_lines(python),
+            2,
+            "Only line-prefix # is counted, not trailing or docstrings",
+        );
+        let none = "fn main() { let x = 1; }\n";
+        assert_eq!(count_comment_lines(none), 0);
+    }
+
+    #[test]
+    fn expand_brace_targets_handles_common_shapes() {
+        assert_eq!(expand_brace_targets("foo::bar"), vec!["foo::bar"]);
+        assert_eq!(
+            expand_brace_targets("foo::{a, b, c}"),
+            vec!["foo::a", "foo::b", "foo::c"],
+        );
+        assert_eq!(
+            expand_brace_targets("foo::{ a , b }"),
+            vec!["foo::a", "foo::b"],
+            "trims whitespace per item",
+        );
+        assert_eq!(
+            expand_brace_targets("foo::{a}"),
+            vec!["foo::a"],
+            "single-item brace expansion",
+        );
+        assert_eq!(
+            expand_brace_targets("foo::{}"),
+            vec!["foo::{}"],
+            "empty brace falls back to original target",
+        );
+        assert_eq!(
+            expand_brace_targets("foo::{a"),
+            vec!["foo::{a"],
+            "missing close brace falls back to original target",
+        );
+    }
+
+    #[test]
+    fn fans_rust_brace_imports_into_separate_targets() {
+        let content = "use crate::{graph, scanner};";
+        let imports = extract_imports(11, Language::Rust, content);
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].target, "crate::graph");
+        assert_eq!(imports[1].target, "crate::scanner");
     }
 
     #[test]
@@ -3308,11 +3525,13 @@ int run(void) {
             "use crate::facts::{FileFact, ImportFact};\nmod graph;\nmod tests {\n}\n",
         );
 
-        assert_eq!(imports.len(), 2);
-        assert_eq!(imports[0].target, "crate::facts::{FileFact, ImportFact}");
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[0].target, "crate::facts::FileFact");
         assert_eq!(imports[0].kind, "use");
-        assert_eq!(imports[1].target, "graph");
-        assert_eq!(imports[1].kind, "mod");
+        assert_eq!(imports[1].target, "crate::facts::ImportFact");
+        assert_eq!(imports[1].kind, "use");
+        assert_eq!(imports[2].target, "graph");
+        assert_eq!(imports[2].kind, "mod");
     }
 
     #[test]
@@ -3374,6 +3593,60 @@ int run(void) {
     }
 
     #[test]
+    fn extract_base_class_names_handles_common_languages() {
+        assert_eq!(
+            extract_base_class_names("class Foo extends Bar implements Baz, Qux {"),
+            vec!["Bar".to_string(), "Baz".to_string(), "Qux".to_string()],
+        );
+        assert_eq!(
+            extract_base_class_names("class Foo(Bar, Baz):"),
+            vec!["Bar".to_string(), "Baz".to_string()],
+        );
+        assert_eq!(
+            extract_base_class_names("class Foo : public Bar, virtual Baz {"),
+            vec!["Bar".to_string(), "Baz".to_string()],
+        );
+        assert_eq!(
+            extract_base_class_names("class Foo extends Bar with Baz with Qux {"),
+            vec!["Bar".to_string(), "Baz".to_string(), "Qux".to_string()],
+        );
+        assert!(
+            extract_base_class_names("struct Plain;").is_empty(),
+            "Rust structs declared without inheritance produce no bases",
+        );
+    }
+
+    #[test]
+    fn extract_types_marks_abstract_when_base_matches_plugin_config() {
+        let file = FileFact {
+            file_id: 0,
+            path: PathBuf::from("src/Animal.py"),
+            language: Language::Python,
+            language_name: "python".to_string(),
+            module: "src.Animal".to_string(),
+            lines: 1,
+            bytes: 30,
+            content_hash: String::new(),
+            comment_lines: 0,
+        };
+        let content = "class Dog(AbstractAnimal):\n";
+        let plugin = LanguagePluginConfig {
+            name: "python".to_string(),
+            abstract_base_classes: vec!["AbstractAnimal".to_string()],
+            concrete_type_prefixes: vec!["class ".to_string()],
+            ..LanguagePluginConfig::default()
+        };
+        let types = extract_types(0, &file, content, Some(&plugin));
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].name, "Dog");
+        assert_eq!(types[0].bases, vec!["AbstractAnimal".to_string()]);
+        assert!(
+            types[0].is_abstract,
+            "config-listed abstract base should flip is_abstract on the subclass",
+        );
+    }
+
+    #[test]
     fn extract_types_finds_rust_traits_and_structs() {
         let file = FileFact {
             file_id: 0,
@@ -3384,6 +3657,7 @@ int run(void) {
             lines: 4,
             bytes: 80,
             content_hash: String::new(),
+            comment_lines: 0,
         };
         let content = "trait Animal {}\npub struct Dog;\nstruct Cat;\nfn meow() {}\n";
         let types = extract_types(0, &file, content, None);
@@ -3455,6 +3729,7 @@ int run(void) {
             lines: 1,
             bytes: 1,
             content_hash: String::new(),
+            comment_lines: 0,
         }
     }
 

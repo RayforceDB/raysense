@@ -118,6 +118,7 @@ mod tests {
             lines: 1,
             bytes: 1,
             content_hash: String::new(),
+            comment_lines: 0,
         }
     }
 
