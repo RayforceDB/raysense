@@ -123,10 +123,15 @@ jobs:
             cargo search raysense --limit 1 | grep -q "^raysense = \"$VERSION\""
           }
 
+          # `--allow-dirty` is required because the CI vendor step writes
+          # vendor/rayforce/ at clone time, but vendor/ is in .gitignore
+          # (the source of truth is upstream + .rayforce-version, not the
+          # committed tree). cargo package would otherwise refuse to ship
+          # what it sees as "uncommitted changes".
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "::notice::Dry run: cargo package + cargo publish --dry-run"
-            cargo package
-            cargo publish --dry-run
+            cargo package --allow-dirty
+            cargo publish --dry-run --allow-dirty
             exit 0
           fi
 
@@ -135,8 +140,8 @@ jobs:
             exit 0
           fi
 
-          cargo package
-          cargo publish
+          cargo package --allow-dirty
+          cargo publish --allow-dirty
 
           # Wait for the registry index to catch up before declaring success.
           for delay in 10 20 30 60 90; do
