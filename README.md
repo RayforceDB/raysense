@@ -23,28 +23,29 @@
 
 # Raysense
 
-**An agent writes the code. Raysense keeps the architecture honest.**
+**A structural X-ray for the codebases AI agents are writing.**
 
-AI coding agents work at machine speed. The codebase they leave behind
-(cycles, god files, files that quietly change together every commit,
-areas no test covers) drifts at the same speed, and you can't see any
-of it from a diff. Raysense scans the repository, scores its structure,
-and shows the result to you, your CI, your live dashboard, and (most
-importantly) to the agent itself, before it edits next.
+Raysense reads your repository as a graph: who imports who, where the
+cycles are, which files are now load-bearing, what tends to change
+together. It runs locally, refreshes on save, and serves the whole
+picture to your coding agent over MCP. Before an edit, the agent can
+ask *what depends on this file*. After a chunk of edits, it can ask
+*did this regress anything*.
 
-## The problem
+## Why
 
-A coding agent reads one file at a time. It doesn't see the *shape* of
-your project: which modules are tangled, which files are load-bearing,
-where complexity is concentrated, what changed together every commit
-last quarter. Reviewers don't see it either. By the time a structural
-regression is obvious in production, the cost of unwinding it has
-compounded.
+A coding agent reads source one file at a time. The shape of the
+project (its modules, its layers, its cycles, the files that always
+change together) never reaches its working memory. Reviewers operate
+on diffs, and a diff hides structure by definition. So architectural
+drift is invisible until it shows up as a production bug, a
+regression, or a refactor that takes a week.
 
-## One quality signal
+## Grading model
 
-Six A-F dimensions, computed from your repository's dependency graph
-and commit history, distilled into one 0-100 score:
+Six dimensions, each graded A through F against the dependency graph
+and commit history of the repo. The overall score, 0 to 100, is their
+weighted aggregate:
 
 - **Modularity** - how cleanly modules separate
 - **Acyclicity** - how much the dependency graph really is a graph
@@ -53,8 +54,8 @@ and commit history, distilled into one 0-100 score:
 - **Redundancy** - how much logic is duplicated
 - **Structural uniformity** - how consistent the patterns are
 
-The score is ungameable. You can't trick it by adding tests or
-shuffling files; the graph either has cycles or it doesn't.
+The score moves with structure, not with cosmetics: adding tests or
+shuffling files around will not lift it.
 
 ## Install
 
@@ -72,7 +73,7 @@ raysense . --ui         # live dashboard at http://localhost:7000
 raysense --mcp          # stdio MCP server for agents
 ```
 
-## For coding agents
+## Agent integration
 
 Raysense ships as a Claude Code plugin:
 
@@ -87,7 +88,7 @@ audits. Multi-codebase isolation is cwd-driven, so per-project state
 stays in `<repo>/.raysense/`. Two sessions on two repos = two
 independent baselines, zero cross-project bleed.
 
-## What you get
+## Capabilities
 
 - **Live treemap dashboard** - every file, every metric, every cycle,
   open in your browser while you work
