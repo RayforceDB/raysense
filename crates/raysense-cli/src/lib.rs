@@ -113,17 +113,18 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Start a live UI server. The page subscribes to server-sent events and
+    /// reloads when the scan content hash changes — never on a fixed timer.
+    /// Single source of UI; no static HTML export.
     Visualize {
         #[arg(default_value = ".")]
         path: PathBuf,
-        #[arg(long)]
-        output: Option<PathBuf>,
-        #[arg(long)]
-        watch: bool,
         #[arg(long, default_value_t = 2)]
         interval: u64,
         #[arg(long)]
         config: Option<PathBuf>,
+        #[arg(long, default_value_t = 7000)]
+        port: u16,
     },
     Plugin {
         #[command(subcommand)]
@@ -374,11 +375,10 @@ pub fn run() -> Result<()> {
         } => watch_project(&path, config.as_deref(), interval)?,
         Command::Visualize {
             path,
-            output,
-            watch,
             interval,
             config,
-        } => visualize_project(&path, output, config.as_deref(), watch, interval)?,
+            port,
+        } => serve_visualization(&path, config.as_deref(), interval, port)?,
         Command::Plugin { command } => match command {
             PluginCommand::List { path, config } => list_plugins(&path, config.as_deref())?,
             PluginCommand::Add {
@@ -731,36 +731,167 @@ fn watch_project(root: &Path, config_path: Option<&Path>, interval: u64) -> Resu
     }
 }
 
-fn visualize_project(
+/// Run a tokio HTTP server that hosts the live visualization. The server
+/// re-scans on a fixed interval, only emits an SSE `data-changed` event when
+/// the new snapshot's content hash differs from the previous one, and serves
+/// the HTML page without any meta-refresh. Browsers connected to `/events`
+/// reload the page on each change; other state (filter selections, scroll,
+/// expanded panels) survives whenever data didn't actually change.
+fn serve_visualization(
     root: &Path,
-    output: Option<PathBuf>,
     config_path: Option<&Path>,
-    watch: bool,
     interval: u64,
+    port: u16,
 ) -> Result<()> {
-    let output = output.unwrap_or_else(|| root.join(".raysense/visualization.html"));
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    loop {
-        let config = config_for_root(root, config_path)?;
-        let report = scan_path_with_config(root, &config)?;
-        let health = compute_health_with_config(&report, &config);
-        fs::write(&output, visualization_html(&report, &health))
-            .with_context(|| format!("failed to write {}", output.display()))?;
+    let root = root.to_path_buf();
+    let config_path = config_path.map(Path::to_path_buf);
+    let interval = interval.max(1);
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to start tokio runtime")?;
+
+    runtime.block_on(async move {
+        use axum::{
+            response::sse::{Event, KeepAlive, Sse},
+            response::{Html, IntoResponse},
+            routing::get,
+            Json, Router,
+        };
+        use std::sync::Arc;
+        use tokio::sync::{broadcast, RwLock};
+        use tokio_stream::wrappers::BroadcastStream;
+        use tokio_stream::StreamExt;
+
+        let initial = scan_now(&root, config_path.as_deref())?;
+        let state = Arc::new(LiveState {
+            inner: RwLock::new(initial),
+            tx: broadcast::channel::<()>(16).0,
+        });
+
+        let scanner_state = state.clone();
+        let scanner_root = root.clone();
+        let scanner_config = config_path.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // first tick fires immediately; we already scanned.
+            loop {
+                ticker.tick().await;
+                let scan = match tokio::task::spawn_blocking({
+                    let root = scanner_root.clone();
+                    let cfg = scanner_config.clone();
+                    move || scan_now(&root, cfg.as_deref())
+                })
+                .await
+                {
+                    Ok(Ok(snap)) => snap,
+                    Ok(Err(err)) => {
+                        eprintln!("rescan failed: {err}");
+                        continue;
+                    }
+                    Err(err) => {
+                        eprintln!("rescan task panicked: {err}");
+                        continue;
+                    }
+                };
+                let mut current = scanner_state.inner.write().await;
+                if current.hash != scan.hash {
+                    *current = scan;
+                    let _ = scanner_state.tx.send(());
+                }
+            }
+        });
+
+        let html_state = state.clone();
+        let data_state = state.clone();
+        let events_state = state.clone();
+
+        let app = Router::new()
+            .route(
+                "/",
+                get(move || async move {
+                    let snap = html_state.inner.read().await;
+                    Html(snap.html.clone()).into_response()
+                }),
+            )
+            .route(
+                "/data",
+                get(move || async move {
+                    let snap = data_state.inner.read().await;
+                    Json(snap.payload.clone()).into_response()
+                }),
+            )
+            .route(
+                "/events",
+                get(move || async move {
+                    let rx = events_state.tx.subscribe();
+                    let stream = BroadcastStream::new(rx).map(|item| match item {
+                        Ok(()) => Ok(Event::default().event("data-changed")),
+                        Err(_) => Ok::<_, std::convert::Infallible>(
+                            Event::default().event("data-changed"),
+                        ),
+                    });
+                    Sse::new(stream).keep_alive(KeepAlive::default())
+                }),
+            );
+
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("failed to bind {addr}"))?;
         println!(
-            "visualization {} snapshot={} quality_signal={}",
-            output.display(),
-            report.snapshot.snapshot_id,
-            health.quality_signal
+            "visualization http://{addr} interval={interval}s — Ctrl+C to stop",
+            addr = addr,
+            interval = interval,
         );
-        if !watch {
-            break;
-        }
-        thread::sleep(Duration::from_secs(interval.max(1)));
-    }
-    Ok(())
+
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+            .await
+            .context("server error")?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+struct LiveState {
+    inner: tokio::sync::RwLock<LiveSnapshot>,
+    tx: tokio::sync::broadcast::Sender<()>,
+}
+
+struct LiveSnapshot {
+    hash: String,
+    html: String,
+    payload: serde_json::Value,
+}
+
+fn scan_now(root: &Path, config_path: Option<&Path>) -> Result<LiveSnapshot> {
+    use sha2::{Digest, Sha256};
+    let config = config_for_root(root, config_path)?;
+    let report = scan_path_with_config(root, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    let html = visualization_html(&report, &health);
+    let payload = serde_json::json!({
+        "snapshot_id": report.snapshot.snapshot_id,
+        "score": health.score,
+        "quality_signal": health.quality_signal,
+        "files": report.files.len(),
+        "functions": report.functions.len(),
+        "rules": health.rules.len(),
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(report.snapshot.snapshot_id.as_bytes());
+    hasher.update(serde_json::to_vec(&payload).unwrap_or_default());
+    let hash = format!("{:x}", hasher.finalize());
+    Ok(LiveSnapshot {
+        hash,
+        html,
+        payload,
+    })
 }
 
 fn visualization_html(
@@ -1089,7 +1220,7 @@ fn visualization_html(
     .unwrap_or_else(|_| "{}".to_string());
     format!(
         r#"<!doctype html>
-<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="10"><title>Raysense</title>
+<html><head><meta charset="utf-8"><title>Raysense</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:24px;background:#111;color:#eee;line-height:1.4}}
 .top{{display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap}}
@@ -1430,6 +1561,15 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
       renderEdges();
     }});
   }}
+}})();
+</script>
+<script>
+(function() {{
+  if (typeof EventSource !== 'function') return;
+  try {{
+    var es = new EventSource('/events');
+    es.addEventListener('data-changed', function() {{ location.reload(); }});
+  }} catch (_) {{}}
 }})();
 </script>
 </body></html>"#,

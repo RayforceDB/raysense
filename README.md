@@ -23,347 +23,97 @@
 
 # Raysense
 
-Raysense is local architectural telemetry for AI coding agents.
+**Architectural X-ray for your codebase. Live, local, agent-ready.**
 
-It scans a repository, extracts files/functions/imports, resolves local
-dependency edges, classifies imports, computes graph health, and can materialize
-the scan into Rayforce-backed memory tables.
+Point Raysense at a repository and it tells you, in seconds, where the
+load-bearing files are, which modules are tangled, where complexity is
+hiding, and which parts of the codebase are bus-factor-of-one. It runs
+locally, ships zero data anywhere, and exposes everything to AI coding
+agents through MCP.
 
-## Current Test Commands
+## Why
+
+LLM coding agents read source one file at a time. They don't see the
+*shape* of your project: the cycles, the god files, the dead code, the
+files that change together every commit. Raysense computes that shape
+once and serves it back as queryable structure — to your agents, to
+your CI, and to a live dashboard you can keep open while you work.
+
+## Install
 
 ```bash
-cargo run -q -p raysense-cli -- health .
-cargo run -q -p raysense-cli -- edges .
-cargo run -q -p raysense-cli -- observe . --memory
+cargo install raysense
 ```
 
-Against Rayforce from this workspace layout:
+Or build from source — see [Building](#building) below.
+
+## Use
+
+Three things, one binary.
+
+**Live dashboard.** Open it once, leave it open. Updates the moment your
+code does, never on a fixed timer.
 
 ```bash
-cargo run -q -p raysense-cli -- health ../rayforce
-cargo run -q -p raysense-cli -- edges ../rayforce | head
-cargo run -q -p raysense-cli -- observe ../rayforce --memory
-cargo run -q -p raysense-cli -- baseline save ../rayforce
-cargo run -q -p raysense-cli -- baseline diff ../rayforce
+raysense visualize .
 ```
 
-Current Rayforce baseline:
+**Health report.** A single number out of 100, plus A–F grades on six
+dimensions, plus the rules currently failing.
 
-```text
-score 77
-quality_signal 7708
-coverage_score 100
-structural_score 72
-facts files=190 functions=2662 calls=25704 call_edges=15492 imports=1039
-entry_points total=50 binaries=6 examples=4 tests=40
-imports local=657 external=0 system=382 unresolved=0
-graph resolved_edges=657 cycles=0
-coupling local_edges=657 cross_module_edges=240 cross_module_ratio=0.365 cross_unstable_edges=200 cross_unstable_ratio=0.304 entropy=0.824 entropy_bits=3.201 entropy_pairs=15 average_module_cohesion=0.667 cohesive_module_count=18 god_files=2 unstable_hotspots=4
-calls total=25704 resolved_edges=15492 resolution_ratio=0.603 max_function_fan_in=2537 max_function_fan_out=293
-size max_file_lines=6329 max_function_lines=2334 large_files=63 long_functions=209
-test_gap production_files=150 test_files=40 files_without_nearby_tests=150
-dsm modules=5 module_edges=240
-root_causes modularity=0.635 acyclicity=1.000 depth=1.000 equality=0.450 redundancy=0.952
-architecture depth=3 max_blast_radius=25 max_blast_radius_file=src/ops/query.c max_non_foundation_blast_radius=12 max_non_foundation_blast_radius_file=src/runtime/eval.c attack_surface_files=45 attack_surface_ratio=0.703 upward_violations=3 upward_violation_ratio=0.012 average_distance_from_main_sequence=0.214
-complexity max=131 avg=3.904 gini=0.550 dead_functions=50 duplicate_groups=20 redundancy_ratio=0.048
-evolution available=true commits_sampled=500 changed_files=190
-rules warnings=7 info=31
+```bash
+raysense health .
 ```
 
-## Commands
+**CI gate.** Exit non-zero if any rule fails or scores drop against a
+saved baseline.
 
-Install from crates.io after building a local Rayforce library:
-
-```sh
-git clone git@github.com:RayforceDB/rayforce.git
-make -C rayforce lib
-RAYFORCE_DIR="$PWD/rayforce" cargo install raysense
+```bash
+raysense check .
 ```
 
-For library use:
+**Agent connector.** Hook Raysense into Claude, Cursor, or any MCP-capable
+client. 40+ tools — scan, edges, hotspots, what-if simulation, baseline
+diff, evolution metrics — all queryable.
 
-```sh
-cargo add raysense
-```
-
-```text
-raysense observe <path> [--json] [--memory] [--config <path>]
-raysense health <path> [--json] [--config <path>]
-raysense edges <path> [--all] [--config <path>]
-raysense memory <path> [--config <path>]
-raysense check [path] [--json] [--sarif <path>] [--config <path>]
-raysense gate [path] [--save] [--baseline <path>] [--json] [--config <path>]
-raysense watch [path] [--interval <seconds>] [--config <path>]
-raysense visualize [path] [--watch] [--interval <seconds>] [--output <path>] [--config <path>]
-raysense plugin list [path] [--config <path>]
-raysense plugin add <name> <extensions...> [--file-name <name>] [--path <path>] [--config <path>]
-raysense plugin add-standard [--path <path>] [--config <path>]
-raysense plugin remove <name> [--path <path>] [--config <path>]
-raysense plugin validate <dir> [--json]
-raysense plugin scaffold <name> <extension> [--path <path>]
-raysense plugin init <name> <extension> [--path <path>] [--config <path>]
-raysense policy list
-raysense policy init <preset> [path] [--config <path>]
-raysense trend record [path] [--config <path>]
-raysense trend show [path] [--json] [--config <path>]
-raysense remediate [path] [--json] [--config <path>]
-raysense what-if [path] [--ignore <pattern>] [--generated <pattern>] [--json] [--config <path>]
-raysense baseline save <path> [--output <path>] [--config <path>]
-raysense baseline diff <path> [--baseline <path>] [--config <path>] [--json]
-raysense baseline tables [--baseline <path>] [--json]
-raysense baseline table <name> [--baseline <path>] [--columns <a,b>] [--filter <column:op:value>] [--filter-mode <all|any>] [--sort <column[:asc|desc]>] [--desc] [--offset <n>] [--limit <n>] [--json]
+```bash
 raysense mcp
-raysense rayforce-version
 ```
 
-If `<path>/.raysense.toml` exists, health-producing commands load it
-automatically. `--config` overrides that path.
-Project-local plugin manifests under `.raysense/plugins/*/plugin.toml` are also
-loaded during scans, using the same fields as `[[scan.plugins]]`.
-When `.raysense/plugins/<name>/queries/tags.scm` is present and the plugin
-selects a compiled grammar with `grammar = "rust"`, `c`, `cpp`, `python`, or
-`typescript`, or with `grammar_path` and optional `grammar_symbol`, Raysense
-uses query captures for functions and imports before falling back to token
-prefixes.
+## What it measures
 
-`raysense mcp` runs a stdio MCP server for agents. It exposes tools to read and
-write config, run health, inspect scan facts, list dependency edges, read
-hotspots, read rule findings, read DSM module edges, inspect architecture,
-coupling, cycles, hottest files/functions, blast radius, module levels, run
-what-if config simulations, and materialize memory table summaries. It can also
-write visualization dashboards, emit SARIF reports, apply policy presets,
-save/diff baselines, and query saved baseline tables with projection, filters,
-sorting, and pagination. Agent session tools can save an in-memory baseline,
-rescan, end the session, check rules, inspect evolution, inspect DSM data,
-inspect test gaps, list configured language plugins, and add generic or
-standard plugin profiles, remove plugin profiles, or validate local plugin
-directories. It can also scaffold project-local plugin templates.
+- **Coupling, cohesion, instability** — Robert Martin's stable-foundation
+  model, plus blast radius and main-sequence distance.
+- **Complexity** — cyclomatic and cognitive, per function and aggregated.
+- **Cycles and depth** — strongly-connected components, longest acyclic
+  path, upward-layer violations.
+- **Evolution** — bus factor, change-coupling pairs, temporal hotspots
+  (churn × complexity), file age.
+- **Types and inheritance** — type facts with base-class extraction
+  (Python and TypeScript via tree-sitter, others via line parsing).
+- **Test gaps** — files without nearby tests, ranked by risk.
+- **Six A–F dimensions** — modularity, acyclicity, depth, equality,
+  redundancy, structural uniformity. One 0–100 quality signal.
 
-`raysense visualize` writes a self-refreshing local HTML dashboard with file
-size blocks, module graph edges, hotspots, rules, complexity, test gaps, and an
-embedded telemetry JSON payload. Use `--watch` to keep regenerating the page
-from fresh scans.
+## Configuration
 
-Baselines are stored under `<path>/.raysense/baseline` by default. The manifest
-is JSON for fast agent diffs, and baseline tables are written under `tables/`
-in Rayforce splayed-table format.
+Everything is overridable in `.raysense.toml` at the repo root: rule
+thresholds, plugin language definitions, baseline scoring, what-if
+ignored paths. Per-language rule overrides let one language demand
+stricter caps than another. `raysense --help` lists every flag.
 
-Baseline table filters use `column:op:value`, where `op` is one of `eq`, `ne`,
-`in`, `not_in`, `contains`, `starts_with`, `ends_with`, `regex`, `not_regex`,
-`gt`, `gte`, `lt`, or `lte`. Filters default to AND semantics; use
-`--filter-mode any` for OR.
-Repeat `--sort` to apply ordered multi-column sorting.
+## Building from source
 
-CLI examples:
+The C dependency is vendored. Clone and build — that's it:
 
-```sh
-raysense baseline save .
-raysense baseline tables --baseline .raysense/baseline
-raysense baseline table files --baseline .raysense/baseline --columns path,language,lines --filter 'language:in:["c","rust"]' --sort language:asc --sort lines:desc --limit 10
-raysense baseline table files --baseline .raysense/baseline --columns path --filter 'path:regex:^src/ops/.*\.c$' --filter 'path:not_regex:query' --limit 10
+```bash
+git clone https://github.com/RayforceDB/raysense.git
+cd raysense
+cargo build --release
 ```
 
-MCP query example:
+No external setup, no submodules, no environment variables.
 
-```json
-{
-  "name": "raysense_baseline_table_read",
-  "arguments": {
-    "baseline_path": ".raysense/baseline",
-    "table": "files",
-    "columns": ["path", "language", "lines"],
-    "filters": [
-      {"column": "language", "op": "in", "value": ["c", "rust"]},
-      {"column": "path", "op": "regex", "value": "^src/.*\\.(c|rs)$"}
-    ],
-    "filter_mode": "all",
-    "sort": [
-      {"column": "language", "direction": "asc"},
-      {"column": "lines", "direction": "desc"}
-    ],
-    "limit": 10
-  }
-}
-```
+## License
 
-Release checks:
-
-```sh
-cargo package -p rayforce-sys
-cargo package -p raysense-core
-cargo package -p raysense-memory
-cargo package -p raysense-cli
-cargo package -p raysense
-```
-
-Run the `publish` workflow manually with `dry_run=true` before publishing a
-release. The workflow publishes packages in dependency order, waits for each
-new package to appear in the registry index, and then runs a post-release
-install and library smoke check.
-
-Example config:
-
-```toml
-[scan]
-ignored_paths = ["target", "fixtures/generated"]
-generated_paths = ["**/generated/*"]
-enabled_languages = []
-disabled_languages = []
-module_roots = ["crates", "src"]
-test_roots = ["tests"]
-public_api_paths = ["src/lib.rs"]
-
-[[scan.plugins]]
-name = "foo"
-grammar = "rust"
-grammar_path = "grammars/foo.so"
-grammar_symbol = "tree_sitter_foo"
-extensions = ["foo"]
-file_names = ["Foofile"]
-function_prefixes = ["function "]
-import_prefixes = ["load "]
-call_suffixes = ["("]
-abstract_type_prefixes = ["interface "]
-concrete_type_prefixes = ["class ", "type "]
-tags_query = """
-(function_item
-  name: (identifier) @name) @definition.function
-"""
-package_index_files = ["index.foo"]
-test_path_patterns = ["tests/*", "*_test.foo"]
-source_roots = ["src"]
-ignored_paths = ["build/*"]
-local_import_prefixes = ["."]
-max_function_complexity = 15
-max_cognitive_complexity = 20
-max_file_lines = 500
-max_function_lines = 80
-resolver_alias_files = ["foo.config.json"]
-namespace_separator = "."
-module_prefix_files = ["mod.foo"]
-module_prefix_directives = ["package "]
-entry_point_patterns = ["main"]
-test_module_patterns = ["tests/*"]
-test_attribute_patterns = ["@Test"]
-parameter_node_kinds = ["parameter"]
-complexity_node_kinds = ["if_statement", "while_statement"]
-logical_operator_kinds = ["&&", "||"]
-abstract_base_classes = ["Base"]
-
-[rules]
-min_quality_signal = 0
-min_modularity = 0.0
-min_acyclicity = 0.0
-min_depth = 0.0
-min_equality = 0.0
-min_redundancy = 0.0
-max_cycles = 0
-max_coupling_ratio = 1.0
-max_function_complexity = 15
-max_cognitive_complexity = 0
-max_file_lines = 0
-max_function_lines = 0
-no_god_files = true
-high_file_fan_in = 50
-high_file_fan_out = 15
-large_file_lines = 500
-max_large_file_findings = 20
-low_call_resolution_min_calls = 100
-low_call_resolution_ratio = 0.5
-high_function_fan_in = 200
-high_function_fan_out = 100
-max_call_hotspot_findings = 5
-max_upward_layer_violations = 0
-no_tests_detected = true
-
-[[boundaries.forbidden_edges]]
-from = "src"
-to = "test"
-reason = "runtime code must not depend on tests"
-
-[[boundaries.layers]]
-name = "core"
-path = "src/core/*"
-order = 0
-
-[score]
-modularity_weight = 1.0
-acyclicity_weight = 1.0
-depth_weight = 1.0
-equality_weight = 1.0
-redundancy_weight = 1.0
-structural_uniformity_weight = 0.0
-```
-
-## Status
-
-The first testable version has grammar-backed support for Rust, C/C++, Python,
-and TypeScript, plus a built-in generic catalog for common project languages
-and formats:
-
-- Configurable scan filtering by ignored paths and enabled/disabled languages.
-- Configurable module roots for DSM and architecture grouping.
-- Generic configured language plugins by file extension with configurable
-  function, import, and call token extraction.
-- Standard language plugin profiles can be listed through MCP or materialized
-  into project config with `raysense plugin add-standard`.
-- Project-local plugin manifests can be loaded from
-  `.raysense/plugins/*/plugin.toml`.
-- Built-in generic analyzers for Go, Java, Kotlin, Scala, C#, PHP, Ruby, Swift,
-  shell, SQL, Lua, Perl, Dart, Elixir, Haskell, OCaml, F#, Clojure, Solidity,
-  protobuf, GraphQL, build/config formats, and other common file types.
-- Tree-sitter-backed Rust, C, C++, Python, and TypeScript function discovery
-  with lightweight fallback extraction.
-- Tree-sitter-backed Rust `use`/`mod`, C/C++ include, Python import, and
-  TypeScript import extraction with lightweight fallback extraction.
-- Tree-sitter-backed Rust, C, C++, Python, and TypeScript call facts with
-  enclosing function ids.
-- Conservative call-edge resolution for unambiguous function names.
-- Function-level call metrics: resolution ratio, fan-in/fan-out, and top
-  called/calling functions.
-- Project profile inference for reusable include-root discovery.
-- Entry point facts for binaries, examples, and tests.
-- Local, external, system, and unresolved import classification.
-- Graph metrics: resolved edges, cycles, fan-in, fan-out.
-- Health summary with score, 0-10000 quality signal, root-cause scores,
-  import breakdown, hotspots, coupling, size, entry point, test-gap, DSM,
-  architecture, complexity, and evolution metrics.
-- Source-aware complexity, duplicate-body grouping, and public API aware
-  dead-function filtering.
-- Semantic-shape duplicate grouping for code that is structurally similar after
-  names and literals are normalized.
-- Ecosystem-aware module grouping for common monorepo, Rust, Python, Java, and
-  Kotlin layouts.
-- Test-gap candidates include expected test file paths for each unmatched
-  production file.
-- Framework-aware test-gap naming for Rust, Python, TypeScript, Go, Java, and
-  .NET-style projects.
-- Built-in policy presets for Rust crates, monorepos, backend services, and
-  libraries.
-- Remediation suggestions are exposed through the CLI and MCP.
-- Persisted trend samples can be recorded and read back for score/rule deltas.
-- Score calibration weights can be configured for the root-cause dimensions.
-- Built-in rules for high fan-in, production dependencies on test paths,
-  large-file/no-test findings, call-resolution/function-call hotspots, max
-  cycles, max coupling, max function complexity, god-file pressure, and ordered
-  layer constraints.
-- Rule thresholds can be configured with TOML.
-- Forbidden top-level module dependencies can be configured with TOML.
-- Config read/write, health runs, scan facts, edges, hotspots, rule findings,
-  module edges, architecture, coupling, cycles, hottest files/functions, blast
-  radius, module levels, what-if simulations, session start/end, rescans, rule
-  checks, evolution, DSM, test gaps, plugin listing, remediation suggestions,
-  trend metrics, policy presets, memory summaries, and saved baseline table
-  queries are exposed through the MCP interface.
-- Baseline save/diff is available through the CLI and MCP, with Rayforce
-  splayed-table storage for baseline tables.
-- MCP session baselines are persisted by default and can be compared across
-  process restarts.
-- CLI quality gate, watch loop, plugin management, and generated self-refreshing
-  local HTML architecture visualization are available.
-- Rayforce table materialization for scan facts, call facts, call edges,
-  health summary, hotspots, rules, module edges, and changed-file evolution
-  metrics.
-
-CI runs on pushes and pull requests. Publish runs when a release is published
-and can also be started manually.
+MIT. See [LICENSE](LICENSE).
