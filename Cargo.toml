@@ -21,13 +21,18 @@
 
 [package]
 name = "raysense"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/RayforceDB/raysense"
+homepage = "https://github.com/RayforceDB/raysense"
+documentation = "https://docs.rs/raysense"
 description = "Architectural X-ray for your codebase. Live, local, agent-ready."
 readme = "README.md"
+keywords = ["architecture", "metrics", "static-analysis", "mcp", "telemetry"]
+categories = ["development-tools", "command-line-utilities", "visualization"]
 links = "rayforce"
+rust-version = "1.75"
 
 [[bin]]
 name = "raysense"

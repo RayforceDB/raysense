@@ -2010,7 +2010,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "raysense-memory-{name}-{}-{suffix}",
+            "raysense-{name}-{}-{suffix}",
             std::process::id()
         ))
     }
