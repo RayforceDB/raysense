@@ -807,6 +807,99 @@ fn visualization_html(
             .map(|(dir, _)| dir.to_string())
             .unwrap_or_default()
     };
+
+    let path_for_file: Vec<String> = report
+        .files
+        .iter()
+        .map(|file| file.path.to_string_lossy().into_owned())
+        .collect();
+    let function_to_file: Vec<usize> = report
+        .functions
+        .iter()
+        .map(|function| function.file_id)
+        .collect();
+    let entry_point_files: std::collections::HashSet<usize> = report
+        .entry_points
+        .iter()
+        .map(|entry| entry.file_id)
+        .collect();
+    let type_name_to_file: std::collections::HashMap<String, usize> = report
+        .types
+        .iter()
+        .map(|type_fact| (type_fact.name.clone(), type_fact.file_id))
+        .collect();
+
+    let mut imports_out: Vec<std::collections::BTreeSet<usize>> =
+        vec![std::collections::BTreeSet::new(); report.files.len()];
+    let mut imports_in: Vec<std::collections::BTreeSet<usize>> =
+        vec![std::collections::BTreeSet::new(); report.files.len()];
+    for import in &report.imports {
+        if let Some(to) = import.resolved_file {
+            if to == import.from_file {
+                continue;
+            }
+            imports_out[import.from_file].insert(to);
+            imports_in[to].insert(import.from_file);
+        }
+    }
+    let mut calls_out: Vec<std::collections::BTreeSet<usize>> =
+        vec![std::collections::BTreeSet::new(); report.files.len()];
+    let mut calls_in: Vec<std::collections::BTreeSet<usize>> =
+        vec![std::collections::BTreeSet::new(); report.files.len()];
+    for edge in &report.call_edges {
+        let (Some(&from_file), Some(&to_file)) = (
+            function_to_file.get(edge.caller_function),
+            function_to_file.get(edge.callee_function),
+        ) else {
+            continue;
+        };
+        if from_file == to_file {
+            continue;
+        }
+        calls_out[from_file].insert(to_file);
+        calls_in[to_file].insert(from_file);
+    }
+    let mut inherits_out: Vec<std::collections::BTreeSet<usize>> =
+        vec![std::collections::BTreeSet::new(); report.files.len()];
+    let mut inherits_in: Vec<std::collections::BTreeSet<usize>> =
+        vec![std::collections::BTreeSet::new(); report.files.len()];
+    for type_fact in &report.types {
+        for base in &type_fact.bases {
+            let Some(&base_file) = type_name_to_file.get(base) else {
+                continue;
+            };
+            if base_file == type_fact.file_id {
+                continue;
+            }
+            inherits_out[type_fact.file_id].insert(base_file);
+            inherits_in[base_file].insert(type_fact.file_id);
+        }
+    }
+    let render_paths = |ids: &std::collections::BTreeSet<usize>| -> Vec<String> {
+        ids.iter()
+            .filter_map(|id| path_for_file.get(*id).cloned())
+            .collect()
+    };
+    let adjacency_json = serde_json::to_string(
+        &report
+            .files
+            .iter()
+            .map(|file| {
+                let id = file.file_id;
+                serde_json::json!({
+                    "path": path_for_file[id],
+                    "imports_out": render_paths(&imports_out[id]),
+                    "imports_in": render_paths(&imports_in[id]),
+                    "calls_out": render_paths(&calls_out[id]),
+                    "calls_in": render_paths(&calls_in[id]),
+                    "inherits_out": render_paths(&inherits_out[id]),
+                    "inherits_in": render_paths(&inherits_in[id])
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
+
     let cells = report
         .files
         .iter()
@@ -821,8 +914,9 @@ fn visualization_html(
                 .copied()
                 .unwrap_or(0.0);
             let directory = directory_for(path.as_ref());
+            let is_entry = if entry_point_files.contains(&file.file_id) { 1 } else { 0 };
             format!(
-                "<div class=\"file\" data-path=\"{}\" data-lines=\"{}\" data-language=\"{}\" data-churn=\"{}\" data-age=\"{}\" data-risk=\"{}\" data-instability=\"{:.3}\" data-directory=\"{}\" style=\"flex-basis:{width:.1}%\"><b>{}</b><span>{} lines</span><small>{}</small></div>",
+                "<div class=\"file\" data-path=\"{}\" data-lines=\"{}\" data-language=\"{}\" data-churn=\"{}\" data-age=\"{}\" data-risk=\"{}\" data-instability=\"{:.3}\" data-directory=\"{}\" data-entry=\"{}\" style=\"flex-basis:{width:.1}%\"><b>{}</b><span>{} lines</span><small>{}</small></div>",
                 html_escape(&path),
                 file.lines,
                 html_escape(&file.language_name),
@@ -831,6 +925,7 @@ fn visualization_html(
                 risk,
                 instability,
                 html_escape(&directory),
+                is_entry,
                 html_escape(&path),
                 file.lines,
                 html_escape(&file.language_name)
@@ -1045,8 +1140,17 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <option value="all">all files</option>
 <option value="language">by language</option>
 <option value="directory">by directory</option>
+<option value="entry">entry points</option>
+<option value="impact">impact radius</option>
 </select>
 <select id="focus-value" hidden></select>
+<label for="edge-filter">Edges</label>
+<select id="edge-filter">
+<option value="all">all</option>
+<option value="imports">imports</option>
+<option value="calls">calls</option>
+<option value="inherits">inherits</option>
+</select>
 </div>
 <div class="grid" id="files-grid">{}</div>
 <aside id="file-detail" class="detail" hidden>
@@ -1063,6 +1167,11 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <section><h2>Test Gaps</h2><table><tr><th>source</th><th>expected tests</th></tr>{}</table></section>
 </div>
 <script type="application/json" id="raysense-telemetry">{}</script>
+<script type="application/json" id="raysense-adjacency">{}</script>
+<style>
+.file.dim{{opacity:.18}}.file.upstream{{outline:2px solid #f0a040}}
+.file.downstream{{outline:2px solid #4ec0a8}}.file.selected{{outline:3px solid #ffd86b}}
+</style>
 <script>
 (function() {{
   var grid = document.getElementById('files-grid');
@@ -1073,8 +1182,16 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
   var colorSelect = document.getElementById('color-mode');
   var focusModeSelect = document.getElementById('focus-mode');
   var focusValueSelect = document.getElementById('focus-value');
+  var edgeFilterSelect = document.getElementById('edge-filter');
+  var adjacencyEl = document.getElementById('raysense-adjacency');
+  var adjacency = adjacencyEl ? JSON.parse(adjacencyEl.textContent || '[]') : [];
+  var adjacencyByPath = {{}};
+  adjacency.forEach(function(entry) {{ adjacencyByPath[entry.path] = entry; }});
+  var selectedPath = null;
   if (!grid || !colorSelect) return;
   var cells = Array.prototype.slice.call(grid.querySelectorAll('.file'));
+  var cellsByPath = {{}};
+  cells.forEach(function(el) {{ cellsByPath[el.getAttribute('data-path')] = el; }});
   var ATTR_FOR_MODE = {{
     lines: 'data-lines',
     churn: 'data-churn',
@@ -1115,21 +1232,54 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
       el.style.background = 'hsl(' + hue + ',60%,' + lightness + '%)';
     }});
   }}
+  function reachable(path, dir) {{
+    var visited = {{}};
+    var queue = [path];
+    while (queue.length) {{
+      var p = queue.shift();
+      if (visited[p]) continue;
+      visited[p] = true;
+      var entry = adjacencyByPath[p];
+      if (!entry) continue;
+      var edges = edgeFilterSelect.value;
+      var keys = (edges === 'all'
+        ? ['imports_' + dir, 'calls_' + dir, 'inherits_' + dir]
+        : [edges + '_' + dir]);
+      keys.forEach(function(k) {{
+        (entry[k] || []).forEach(function(next) {{
+          if (!visited[next]) queue.push(next);
+        }});
+      }});
+    }}
+    return visited;
+  }}
   function applyFocus() {{
     var mode = focusModeSelect.value;
     var value = focusValueSelect.value;
     cells.forEach(function(el) {{
-      if (mode === 'all') {{
-        el.style.display = '';
-        return;
+      var show = true;
+      if (mode === 'language') {{
+        show = el.getAttribute('data-language') === value;
+      }} else if (mode === 'directory') {{
+        show = el.getAttribute('data-directory') === value;
+      }} else if (mode === 'entry') {{
+        show = el.getAttribute('data-entry') === '1';
+      }} else if (mode === 'impact') {{
+        if (!selectedPath) {{
+          show = true;
+        }} else {{
+          var down = reachable(selectedPath, 'out');
+          var up = reachable(selectedPath, 'in');
+          var p = el.getAttribute('data-path');
+          show = !!(down[p] || up[p]);
+        }}
       }}
-      var attr = mode === 'language' ? 'data-language' : 'data-directory';
-      el.style.display = el.getAttribute(attr) === value ? '' : 'none';
+      el.style.display = show ? '' : 'none';
     }});
   }}
   function rebuildFocusValues() {{
     var mode = focusModeSelect.value;
-    if (mode === 'all') {{
+    if (mode !== 'language' && mode !== 'directory') {{
       focusValueSelect.innerHTML = '';
       focusValueSelect.hidden = true;
       applyFocus();
@@ -1148,26 +1298,66 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
     focusValueSelect.hidden = keys.length === 0;
     applyFocus();
   }}
+  function highlightRoutes() {{
+    cells.forEach(function(el) {{
+      el.classList.remove('upstream', 'downstream', 'selected', 'dim');
+    }});
+    if (!selectedPath) return;
+    var down = reachable(selectedPath, 'out');
+    var up = reachable(selectedPath, 'in');
+    cells.forEach(function(el) {{
+      var p = el.getAttribute('data-path');
+      if (p === selectedPath) {{ el.classList.add('selected'); return; }}
+      if (down[p]) {{ el.classList.add('downstream'); return; }}
+      if (up[p]) {{ el.classList.add('upstream'); return; }}
+      el.classList.add('dim');
+    }});
+  }}
+  function neighborSummary(path) {{
+    var entry = adjacencyByPath[path];
+    if (!entry) return '0/0/0 out, 0/0/0 in';
+    return (entry.imports_out.length + '/' + entry.calls_out.length + '/' + entry.inherits_out.length +
+      ' out, ' +
+      entry.imports_in.length + '/' + entry.calls_in.length + '/' + entry.inherits_in.length + ' in');
+  }}
   colorSelect.addEventListener('change', function() {{ recolor(colorSelect.value); }});
   if (focusModeSelect) {{
     focusModeSelect.addEventListener('change', rebuildFocusValues);
     focusValueSelect.addEventListener('change', applyFocus);
     rebuildFocusValues();
   }}
+  if (edgeFilterSelect) {{
+    edgeFilterSelect.addEventListener('change', function() {{
+      highlightRoutes();
+      if (focusModeSelect.value === 'impact') applyFocus();
+    }});
+  }}
   cells.forEach(function(el) {{
     el.addEventListener('click', function() {{
-      title.textContent = el.getAttribute('data-path');
+      var path = el.getAttribute('data-path');
+      selectedPath = path;
+      title.textContent = path;
       body.innerHTML = '<dt>language</dt><dd>' + el.getAttribute('data-language') +
         '</dd><dt>lines</dt><dd>' + el.getAttribute('data-lines') +
         '</dd><dt>churn (commits)</dt><dd>' + el.getAttribute('data-churn') +
         '</dd><dt>age (days)</dt><dd>' + el.getAttribute('data-age') +
         '</dd><dt>risk score</dt><dd>' + el.getAttribute('data-risk') +
         '</dd><dt>instability</dt><dd>' + el.getAttribute('data-instability') +
-        '</dd>';
+        '</dd><dt>entry point</dt><dd>' + (el.getAttribute('data-entry') === '1' ? 'yes' : 'no') +
+        '</dd><dt>edges (imports/calls/inherits)</dt><dd>' + neighborSummary(path) + '</dd>';
       detail.hidden = false;
+      highlightRoutes();
+      if (focusModeSelect.value === 'impact') applyFocus();
     }});
   }});
-  if (closeBtn) closeBtn.addEventListener('click', function() {{ detail.hidden = true; }});
+  if (closeBtn) {{
+    closeBtn.addEventListener('click', function() {{
+      detail.hidden = true;
+      selectedPath = null;
+      highlightRoutes();
+      if (focusModeSelect.value === 'impact') applyFocus();
+    }});
+  }}
 }})();
 </script>
 </body></html>"#,
@@ -1190,7 +1380,8 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
         rules,
         complex,
         gaps,
-        json_script_escape(&telemetry)
+        json_script_escape(&telemetry),
+        json_script_escape(&adjacency_json)
     )
 }
 
