@@ -26,8 +26,8 @@
 **An agent writes the code. Raysense keeps the architecture honest.**
 
 AI coding agents work at machine speed. The codebase they leave behind
-— cycles, god files, files that quietly change together every commit,
-areas no test covers — drifts at the same speed, and you can't see any
+(cycles, god files, files that quietly change together every commit,
+areas no test covers) drifts at the same speed, and you can't see any
 of it from a diff. Raysense scans the repository, scores its structure,
 and shows the result to you, your CI, your live dashboard, and (most
 importantly) to the agent itself, before it edits next.
@@ -43,15 +43,15 @@ compounded.
 
 ## One quality signal
 
-Six A–F dimensions, computed from your repository's dependency graph
-and commit history, distilled into one 0–100 score:
+Six A-F dimensions, computed from your repository's dependency graph
+and commit history, distilled into one 0-100 score:
 
-- **Modularity** — how cleanly modules separate
-- **Acyclicity** — how much the dependency graph really is a graph
-- **Depth** — how layered (or how flat-and-tangled) the code is
-- **Equality** — how evenly responsibility is distributed
-- **Redundancy** — how much logic is duplicated
-- **Structural uniformity** — how consistent the patterns are
+- **Modularity** - how cleanly modules separate
+- **Acyclicity** - how much the dependency graph really is a graph
+- **Depth** - how layered (or how flat-and-tangled) the code is
+- **Equality** - how evenly responsibility is distributed
+- **Redundancy** - how much logic is duplicated
+- **Structural uniformity** - how consistent the patterns are
 
 The score is ungameable. You can't trick it by adding tests or
 shuffling files; the graph either has cycles or it doesn't.
@@ -83,40 +83,47 @@ Raysense ships as a Claude Code plugin:
 
 Four phase-scoped skills: scan + baseline at session start, blast
 radius before edits, regression diff after, on-demand architecture
-audits. Multi-codebase isolation is cwd-driven — per-project state
+audits. Multi-codebase isolation is cwd-driven, so per-project state
 stays in `<repo>/.raysense/`. Two sessions on two repos = two
 independent baselines, zero cross-project bleed.
 
 ## What you get
 
-- **Live treemap dashboard** — every file, every metric, every cycle,
+- **Live treemap dashboard** - every file, every metric, every cycle,
   open in your browser while you work
-- **Baselines and what-if** — diff against a saved snapshot; simulate
+- **Baselines and what-if** - diff against a saved snapshot; simulate
   an edit (delete a file, break a cycle) before touching the tree
-- **Splayed-table agent memory** — scan results materialized as
+- **Splayed-table agent memory** - scan results materialized as
   columnar tables so an agent's follow-up questions are instant
   reads, not re-scans
-- **Test gap detection** — files without nearby tests, ranked by risk
-- **Evolution signal** — bus factor, change-coupling pairs, temporal
-  hotspots (churn × complexity)
-- **45 languages out of the box** — Rust, Python, TypeScript, C, C++
+- **Test gap detection** - files without nearby tests, ranked by risk
+- **Evolution signal** - bus factor, change-coupling pairs, temporal
+  hotspots (churn x complexity)
+- **45 languages out of the box** - Rust, Python, TypeScript, C, C++
   via tree-sitter; 40 more (Go, Java, Kotlin, Swift, Ruby, Elixir,
-  Haskell, Clojure, Zig, …) via configurable plugins. Add your own in
-  `.raysense/plugins/`.
+  Haskell, Clojure, Zig, ...) via configurable plugins. Add your own
+  in `.raysense/plugins/`.
 
 ## Built on Rayforce
 
+<a href="https://github.com/RayforceDB/rayforce">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RayforceDB/rayforce/master/docs/logo-light.svg">
+    <img alt="Rayforce" src="https://raw.githubusercontent.com/RayforceDB/rayforce/master/docs/logo.svg" width="320">
+  </picture>
+</a>
+
 The splayed-table agent memory, the baseline tables you can query
 back, and the columnar storage behind the live dashboard are all
-powered by **[Rayforce](https://github.com/RayforceDB/rayforce)** —
-an in-memory analytics runtime optimized for graph-shaped queries.
+powered by **[Rayforce](https://github.com/RayforceDB/rayforce)**, an
+in-memory analytics runtime optimized for graph-shaped queries.
 Rayforce is what makes "ask the same question a hundred times during
 a coding session" cost a hundred microseconds instead of a hundred
 re-scans. It's open-source and linked statically into the raysense
 binary; there is nothing extra to install.
 
 If you're building structural-analysis tooling of your own, take a
-look — Rayforce is a standalone project and useful well beyond this
+look. Rayforce is a standalone project and useful well beyond this
 one.
 
 ## Configuration
