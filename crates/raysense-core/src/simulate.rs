@@ -174,6 +174,7 @@ pub fn remove_file(report: &ScanReport, file_path: &str) -> Result<ScanReport, S
             name: type_fact.name.clone(),
             is_abstract: type_fact.is_abstract,
             line: type_fact.line,
+            bases: type_fact.bases.clone(),
         });
     }
 

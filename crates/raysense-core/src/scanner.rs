@@ -1967,15 +1967,111 @@ fn extract_types(
             continue;
         }
         let name = type_name_from_line(clean).unwrap_or_default();
+        let bases = extract_base_class_names(clean);
+        let abstract_by_base = plugin.is_some_and(|plugin| {
+            !plugin.abstract_base_classes.is_empty()
+                && bases.iter().any(|base| {
+                    plugin
+                        .abstract_base_classes
+                        .iter()
+                        .any(|known| known == base)
+                })
+        });
         out.push(TypeFact {
             type_id: 0,
             file_id,
             name,
-            is_abstract,
+            is_abstract: is_abstract || abstract_by_base,
             line: idx + 1,
+            bases,
         });
     }
     out
+}
+
+/// Generic base-class parser. Handles four common shapes that put
+/// inheritance on the same line as the type name:
+///   `class Foo extends Bar implements Baz, Qux` (Java/Kotlin/TS/JS)
+///   `class Foo with Bar with Baz` (Scala — also extends/with)
+///   `class Foo : public Bar, virtual Baz` (C++/C#)
+///   `class Foo(Bar, Baz):` (Python)
+/// Returns identifiers stripped of access keywords (`public`, `virtual`,
+/// `protected`, `private`).
+fn extract_base_class_names(line: &str) -> Vec<String> {
+    const TERMINATORS: &[char] = &['{', ';', '\n'];
+    const STOP_KEYWORDS: &[&str] = &[" extends ", " implements ", " with "];
+
+    let mut bases: Vec<String> = Vec::new();
+
+    if let Some(start) = line.find('(') {
+        if let Some(end_rel) = line[start..].find(')') {
+            for token in split_base_tokens(&line[start + 1..start + end_rel]) {
+                bases.push(token);
+            }
+        }
+    }
+
+    for keyword in STOP_KEYWORDS {
+        let mut cursor = 0;
+        while let Some(idx) = line[cursor..].find(keyword) {
+            let after = &line[cursor + idx + keyword.len()..];
+            let mut segment_end = after.find(TERMINATORS).unwrap_or(after.len());
+            for other in STOP_KEYWORDS {
+                if let Some(other_idx) = after.find(other) {
+                    if other_idx < segment_end {
+                        segment_end = other_idx;
+                    }
+                }
+            }
+            for token in split_base_tokens(&after[..segment_end]) {
+                bases.push(token);
+            }
+            cursor += idx + keyword.len() + segment_end;
+        }
+    }
+
+    if let Some(colon) = line.find(':') {
+        let leading = &line[..colon];
+        let looks_like_class = leading.contains("class ") || leading.contains("struct ");
+        if looks_like_class && !leading.contains('(') {
+            let after = &line[colon + 1..];
+            let segment_end = after.find(TERMINATORS).unwrap_or(after.len());
+            for token in split_base_tokens(&after[..segment_end]) {
+                bases.push(token);
+            }
+        }
+    }
+
+    bases.retain(|name| !name.is_empty());
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+fn split_base_tokens(segment: &str) -> Vec<String> {
+    segment
+        .split(',')
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            let mut words: Vec<&str> = item
+                .split_whitespace()
+                .filter(|word| {
+                    !matches!(
+                        *word,
+                        "public" | "protected" | "private" | "virtual" | "static" | "final"
+                    )
+                })
+                .collect();
+            if words.is_empty() {
+                String::new()
+            } else {
+                let last = words.pop().unwrap();
+                last.trim_end_matches([',', ';', '{']).to_string()
+            }
+        })
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 fn type_name_from_line(line: &str) -> Option<String> {
@@ -3438,6 +3534,59 @@ int run(void) {
         assert_eq!(
             module_name(Path::new("pkg/__init__.py"), Language::Python, None),
             "pkg"
+        );
+    }
+
+    #[test]
+    fn extract_base_class_names_handles_common_languages() {
+        assert_eq!(
+            extract_base_class_names("class Foo extends Bar implements Baz, Qux {"),
+            vec!["Bar".to_string(), "Baz".to_string(), "Qux".to_string()],
+        );
+        assert_eq!(
+            extract_base_class_names("class Foo(Bar, Baz):"),
+            vec!["Bar".to_string(), "Baz".to_string()],
+        );
+        assert_eq!(
+            extract_base_class_names("class Foo : public Bar, virtual Baz {"),
+            vec!["Bar".to_string(), "Baz".to_string()],
+        );
+        assert_eq!(
+            extract_base_class_names("class Foo extends Bar with Baz with Qux {"),
+            vec!["Bar".to_string(), "Baz".to_string(), "Qux".to_string()],
+        );
+        assert!(
+            extract_base_class_names("struct Plain;").is_empty(),
+            "Rust structs declared without inheritance produce no bases",
+        );
+    }
+
+    #[test]
+    fn extract_types_marks_abstract_when_base_matches_plugin_config() {
+        let file = FileFact {
+            file_id: 0,
+            path: PathBuf::from("src/Animal.py"),
+            language: Language::Python,
+            language_name: "python".to_string(),
+            module: "src.Animal".to_string(),
+            lines: 1,
+            bytes: 30,
+            content_hash: String::new(),
+        };
+        let content = "class Dog(AbstractAnimal):\n";
+        let plugin = LanguagePluginConfig {
+            name: "python".to_string(),
+            abstract_base_classes: vec!["AbstractAnimal".to_string()],
+            concrete_type_prefixes: vec!["class ".to_string()],
+            ..LanguagePluginConfig::default()
+        };
+        let types = extract_types(0, &file, content, Some(&plugin));
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].name, "Dog");
+        assert_eq!(types[0].bases, vec!["AbstractAnimal".to_string()]);
+        assert!(
+            types[0].is_abstract,
+            "config-listed abstract base should flip is_abstract on the subclass",
         );
     }
 

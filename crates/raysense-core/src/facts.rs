@@ -155,4 +155,9 @@ pub struct TypeFact {
     pub name: String,
     pub is_abstract: bool,
     pub line: usize,
+    /// Base classes / interfaces named on the type's defining line.
+    /// Empty when the language declares inheritance separately
+    /// (e.g. Rust `impl Trait for Type`).
+    #[serde(default)]
+    pub bases: Vec<String>,
 }
