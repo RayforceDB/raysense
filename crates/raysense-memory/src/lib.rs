@@ -90,6 +90,10 @@ pub struct MemorySummary {
     pub module_edges: TableSummary,
     pub changed_files: TableSummary,
     pub file_ownership: TableSummary,
+    pub temporal_hotspots: TableSummary,
+    pub file_ages: TableSummary,
+    pub change_coupling: TableSummary,
+    pub inheritance: TableSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -189,6 +193,10 @@ pub struct RayMemory {
     module_edges: RayObject,
     changed_files: RayObject,
     file_ownership: RayObject,
+    temporal_hotspots: RayObject,
+    file_ages: RayObject,
+    change_coupling: RayObject,
+    inheritance: RayObject,
 }
 
 impl RayMemory {
@@ -217,6 +225,10 @@ impl RayMemory {
             module_edges: build_module_edges_table(&health)?,
             changed_files: build_changed_files_table(&health)?,
             file_ownership: build_file_ownership_table(&health)?,
+            temporal_hotspots: build_temporal_hotspots_table(&health)?,
+            file_ages: build_file_ages_table(&health)?,
+            change_coupling: build_change_coupling_table(&health)?,
+            inheritance: build_inheritance_table(report)?,
         })
     }
 
@@ -235,6 +247,10 @@ impl RayMemory {
             module_edges: table_summary(self.module_edges.as_ptr()),
             changed_files: table_summary(self.changed_files.as_ptr()),
             file_ownership: table_summary(self.file_ownership.as_ptr()),
+            temporal_hotspots: table_summary(self.temporal_hotspots.as_ptr()),
+            file_ages: table_summary(self.file_ages.as_ptr()),
+            change_coupling: table_summary(self.change_coupling.as_ptr()),
+            inheritance: table_summary(self.inheritance.as_ptr()),
         }
     }
 
@@ -264,6 +280,20 @@ impl RayMemory {
             dir,
             &sym_path,
         )?;
+        self.save_table(
+            "temporal_hotspots",
+            self.temporal_hotspots.as_ptr(),
+            dir,
+            &sym_path,
+        )?;
+        self.save_table("file_ages", self.file_ages.as_ptr(), dir, &sym_path)?;
+        self.save_table(
+            "change_coupling",
+            self.change_coupling.as_ptr(),
+            dir,
+            &sym_path,
+        )?;
+        self.save_table("inheritance", self.inheritance.as_ptr(), dir, &sym_path)?;
         Ok(())
     }
 
@@ -1461,6 +1491,120 @@ fn build_module_edges_table(health: &HealthSummary) -> Result<RayObject, MemoryE
     )
 }
 
+fn build_temporal_hotspots_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = health.metrics.evolution.temporal_hotspots.len();
+    let hotspots = &health.metrics.evolution.temporal_hotspots;
+    table(
+        4,
+        [
+            (
+                "path",
+                str_vec(rows, hotspots.iter().map(|h| h.path.clone()))?,
+            ),
+            (
+                "commits",
+                i64_vec(rows, hotspots.iter().map(|h| h.commits as i64))?,
+            ),
+            (
+                "max_complexity",
+                i64_vec(rows, hotspots.iter().map(|h| h.max_complexity as i64))?,
+            ),
+            (
+                "risk_score",
+                i64_vec(rows, hotspots.iter().map(|h| h.risk_score as i64))?,
+            ),
+        ],
+    )
+}
+
+fn build_file_ages_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = health.metrics.evolution.file_ages.len();
+    let ages = &health.metrics.evolution.file_ages;
+    table(
+        5,
+        [
+            ("path", str_vec(rows, ages.iter().map(|a| a.path.clone()))?),
+            (
+                "first_commit_unix",
+                i64_vec(rows, ages.iter().map(|a| a.first_commit_unix))?,
+            ),
+            (
+                "last_commit_unix",
+                i64_vec(rows, ages.iter().map(|a| a.last_commit_unix))?,
+            ),
+            (
+                "age_days",
+                i64_vec(rows, ages.iter().map(|a| a.age_days as i64))?,
+            ),
+            (
+                "last_changed_days",
+                i64_vec(rows, ages.iter().map(|a| a.last_changed_days as i64))?,
+            ),
+        ],
+    )
+}
+
+fn build_change_coupling_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = health.metrics.evolution.change_coupling.len();
+    let pairs = &health.metrics.evolution.change_coupling;
+    table(
+        4,
+        [
+            ("left", str_vec(rows, pairs.iter().map(|p| p.left.clone()))?),
+            (
+                "right",
+                str_vec(rows, pairs.iter().map(|p| p.right.clone()))?,
+            ),
+            (
+                "co_commits",
+                i64_vec(rows, pairs.iter().map(|p| p.co_commits as i64))?,
+            ),
+            (
+                // Stored as integer milli to fit the i64-only column type;
+                // divide by 1000 on read to recover the [0, 1] Jaccard.
+                "coupling_strength_milli",
+                i64_vec(
+                    rows,
+                    pairs
+                        .iter()
+                        .map(|p| (p.coupling_strength * 1000.0).round() as i64),
+                )?,
+            ),
+        ],
+    )
+}
+
+fn build_inheritance_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
+    let rows: Vec<(usize, &str, &str)> = report
+        .types
+        .iter()
+        .flat_map(|type_fact| {
+            type_fact
+                .bases
+                .iter()
+                .map(move |base| (type_fact.type_id, type_fact.name.as_str(), base.as_str()))
+        })
+        .collect();
+    let n = rows.len();
+    table(
+        3,
+        [
+            (
+                "type_id",
+                i64_vec(n, rows.iter().map(|(id, _, _)| *id as i64))?,
+            ),
+            (
+                "name",
+                str_vec(n, rows.iter().map(|(_, name, _)| (*name).to_string()))?,
+            ),
+            (
+                "base",
+                str_vec(n, rows.iter().map(|(_, _, base)| (*base).to_string()))?,
+            ),
+        ],
+    )
+}
+
 fn build_changed_files_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
     let rows = health.metrics.evolution.top_changed_files.len();
     table(
@@ -1596,6 +1740,21 @@ mod tests {
         assert_eq!(summary.rules.columns, 4);
         assert_eq!(summary.module_edges.columns, 3);
         assert_eq!(summary.changed_files.columns, 2);
+        let health = raysense_core::compute_health(&report);
+        assert_eq!(summary.temporal_hotspots.columns, 4);
+        assert_eq!(
+            summary.temporal_hotspots.rows as usize,
+            health.metrics.evolution.temporal_hotspots.len(),
+        );
+        assert_eq!(summary.file_ages.columns, 5);
+        assert_eq!(summary.change_coupling.columns, 4);
+        let inheritance_rows: usize = report
+            .types
+            .iter()
+            .map(|type_fact| type_fact.bases.len())
+            .sum();
+        assert_eq!(summary.inheritance.columns, 3);
+        assert_eq!(summary.inheritance.rows as usize, inheritance_rows);
     }
 
     #[test]
