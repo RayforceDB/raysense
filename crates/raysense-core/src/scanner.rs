@@ -192,7 +192,13 @@ pub fn scan_path_with_config(
             calls.push(call.clone());
         }
 
-        for mut type_fact in extract_types(file_id, &file_fact, &content, plugin.as_ref()) {
+        let line_types = extract_types(file_id, &file_fact, &content, plugin.as_ref());
+        let merged_types = merge_tree_sitter_types_with_line_types(
+            extract_tree_sitter_types(file_id, &content, language),
+            line_types,
+            plugin.as_ref(),
+        );
+        for mut type_fact in merged_types {
             type_fact.type_id = types.len();
             types.push(type_fact);
         }
@@ -2034,6 +2040,140 @@ fn extract_types(
 ///   `class Foo(Bar, Baz):` (Python)
 /// Returns identifiers stripped of access keywords (`public`, `virtual`,
 /// `protected`, `private`).
+/// Tree-sitter-driven type extraction for languages where the grammar
+/// carries inheritance directly on the class node. When tree-sitter rejects
+/// the file (parse error, unknown grammar) the caller falls back to the
+/// line-based parser. Returns `None` to mean "no tree available — use the
+/// line parser instead."
+fn extract_tree_sitter_types(
+    file_id: usize,
+    content: &str,
+    language: Language,
+) -> Option<Vec<TypeFact>> {
+    let ts_language = match language {
+        Language::Python => tree_sitter_python::LANGUAGE.into(),
+        Language::TypeScript => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        _ => return None,
+    };
+    let mut parser = Parser::new();
+    parser.set_language(&ts_language).ok()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+    let mut out = Vec::new();
+    collect_tree_sitter_types(file_id, content, root, &mut out);
+    Some(out)
+}
+
+fn collect_tree_sitter_types(
+    file_id: usize,
+    content: &str,
+    node: Node<'_>,
+    out: &mut Vec<TypeFact>,
+) {
+    let kind = node.kind();
+    let is_class = matches!(kind, "class_definition" | "class_declaration");
+    if is_class {
+        let name = node
+            .child_by_field_name("name")
+            .and_then(|n| node_text(content, n))
+            .unwrap_or_default();
+        if !name.is_empty() {
+            let bases = base_classes_from_class_node(content, node);
+            out.push(TypeFact {
+                type_id: 0,
+                file_id,
+                name,
+                is_abstract: false,
+                line: node.start_position().row + 1,
+                bases,
+            });
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_tree_sitter_types(file_id, content, child, out);
+    }
+}
+
+fn base_classes_from_class_node(content: &str, node: Node<'_>) -> Vec<String> {
+    let mut bases = Vec::new();
+    if let Some(superclasses) = node.child_by_field_name("superclasses") {
+        // Python: `class Foo(Bar, Baz):` — `superclasses` is the argument_list.
+        let mut cursor = superclasses.walk();
+        for child in superclasses.children(&mut cursor) {
+            if matches!(child.kind(), "identifier" | "attribute") {
+                if let Some(text) = node_text(content, child) {
+                    bases.push(text);
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "class_heritage" {
+            // TypeScript: `class Foo extends Bar implements Baz, Qux {}`.
+            let mut hcursor = child.walk();
+            for clause in child.children(&mut hcursor) {
+                let mut ccursor = clause.walk();
+                for sub in clause.children(&mut ccursor) {
+                    if matches!(sub.kind(), "identifier" | "type_identifier") {
+                        if let Some(text) = node_text(content, sub) {
+                            bases.push(text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+/// When tree-sitter produces type facts, prefer them over the line-based
+/// ones for matching `(name, line)` and merge their bases. Carry over
+/// `is_abstract` from the line parser since it knows about plugin-configured
+/// abstract markers and bases.
+fn merge_tree_sitter_types_with_line_types(
+    ts_types: Option<Vec<TypeFact>>,
+    line_types: Vec<TypeFact>,
+    plugin: Option<&LanguagePluginConfig>,
+) -> Vec<TypeFact> {
+    let Some(ts_types) = ts_types else {
+        return line_types;
+    };
+    let mut out = ts_types;
+    for ts_type in &mut out {
+        let abstract_by_base = plugin.is_some_and(|plugin| {
+            !plugin.abstract_base_classes.is_empty()
+                && ts_type.bases.iter().any(|base| {
+                    plugin
+                        .abstract_base_classes
+                        .iter()
+                        .any(|known| known == base)
+                })
+        });
+        if abstract_by_base {
+            ts_type.is_abstract = true;
+        }
+        if let Some(line_match) = line_types
+            .iter()
+            .find(|t| t.name == ts_type.name && t.line == ts_type.line)
+        {
+            ts_type.is_abstract = ts_type.is_abstract || line_match.is_abstract;
+            for base in &line_match.bases {
+                if !ts_type.bases.contains(base) {
+                    ts_type.bases.push(base.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 fn extract_base_class_names(line: &str) -> Vec<String> {
     const TERMINATORS: &[char] = &['{', ';', '\n'];
     const STOP_KEYWORDS: &[&str] = &[" extends ", " implements ", " with "];
@@ -3614,6 +3754,33 @@ int run(void) {
             extract_base_class_names("struct Plain;").is_empty(),
             "Rust structs declared without inheritance produce no bases",
         );
+    }
+
+    #[test]
+    fn tree_sitter_extracts_python_class_bases() {
+        let content = "class Dog(Animal, Mammal):\n    pass\n";
+        let types = extract_tree_sitter_types(0, content, Language::Python).unwrap();
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert_eq!(dog.bases, vec!["Animal".to_string(), "Mammal".to_string()]);
+        assert_eq!(dog.line, 1);
+    }
+
+    #[test]
+    fn tree_sitter_extracts_typescript_class_extends_and_implements() {
+        let content = "class Foo extends Bar implements Baz, Qux {}\n";
+        let types = extract_tree_sitter_types(0, content, Language::TypeScript).unwrap();
+        let foo = types.iter().find(|t| t.name == "Foo").unwrap();
+        assert!(foo.bases.contains(&"Bar".to_string()));
+        assert!(foo.bases.contains(&"Baz".to_string()));
+        assert!(foo.bases.contains(&"Qux".to_string()));
+    }
+
+    #[test]
+    fn tree_sitter_returns_none_for_languages_without_grammar_support() {
+        // C is supported by tree-sitter but not by the type-extraction
+        // dispatch — falls through and returns None.
+        let content = "struct S { int x; };\n";
+        assert!(extract_tree_sitter_types(0, content, Language::C).is_none());
     }
 
     #[test]
