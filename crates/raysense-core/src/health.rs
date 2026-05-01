@@ -589,6 +589,8 @@ pub struct EvolutionMetrics {
     pub temporal_hotspots: Vec<EvolutionTemporalHotspot>,
     #[serde(default)]
     pub file_ages: Vec<EvolutionFileAge>,
+    #[serde(default)]
+    pub change_coupling: Vec<EvolutionChangeCoupling>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -623,6 +625,16 @@ pub struct EvolutionFileAge {
     pub last_commit_unix: i64,
     pub age_days: u64,
     pub last_changed_days: u64,
+}
+
+/// Pair of files that change together. `coupling_strength` is the Jaccard
+/// similarity of their commit sets in `[0, 1]` (1.0 = always co-changed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionChangeCoupling {
+    pub left: String,
+    pub right: String,
+    pub co_commits: usize,
+    pub coupling_strength: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2591,6 +2603,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
     let mut author_commits: BTreeMap<String, usize> = BTreeMap::new();
     let mut file_author_commits: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     let mut file_age_window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+    let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut current_author: Option<String> = None;
     let mut current_timestamp: Option<i64> = None;
     let mut commit_files = HashSet::new();
@@ -2605,6 +2618,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
                 &mut file_commits,
                 &mut file_author_commits,
                 &mut file_age_window,
+                &mut pair_counts,
                 &mut commit_files,
                 current_author.as_deref(),
                 current_timestamp,
@@ -2634,6 +2648,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         &mut file_commits,
         &mut file_author_commits,
         &mut file_age_window,
+        &mut pair_counts,
         &mut commit_files,
         current_author.as_deref(),
         current_timestamp,
@@ -2700,6 +2715,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         .map(|dur| dur.as_secs() as i64)
         .unwrap_or(0);
     let file_ages = file_ages(&file_age_window, now_unix);
+    let change_coupling = change_coupling(&pair_counts, &file_commits);
 
     EvolutionMetrics {
         available: true,
@@ -2712,7 +2728,49 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         file_ownership,
         temporal_hotspots,
         file_ages,
+        change_coupling,
     }
+}
+
+/// Files with at least 3 co-commits, ranked by Jaccard similarity. Pairs that
+/// only ever appear together are at strength 1.0; pairs that share a few
+/// commits but each change independently are much lower.
+fn change_coupling(
+    pair_counts: &BTreeMap<(String, String), usize>,
+    file_commits: &BTreeMap<String, usize>,
+) -> Vec<EvolutionChangeCoupling> {
+    const MIN_CO_COMMITS: usize = 3;
+    let mut pairs: Vec<EvolutionChangeCoupling> = pair_counts
+        .iter()
+        .filter_map(|((a, b), count)| {
+            if *count < MIN_CO_COMMITS {
+                return None;
+            }
+            let count_a = file_commits.get(a).copied().unwrap_or(0);
+            let count_b = file_commits.get(b).copied().unwrap_or(0);
+            let union = count_a + count_b - count;
+            if union == 0 {
+                return None;
+            }
+            let strength = (*count as f64) / (union as f64);
+            Some(EvolutionChangeCoupling {
+                left: a.clone(),
+                right: b.clone(),
+                co_commits: *count,
+                coupling_strength: round3(strength),
+            })
+        })
+        .collect();
+    pairs.sort_by(|a, b| {
+        b.coupling_strength
+            .partial_cmp(&a.coupling_strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.co_commits.cmp(&a.co_commits))
+            .then_with(|| a.left.cmp(&b.left))
+            .then_with(|| a.right.cmp(&b.right))
+    });
+    pairs.truncate(20);
+    pairs
 }
 
 /// Build the top-N oldest files within the git log window. Returns at most 20
@@ -2813,14 +2871,33 @@ fn bus_factor_for(sorted: &[(&String, &usize)], total: usize) -> usize {
     sorted.len().max(1)
 }
 
+/// Cap on files-per-commit considered for pair counting. A merge or
+/// repo-wide rename touches hundreds of files but expresses no real coupling
+/// signal; capping keeps pair generation `O(N²)` bounded.
+const MAX_FILES_PER_COMMIT_FOR_COUPLING: usize = 50;
+
 fn flush_commit_files_with_author(
     file_commits: &mut BTreeMap<String, usize>,
     file_author_commits: &mut BTreeMap<String, BTreeMap<String, usize>>,
     file_age_window: &mut BTreeMap<String, (i64, i64)>,
+    pair_counts: &mut BTreeMap<(String, String), usize>,
     commit_files: &mut HashSet<String>,
     author: Option<&str>,
     timestamp: Option<i64>,
 ) {
+    if commit_files.len() <= MAX_FILES_PER_COMMIT_FOR_COUPLING {
+        let sorted: Vec<&String> = {
+            let mut v: Vec<&String> = commit_files.iter().collect();
+            v.sort();
+            v
+        };
+        for i in 0..sorted.len() {
+            for j in (i + 1)..sorted.len() {
+                let key = (sorted[i].clone(), sorted[j].clone());
+                *pair_counts.entry(key).or_default() += 1;
+            }
+        }
+    }
     for path in commit_files.drain() {
         *file_commits.entry(path.clone()).or_default() += 1;
         if let Some(author) = author {
@@ -5133,6 +5210,54 @@ order = 2
         let mut window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         window.insert("a.rs".to_string(), (1, 2));
         assert!(file_ages(&window, 0).is_empty());
+    }
+
+    #[test]
+    fn change_coupling_ranks_pairs_by_jaccard_above_min_threshold() {
+        let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+        pair_counts.insert(("a.rs".to_string(), "b.rs".to_string()), 5);
+        pair_counts.insert(("a.rs".to_string(), "c.rs".to_string()), 4);
+        pair_counts.insert(("b.rs".to_string(), "c.rs".to_string()), 2);
+        pair_counts.insert(("d.rs".to_string(), "e.rs".to_string()), 3);
+
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("a.rs".to_string(), 5);
+        file_commits.insert("b.rs".to_string(), 5);
+        file_commits.insert("c.rs".to_string(), 6);
+        file_commits.insert("d.rs".to_string(), 3);
+        file_commits.insert("e.rs".to_string(), 3);
+
+        let pairs = change_coupling(&pair_counts, &file_commits);
+
+        assert_eq!(
+            pairs.len(),
+            3,
+            "the 2-co-commit pair is below MIN_CO_COMMITS"
+        );
+        assert_eq!(pairs[0].left, "a.rs");
+        assert_eq!(pairs[0].right, "b.rs");
+        assert!(
+            (pairs[0].coupling_strength - 1.0).abs() < 1e-9,
+            "always co-changed"
+        );
+        let de = pairs.iter().find(|p| p.left == "d.rs").unwrap();
+        assert!((de.coupling_strength - 1.0).abs() < 1e-9);
+        let ac = pairs
+            .iter()
+            .find(|p| p.left == "a.rs" && p.right == "c.rs")
+            .unwrap();
+        assert!(ac.coupling_strength < 1.0);
+    }
+
+    #[test]
+    fn change_coupling_returns_empty_when_no_pair_meets_threshold() {
+        let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+        pair_counts.insert(("a.rs".to_string(), "b.rs".to_string()), 1);
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("a.rs".to_string(), 1);
+        file_commits.insert("b.rs".to_string(), 1);
+        let pairs = change_coupling(&pair_counts, &file_commits);
+        assert!(pairs.is_empty());
     }
 
     #[test]

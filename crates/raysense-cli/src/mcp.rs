@@ -830,7 +830,8 @@ fn evolution_tool(args: &Value) -> Result<Value> {
             "top_authors": limited(&health.metrics.evolution.top_authors, limit),
             "file_ownership": limited(&health.metrics.evolution.file_ownership, limit),
             "temporal_hotspots": limited(&health.metrics.evolution.temporal_hotspots, limit),
-            "file_ages": limited(&health.metrics.evolution.file_ages, limit)
+            "file_ages": limited(&health.metrics.evolution.file_ages, limit),
+            "change_coupling": limited(&health.metrics.evolution.change_coupling, limit)
         }
     }))
 }

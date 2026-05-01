@@ -2118,6 +2118,16 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         }
     }
 
+    if !health.metrics.evolution.change_coupling.is_empty() {
+        println!("change_coupling");
+        for pair in &health.metrics.evolution.change_coupling {
+            println!(
+                "  strength={:.3} co_commits={} {} <-> {}",
+                pair.coupling_strength, pair.co_commits, pair.left, pair.right,
+            );
+        }
+    }
+
     if !health.metrics.calls.top_called_functions.is_empty() {
         println!("top_called_functions");
         for function in &health.metrics.calls.top_called_functions {
