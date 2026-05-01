@@ -28,6 +28,24 @@ repository = "https://github.com/RayforceDB/raysense"
 description = "Architectural X-ray for your codebase. Live, local, agent-ready."
 readme = "README.md"
 links = "rayforce"
+# Whitelist files shipped in the published .crate. `vendor/rayforce/**` is
+# included even though it's gitignored — CI populates it from upstream
+# rayforce at the pinned SHA before `cargo package` runs.
+include = [
+    "src/**/*.rs",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    ".rayforce-version",
+    # Bundled rayforce source — narrow to just what `make lib` needs.
+    # Excludes website/, docs/, test/, examples/, bench/ to keep the
+    # published .crate well under the crates.io 10 MiB ceiling.
+    "vendor/rayforce/Makefile",
+    "vendor/rayforce/LICENSE",
+    "vendor/rayforce/include/**/*.h",
+    "vendor/rayforce/src/**/*.c",
+    "vendor/rayforce/src/**/*.h",
+]
 
 [[bin]]
 name = "raysense"
@@ -56,5 +74,4 @@ tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
 
-[build-dependencies]
-cc = "1"
+# build.rs uses only std + git/make subprocesses; no build-deps.
