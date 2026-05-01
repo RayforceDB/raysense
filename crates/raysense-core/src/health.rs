@@ -515,6 +515,12 @@ pub struct SizeMetrics {
     pub long_functions: usize,
     pub file_size_entropy: f64,
     pub file_size_entropy_bits: f64,
+    #[serde(default)]
+    pub total_lines: usize,
+    #[serde(default)]
+    pub total_comment_lines: usize,
+    #[serde(default)]
+    pub comment_ratio: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2350,6 +2356,14 @@ fn size_metrics(report: &ScanReport) -> SizeMetrics {
 
     let (file_size_entropy, file_size_entropy_bits) = file_size_distribution_entropy(report);
 
+    let total_lines: usize = report.files.iter().map(|file| file.lines).sum();
+    let total_comment_lines: usize = report.files.iter().map(|file| file.comment_lines).sum();
+    let comment_ratio = if total_lines == 0 {
+        0.0
+    } else {
+        round3(total_comment_lines as f64 / total_lines as f64)
+    };
+
     SizeMetrics {
         max_file_lines,
         max_function_lines,
@@ -2361,6 +2375,9 @@ fn size_metrics(report: &ScanReport) -> SizeMetrics {
             .count(),
         file_size_entropy,
         file_size_entropy_bits,
+        total_lines,
+        total_comment_lines,
+        comment_ratio,
     }
 }
 
@@ -5059,6 +5076,7 @@ order = 2
             lines: 1,
             bytes: 1,
             content_hash: String::new(),
+            comment_lines: 0,
         }
     }
 

@@ -2119,13 +2119,16 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         health.metrics.calls.max_function_fan_out
     );
     println!(
-        "size max_file_lines={} max_function_lines={} large_files={} long_functions={} file_size_entropy={:.3} file_size_entropy_bits={:.3}",
+        "size max_file_lines={} max_function_lines={} large_files={} long_functions={} file_size_entropy={:.3} file_size_entropy_bits={:.3} total_lines={} total_comment_lines={} comment_ratio={:.3}",
         health.metrics.size.max_file_lines,
         health.metrics.size.max_function_lines,
         health.metrics.size.large_files,
         health.metrics.size.long_functions,
         health.metrics.size.file_size_entropy,
-        health.metrics.size.file_size_entropy_bits
+        health.metrics.size.file_size_entropy_bits,
+        health.metrics.size.total_lines,
+        health.metrics.size.total_comment_lines,
+        health.metrics.size.comment_ratio
     );
     println!(
         "test_gap production_files={} test_files={} files_without_nearby_tests={}",

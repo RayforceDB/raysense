@@ -147,6 +147,7 @@ pub fn scan_path_with_config(
             lines: content.lines().count(),
             bytes: content.len(),
             content_hash: hash_content(&content),
+            comment_lines: count_comment_lines(&content),
         };
 
         let mut file_functions = if let Some(plugin) = plugin.as_ref() {
@@ -1637,6 +1638,42 @@ fn rust_use_target(content: &str, node: Node<'_>) -> Option<String> {
     )
 }
 
+/// Heuristic count of comment lines. A line is treated as a comment if its
+/// first non-whitespace token is one of `//`, `#`, `--`, `;` (lisp/asm),
+/// `*` (continuation of a `/*` block), or if the line falls between `/* */`
+/// markers. Cross-language and conservative — the goal is a comparable ratio,
+/// not exact counts.
+fn count_comment_lines(content: &str) -> usize {
+    let mut count = 0;
+    let mut in_block = false;
+    for raw_line in content.lines() {
+        let line = raw_line.trim_start();
+        if in_block {
+            count += 1;
+            if line.contains("*/") {
+                in_block = false;
+            }
+            continue;
+        }
+        if line.starts_with("/*") {
+            count += 1;
+            if !line.contains("*/") {
+                in_block = true;
+            }
+            continue;
+        }
+        if line.starts_with("//")
+            || line.starts_with('#')
+            || line.starts_with("--")
+            || line.starts_with(';')
+            || line.starts_with('*')
+        {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Fan a single `prefix::{a, b, c}` style target out into `["prefix::a",
 /// "prefix::b", "prefix::c"]`. Inputs without braces pass through unchanged
 /// so callers can use this unconditionally. Nested braces are not supported —
@@ -2718,6 +2755,24 @@ fn helper() {}
     }
 
     #[test]
+    fn count_comment_lines_handles_common_languages() {
+        let rust = "// header\nfn main() {}\n/// doc\n/* block\n  inside\n*/\nlet x = 1;\n";
+        assert_eq!(
+            count_comment_lines(rust),
+            5,
+            "// + /// + /* + inside + */ all count",
+        );
+        let python = "# top\n\"\"\"hi\"\"\"\nx = 1  # trailing\n# another\n";
+        assert_eq!(
+            count_comment_lines(python),
+            2,
+            "Only line-prefix # is counted, not trailing or docstrings",
+        );
+        let none = "fn main() { let x = 1; }\n";
+        assert_eq!(count_comment_lines(none), 0);
+    }
+
+    #[test]
     fn expand_brace_targets_handles_common_shapes() {
         assert_eq!(expand_brace_targets("foo::bar"), vec!["foo::bar"]);
         assert_eq!(
@@ -3572,6 +3627,7 @@ int run(void) {
             lines: 1,
             bytes: 30,
             content_hash: String::new(),
+            comment_lines: 0,
         };
         let content = "class Dog(AbstractAnimal):\n";
         let plugin = LanguagePluginConfig {
@@ -3601,6 +3657,7 @@ int run(void) {
             lines: 4,
             bytes: 80,
             content_hash: String::new(),
+            comment_lines: 0,
         };
         let content = "trait Animal {}\npub struct Dog;\nstruct Cat;\nfn meow() {}\n";
         let types = extract_types(0, &file, content, None);
@@ -3672,6 +3729,7 @@ int run(void) {
             lines: 1,
             bytes: 1,
             content_hash: String::new(),
+            comment_lines: 0,
         }
     }
 

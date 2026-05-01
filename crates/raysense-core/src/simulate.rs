@@ -494,6 +494,7 @@ mod tests {
             lines: 100,
             bytes: 100,
             content_hash: String::new(),
+            comment_lines: 0,
         }
     }
 

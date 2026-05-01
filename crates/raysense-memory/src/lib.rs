@@ -1893,6 +1893,7 @@ mod tests {
             lines,
             bytes: lines * 10,
             content_hash: format!("hash-{file_id}"),
+            comment_lines: 0,
         }
     }
 }

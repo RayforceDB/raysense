@@ -73,6 +73,10 @@ pub struct FileFact {
     pub lines: usize,
     pub bytes: usize,
     pub content_hash: String,
+    /// Number of lines that look like comments (line-prefix or block-body).
+    /// Heuristic — correctness is best-effort across languages.
+    #[serde(default)]
+    pub comment_lines: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
