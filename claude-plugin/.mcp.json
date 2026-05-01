@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "raysense": {
+      "command": "raysense",
+      "args": ["--mcp"]
+    }
+  }
+}
