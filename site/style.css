@@ -49,6 +49,42 @@
   src: url('assets/fonts/jbmono-600.woff2') format('woff2');
 }
 
+/* ───────── fallback font-face overrides ─────────
+   Eliminate the layout shift when the webfont swaps in: each fallback
+   uses a system font but is rescaled and re-anchored so its line-box
+   metrics match the eventual webfont. font-weight: 100 900 makes the
+   override apply across all weights (without it, only 400 is covered
+   and bold text bypasses the fix). Used as the second name in each
+   font stack below.
+*/
+@font-face {
+  font-family: 'Inter Fallback';
+  src: local('Arial'), local('Helvetica');
+  font-weight: 100 900;
+  size-adjust: 107%;
+  ascent-override: 90%;
+  descent-override: 22%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: 'Oswald Fallback';
+  src: local('Arial Narrow'), local('Impact'), local('Arial');
+  font-weight: 100 900;
+  size-adjust: 87%;
+  ascent-override: 100%;
+  descent-override: 31%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: 'JetBrains Mono Fallback';
+  src: local('Menlo'), local('Consolas'), local('Courier New');
+  font-weight: 100 900;
+  size-adjust: 99%;
+  ascent-override: 100%;
+  descent-override: 22%;
+  line-gap-override: 0%;
+}
+
 /* ───────── tokens ───────── */
 :root {
   --bg:           #0a0e13;
@@ -67,9 +103,9 @@
   --accent-blue:  #60a5fa;          /* secondary accent */
   --accent-orange:#e9a033;          /* shared with rayforce, used sparingly */
 
-  --font:    'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-display: 'Oswald', 'Inter', ui-sans-serif, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  --font:    'Inter', 'Inter Fallback', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Oswald', 'Oswald Fallback', 'Inter', 'Inter Fallback', ui-sans-serif, sans-serif;
+  --font-mono: 'JetBrains Mono', 'JetBrains Mono Fallback', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   --radius-sm: 6px;
   --radius-md: 10px;
