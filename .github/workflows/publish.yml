@@ -19,16 +19,28 @@
 #   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #   SOFTWARE.
 
+# Tag-driven release pipeline. Push a `vX.Y.Z` tag and this workflow:
+#   1. Verifies the tag matches Cargo.toml's version field.
+#   2. Vendors rayforce at the SHA pinned in `.rayforce-version`.
+#   3. Runs cargo test.
+#   4. Publishes the crate to crates.io (idempotent: skips if already there).
+#   5. Generates release notes from conventional commits since the previous tag.
+#   6. Creates the GitHub Release with those notes.
+#   7. Smoke-tests the published crate (cargo install + cargo check as dep).
+#
+# Manual dry-run available via the workflow_dispatch trigger; that path
+# does `cargo publish --dry-run` and skips release-creation.
+
 name: publish
 
 on:
-  release:
-    types:
-      - published
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run publish commands with --dry-run where possible"
+        description: "Run publish + smoke commands with --dry-run"
         required: true
         type: boolean
         default: true
@@ -40,14 +52,43 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed for `gh release create`
 
     steps:
       - name: Checkout raysense
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # full history needed for changelog generation
+
+      - name: Resolve target version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "$cargo_version" ]]; then
+            echo "::error::Could not parse version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "value=$cargo_version" >> "$GITHUB_OUTPUT"
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [[ "$tag_version" != "$cargo_version" ]]; then
+              echo "::error::Tag $GITHUB_REF_NAME implies version $tag_version but Cargo.toml has $cargo_version. Bump Cargo.toml or retag." >&2
+              exit 1
+            fi
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved version: $cargo_version"
 
       - name: Vendor rayforce at pinned SHA
         # The published .crate must contain the rayforce source so end users
-        # can `cargo install raysense` without network access. We clone it
+        # can `cargo install raysense` without network access. Clone it
         # here, strip .git/, and let `cargo package` pick it up via the
         # Cargo.toml `include` whitelist (vendor/ is gitignored otherwise).
         shell: bash
@@ -69,82 +110,148 @@ jobs:
       - name: Test
         run: cargo test
 
-      - name: Package and publish crates
+      - name: Publish to crates.io
         shell: bash
-        run: |
-          set -euo pipefail
-
-          dry_run=false
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
-            dry_run=true
-          fi
-
-          version_of() {
-            sed -n 's/^version = "\(.*\)"/\1/p' "crates/$1/Cargo.toml" | head -n 1
-          }
-
-          wait_for_crate() {
-            local package="$1"
-            local version="$2"
-            for delay in 10 20 30 60 90; do
-              if crate_exists "$package" "$version"; then
-                return 0
-              fi
-              sleep "$delay"
-            done
-            echo "$package $version did not appear in the registry index in time" >&2
-            return 1
-          }
-
-          crate_exists() {
-            local package="$1"
-            local version="$2"
-            cargo search "$package" --limit 1 | grep -q "^$package = \"$version\""
-          }
-
-          publish_crate() {
-            local package="$1"
-            local version
-            version="$(version_of "$package")"
-
-            if [[ "$dry_run" == "true" ]]; then
-              if ! cargo package -p "$package"; then
-                echo "::notice::$package package check requires already-published dependency versions"
-                return 0
-              fi
-              if ! cargo publish -p "$package" --dry-run; then
-                echo "::notice::$package publish dry run requires already-published dependency versions"
-                return 0
-              fi
-              return 0
-            fi
-
-            if crate_exists "$package" "$version"; then
-              echo "$package $version is already published"
-              return 0
-            fi
-
-            cargo package -p "$package"
-            cargo publish -p "$package"
-            wait_for_crate "$package" "$version"
-          }
-
-          publish_crate raysense
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Post-release smoke
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
-        shell: bash
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          smoke_dir="$(mktemp -d)"
 
-          cargo install raysense --version "$version" --root "$smoke_dir/install"
+          already_published() {
+            cargo search raysense --limit 1 | grep -q "^raysense = \"$VERSION\""
+          }
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Dry run: cargo package + cargo publish --dry-run"
+            cargo package
+            cargo publish --dry-run
+            exit 0
+          fi
+
+          if already_published; then
+            echo "raysense $VERSION is already on crates.io, skipping publish"
+            exit 0
+          fi
+
+          cargo package
+          cargo publish
+
+          # Wait for the registry index to catch up before declaring success.
+          for delay in 10 20 30 60 90; do
+            if already_published; then
+              echo "raysense $VERSION is now visible on crates.io"
+              exit 0
+            fi
+            sleep "$delay"
+          done
+          echo "::error::raysense $VERSION did not appear in the registry index in time" >&2
+          exit 1
+
+      - name: Generate release notes
+        if: steps.version.outputs.is_tag == 'true'
+        id: notes
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # Pick the closest tag that strictly precedes HEAD (i.e. the
+          # previous release). On the first ever release there is none,
+          # so fall back to the full history.
+          prev_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+          if [[ -n "$prev_tag" ]]; then
+            range="${prev_tag}..HEAD"
+            compare_url="https://github.com/${GITHUB_REPOSITORY}/compare/${prev_tag}...${TAG}"
+          else
+            range="HEAD"
+            compare_url="https://github.com/${GITHUB_REPOSITORY}/commits/${TAG}"
+          fi
+
+          # Group commits by conventional-commit type. Each group emits
+          # only if it had any matching commits.
+          notes=release-notes.md
+          : > "$notes"
+
+          emit_section() {
+            local heading="$1" pattern="$2" entries
+            entries="$(git log --pretty='format:- %s (%h)' "$range" \
+              | grep -E "^- ${pattern}(\([^)]*\))?(!)?: " \
+              | sed -E "s/^- ${pattern}(\([^)]*\))?(!)?: /- /" || true)"
+            if [[ -n "$entries" ]]; then
+              {
+                echo "### $heading"
+                echo
+                echo "$entries"
+                echo
+              } >> "$notes"
+            fi
+          }
+
+          {
+            echo "## What's changed"
+            echo
+          } >> "$notes"
+
+          emit_section "Features"        "feat"
+          emit_section "Bug fixes"       "fix"
+          emit_section "Performance"     "perf"
+          emit_section "Refactoring"     "refactor"
+          emit_section "Documentation"   "docs"
+          emit_section "Build & CI"      "build|ci"
+          emit_section "Chores"          "chore|style|test"
+
+          # Catch-all for anything that did not match the patterns above.
+          other="$(git log --pretty='format:- %s (%h)' "$range" \
+            | grep -vE "^- (feat|fix|perf|refactor|docs|build|ci|chore|style|test)(\([^)]*\))?(!)?: " || true)"
+          if [[ -n "$other" ]]; then
+            {
+              echo "### Other"
+              echo
+              echo "$other"
+              echo
+            } >> "$notes"
+          fi
+
+          {
+            echo "**Full changelog:** $compare_url"
+          } >> "$notes"
+
+          echo "Generated notes:"
+          cat "$notes"
+          echo "notes_file=$notes" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.is_tag == 'true' && (inputs.dry_run != true)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, updating notes"
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" \
+              --title "raysense $TAG" \
+              --notes-file "$NOTES_FILE"
+          fi
+
+      - name: Smoke test the published crate
+        if: inputs.dry_run != true
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          cargo install raysense --version "$VERSION" --root "$smoke_dir/install"
           "$smoke_dir/install/bin/raysense" --version
 
           cargo new "$smoke_dir/library-smoke"
           cd "$smoke_dir/library-smoke"
-          cargo add "raysense@$version"
+          cargo add "raysense@$VERSION"
           cargo check
