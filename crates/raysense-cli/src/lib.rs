@@ -781,6 +781,32 @@ fn visualization_html(
         .iter()
         .map(|file| (file.path.clone(), file.commits))
         .collect();
+    let age_by_path: std::collections::HashMap<String, u64> = health
+        .metrics
+        .evolution
+        .file_ages
+        .iter()
+        .map(|file| (file.path.clone(), file.age_days))
+        .collect();
+    let risk_by_path: std::collections::HashMap<String, usize> = health
+        .metrics
+        .evolution
+        .temporal_hotspots
+        .iter()
+        .map(|file| (file.path.clone(), file.risk_score))
+        .collect();
+    let instability_by_module: std::collections::HashMap<String, f64> = health
+        .metrics
+        .architecture
+        .unstable_modules
+        .iter()
+        .map(|module| (module.module.clone(), module.instability))
+        .collect();
+    let directory_for = |path: &str| -> String {
+        path.rsplit_once('/')
+            .map(|(dir, _)| dir.to_string())
+            .unwrap_or_default()
+    };
     let cells = report
         .files
         .iter()
@@ -788,12 +814,23 @@ fn visualization_html(
             let width = ((file.lines as f64 / max_lines as f64) * 100.0).max(8.0);
             let path = file.path.to_string_lossy();
             let churn = churn_by_path.get(path.as_ref()).copied().unwrap_or(0);
+            let age = age_by_path.get(path.as_ref()).copied().unwrap_or(0);
+            let risk = risk_by_path.get(path.as_ref()).copied().unwrap_or(0);
+            let instability = instability_by_module
+                .get(file.module.as_str())
+                .copied()
+                .unwrap_or(0.0);
+            let directory = directory_for(path.as_ref());
             format!(
-                "<div class=\"file\" data-path=\"{}\" data-lines=\"{}\" data-language=\"{}\" data-churn=\"{}\" style=\"flex-basis:{width:.1}%\"><b>{}</b><span>{} lines</span><small>{}</small></div>",
+                "<div class=\"file\" data-path=\"{}\" data-lines=\"{}\" data-language=\"{}\" data-churn=\"{}\" data-age=\"{}\" data-risk=\"{}\" data-instability=\"{:.3}\" data-directory=\"{}\" style=\"flex-basis:{width:.1}%\"><b>{}</b><span>{} lines</span><small>{}</small></div>",
                 html_escape(&path),
                 file.lines,
                 html_escape(&file.language_name),
                 churn,
+                age,
+                risk,
+                instability,
+                html_escape(&directory),
                 html_escape(&path),
                 file.lines,
                 html_escape(&file.language_name)
@@ -996,9 +1033,20 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <label for="color-mode">Color by</label>
 <select id="color-mode">
 <option value="language">language</option>
+<option value="mono">mono</option>
 <option value="lines">lines</option>
 <option value="churn">churn</option>
+<option value="age">age</option>
+<option value="risk">risk</option>
+<option value="instability">instability</option>
 </select>
+<label for="focus-mode">Focus</label>
+<select id="focus-mode">
+<option value="all">all files</option>
+<option value="language">by language</option>
+<option value="directory">by directory</option>
+</select>
+<select id="focus-value" hidden></select>
 </div>
 <div class="grid" id="files-grid">{}</div>
 <aside id="file-detail" class="detail" hidden>
@@ -1022,37 +1070,100 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
   var title = document.getElementById('file-detail-title');
   var body = document.getElementById('file-detail-body');
   var closeBtn = document.getElementById('file-detail-close');
-  var select = document.getElementById('color-mode');
-  if (!grid || !select) return;
+  var colorSelect = document.getElementById('color-mode');
+  var focusModeSelect = document.getElementById('focus-mode');
+  var focusValueSelect = document.getElementById('focus-value');
+  if (!grid || !colorSelect) return;
   var cells = Array.prototype.slice.call(grid.querySelectorAll('.file'));
+  var ATTR_FOR_MODE = {{
+    lines: 'data-lines',
+    churn: 'data-churn',
+    age: 'data-age',
+    risk: 'data-risk',
+    instability: 'data-instability'
+  }};
+  var HUE_FOR_MODE = {{
+    lines: 210,
+    churn: 12,
+    age: 280,
+    risk: 350,
+    instability: 50
+  }};
   function maxOf(attr) {{
     return cells.reduce(function(acc, el) {{
-      var v = parseInt(el.getAttribute(attr), 10) || 0;
+      var v = parseFloat(el.getAttribute(attr)) || 0;
       return v > acc ? v : acc;
-    }}, 1);
+    }}, 0);
   }}
   function recolor(mode) {{
     if (mode === 'language') {{
       cells.forEach(function(el) {{ el.style.background = ''; }});
       return;
     }}
-    var attr = mode === 'lines' ? 'data-lines' : 'data-churn';
+    if (mode === 'mono') {{
+      cells.forEach(function(el) {{ el.style.background = '#1d2838'; }});
+      return;
+    }}
+    var attr = ATTR_FOR_MODE[mode];
+    if (!attr) {{ return; }}
     var max = maxOf(attr);
+    var hue = HUE_FOR_MODE[mode] || 210;
     cells.forEach(function(el) {{
-      var v = parseInt(el.getAttribute(attr), 10) || 0;
+      var v = parseFloat(el.getAttribute(attr)) || 0;
       var ratio = max > 0 ? v / max : 0;
-      var hue = mode === 'churn' ? 12 : 210;
       var lightness = 18 + Math.round(ratio * 32);
       el.style.background = 'hsl(' + hue + ',60%,' + lightness + '%)';
     }});
   }}
-  select.addEventListener('change', function() {{ recolor(select.value); }});
+  function applyFocus() {{
+    var mode = focusModeSelect.value;
+    var value = focusValueSelect.value;
+    cells.forEach(function(el) {{
+      if (mode === 'all') {{
+        el.style.display = '';
+        return;
+      }}
+      var attr = mode === 'language' ? 'data-language' : 'data-directory';
+      el.style.display = el.getAttribute(attr) === value ? '' : 'none';
+    }});
+  }}
+  function rebuildFocusValues() {{
+    var mode = focusModeSelect.value;
+    if (mode === 'all') {{
+      focusValueSelect.innerHTML = '';
+      focusValueSelect.hidden = true;
+      applyFocus();
+      return;
+    }}
+    var attr = mode === 'language' ? 'data-language' : 'data-directory';
+    var seen = {{}};
+    cells.forEach(function(el) {{
+      var v = el.getAttribute(attr) || '';
+      if (v && !seen[v]) {{ seen[v] = true; }}
+    }});
+    var keys = Object.keys(seen).sort();
+    focusValueSelect.innerHTML = keys.map(function(k) {{
+      return '<option value="' + k + '">' + k + '</option>';
+    }}).join('');
+    focusValueSelect.hidden = keys.length === 0;
+    applyFocus();
+  }}
+  colorSelect.addEventListener('change', function() {{ recolor(colorSelect.value); }});
+  if (focusModeSelect) {{
+    focusModeSelect.addEventListener('change', rebuildFocusValues);
+    focusValueSelect.addEventListener('change', applyFocus);
+    rebuildFocusValues();
+  }}
   cells.forEach(function(el) {{
     el.addEventListener('click', function() {{
       title.textContent = el.getAttribute('data-path');
       body.innerHTML = '<dt>language</dt><dd>' + el.getAttribute('data-language') +
         '</dd><dt>lines</dt><dd>' + el.getAttribute('data-lines') +
-        '</dd><dt>churn (commits)</dt><dd>' + el.getAttribute('data-churn') + '</dd>';
+        '</dd><dt>churn (commits)</dt><dd>' + el.getAttribute('data-churn') +
+        '</dd><dt>age (days)</dt><dd>' + el.getAttribute('data-age') +
+        '</dd><dt>risk score</dt><dd>' + el.getAttribute('data-risk') +
+        '</dd><dt>instability</dt><dd>' + el.getAttribute('data-instability') +
+        '</dd>';
       detail.hidden = false;
     }});
   }});
