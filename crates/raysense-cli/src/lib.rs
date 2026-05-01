@@ -1151,8 +1151,12 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <option value="calls">calls</option>
 <option value="inherits">inherits</option>
 </select>
+<label for="show-edges"><input type="checkbox" id="show-edges">show edges</label>
 </div>
+<div class="files-area">
 <div class="grid" id="files-grid">{}</div>
+<svg id="file-edges" class="overlay" aria-hidden="true"></svg>
+</div>
 <aside id="file-detail" class="detail" hidden>
 <button type="button" id="file-detail-close">close</button>
 <h3 id="file-detail-title"></h3>
@@ -1171,6 +1175,13 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 <style>
 .file.dim{{opacity:.18}}.file.upstream{{outline:2px solid #f0a040}}
 .file.downstream{{outline:2px solid #4ec0a8}}.file.selected{{outline:3px solid #ffd86b}}
+.files-area{{position:relative}}
+.overlay{{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1}}
+.overlay line{{stroke:#78a6d8;opacity:.45;stroke-width:1}}
+.overlay line.imports{{stroke:#78a6d8}}
+.overlay line.calls{{stroke:#4ec0a8}}
+.overlay line.inherits{{stroke:#f0a040}}
+.overlay line.dim{{opacity:.08}}
 </style>
 <script>
 (function() {{
@@ -1320,16 +1331,75 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
       ' out, ' +
       entry.imports_in.length + '/' + entry.calls_in.length + '/' + entry.inherits_in.length + ' in');
   }}
+  var overlay = document.getElementById('file-edges');
+  var showEdgesToggle = document.getElementById('show-edges');
+  function visibleCenter(el, areaRect) {{
+    if (!el || el.style.display === 'none') return null;
+    var r = el.getBoundingClientRect();
+    return [r.left + r.width / 2 - areaRect.left, r.top + r.height / 2 - areaRect.top];
+  }}
+  function renderEdges() {{
+    if (!overlay) return;
+    overlay.innerHTML = '';
+    if (!showEdgesToggle || !showEdgesToggle.checked) return;
+    var area = overlay.parentElement;
+    var areaRect = area.getBoundingClientRect();
+    overlay.setAttribute('width', areaRect.width);
+    overlay.setAttribute('height', areaRect.height);
+    var filter = edgeFilterSelect ? edgeFilterSelect.value : 'all';
+    var types = filter === 'all'
+      ? ['imports', 'calls', 'inherits']
+      : [filter];
+    var down = selectedPath ? reachable(selectedPath, 'out') : null;
+    var up = selectedPath ? reachable(selectedPath, 'in') : null;
+    adjacency.forEach(function(entry) {{
+      var fromCell = cellsByPath[entry.path];
+      var fromCenter = visibleCenter(fromCell, areaRect);
+      if (!fromCenter) return;
+      types.forEach(function(type) {{
+        (entry[type + '_out'] || []).forEach(function(toPath) {{
+          var toCell = cellsByPath[toPath];
+          var toCenter = visibleCenter(toCell, areaRect);
+          if (!toCenter) return;
+          var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          line.setAttribute('x1', fromCenter[0]);
+          line.setAttribute('y1', fromCenter[1]);
+          line.setAttribute('x2', toCenter[0]);
+          line.setAttribute('y2', toCenter[1]);
+          var classes = type;
+          if (selectedPath) {{
+            var inRoute = (entry.path === selectedPath || toPath === selectedPath ||
+              (down && (down[entry.path] || down[toPath])) ||
+              (up && (up[entry.path] || up[toPath])));
+            if (!inRoute) classes += ' dim';
+          }}
+          line.setAttribute('class', classes);
+          overlay.appendChild(line);
+        }});
+      }});
+    }});
+  }}
+  if (showEdgesToggle) {{
+    showEdgesToggle.addEventListener('change', renderEdges);
+  }}
+  window.addEventListener('resize', renderEdges);
   colorSelect.addEventListener('change', function() {{ recolor(colorSelect.value); }});
   if (focusModeSelect) {{
-    focusModeSelect.addEventListener('change', rebuildFocusValues);
-    focusValueSelect.addEventListener('change', applyFocus);
+    focusModeSelect.addEventListener('change', function() {{
+      rebuildFocusValues();
+      renderEdges();
+    }});
+    focusValueSelect.addEventListener('change', function() {{
+      applyFocus();
+      renderEdges();
+    }});
     rebuildFocusValues();
   }}
   if (edgeFilterSelect) {{
     edgeFilterSelect.addEventListener('change', function() {{
       highlightRoutes();
       if (focusModeSelect.value === 'impact') applyFocus();
+      renderEdges();
     }});
   }}
   cells.forEach(function(el) {{
@@ -1348,6 +1418,7 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
       detail.hidden = false;
       highlightRoutes();
       if (focusModeSelect.value === 'impact') applyFocus();
+      renderEdges();
     }});
   }});
   if (closeBtn) {{
@@ -1356,6 +1427,7 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
       selectedPath = null;
       highlightRoutes();
       if (focusModeSelect.value === 'impact') applyFocus();
+      renderEdges();
     }});
   }}
 }})();
