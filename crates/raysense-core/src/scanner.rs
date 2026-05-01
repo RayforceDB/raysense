@@ -1589,7 +1589,9 @@ fn collect_tree_sitter_imports(
     match node.kind() {
         "use_declaration" => {
             if let Some(target) = rust_use_target(content, node) {
-                imports.push(new_import(file_id, &target, "use"));
+                for expanded in expand_brace_targets(&target) {
+                    imports.push(new_import(file_id, &expanded, "use"));
+                }
             }
         }
         "mod_item" => {
@@ -1633,6 +1635,32 @@ fn rust_use_target(content: &str, node: Node<'_>) -> Option<String> {
             .trim()
             .to_string(),
     )
+}
+
+/// Fan a single `prefix::{a, b, c}` style target out into `["prefix::a",
+/// "prefix::b", "prefix::c"]`. Inputs without braces pass through unchanged
+/// so callers can use this unconditionally. Nested braces are not supported —
+/// only the first brace group is expanded.
+fn expand_brace_targets(target: &str) -> Vec<String> {
+    let Some(open) = target.find('{') else {
+        return vec![target.to_string()];
+    };
+    let Some(close_rel) = target[open..].find('}') else {
+        return vec![target.to_string()];
+    };
+    let close = open + close_rel;
+    let prefix = &target[..open];
+    let suffix = &target[close + 1..];
+    let items: Vec<String> = target[open + 1..close]
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|item| format!("{prefix}{item}{suffix}"))
+        .collect();
+    if items.is_empty() {
+        return vec![target.to_string()];
+    }
+    items
 }
 
 fn rust_mod_target(content: &str, node: Node<'_>) -> Option<String> {
@@ -2594,6 +2622,44 @@ fn helper() {}
     }
 
     #[test]
+    fn expand_brace_targets_handles_common_shapes() {
+        assert_eq!(expand_brace_targets("foo::bar"), vec!["foo::bar"]);
+        assert_eq!(
+            expand_brace_targets("foo::{a, b, c}"),
+            vec!["foo::a", "foo::b", "foo::c"],
+        );
+        assert_eq!(
+            expand_brace_targets("foo::{ a , b }"),
+            vec!["foo::a", "foo::b"],
+            "trims whitespace per item",
+        );
+        assert_eq!(
+            expand_brace_targets("foo::{a}"),
+            vec!["foo::a"],
+            "single-item brace expansion",
+        );
+        assert_eq!(
+            expand_brace_targets("foo::{}"),
+            vec!["foo::{}"],
+            "empty brace falls back to original target",
+        );
+        assert_eq!(
+            expand_brace_targets("foo::{a"),
+            vec!["foo::{a"],
+            "missing close brace falls back to original target",
+        );
+    }
+
+    #[test]
+    fn fans_rust_brace_imports_into_separate_targets() {
+        let content = "use crate::{graph, scanner};";
+        let imports = extract_imports(11, Language::Rust, content);
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].target, "crate::graph");
+        assert_eq!(imports[1].target, "crate::scanner");
+    }
+
+    #[test]
     fn extracts_python_facts() {
         let content = r#"
 import os
@@ -3308,11 +3374,13 @@ int run(void) {
             "use crate::facts::{FileFact, ImportFact};\nmod graph;\nmod tests {\n}\n",
         );
 
-        assert_eq!(imports.len(), 2);
-        assert_eq!(imports[0].target, "crate::facts::{FileFact, ImportFact}");
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[0].target, "crate::facts::FileFact");
         assert_eq!(imports[0].kind, "use");
-        assert_eq!(imports[1].target, "graph");
-        assert_eq!(imports[1].kind, "mod");
+        assert_eq!(imports[1].target, "crate::facts::ImportFact");
+        assert_eq!(imports[1].kind, "use");
+        assert_eq!(imports[2].target, "graph");
+        assert_eq!(imports[2].kind, "mod");
     }
 
     #[test]
