@@ -23,21 +23,38 @@
 
 # Raysense
 
-**Architectural X-ray for your codebase. Live, local, agent-ready.**
+**An agent writes the code. Raysense keeps the architecture honest.**
 
-Point Raysense at a repository and it tells you, in seconds, where the
-load-bearing files are, which modules are tangled, where complexity is
-hiding, and which parts of the codebase are bus-factor-of-one. It runs
-locally, ships zero data anywhere, and exposes everything to AI coding
-agents through MCP.
+AI coding agents work at machine speed. The codebase they leave behind
+— cycles, god files, files that quietly change together every commit,
+areas no test covers — drifts at the same speed, and you can't see any
+of it from a diff. Raysense scans the repository, scores its structure,
+and shows the result to you, your CI, your live dashboard, and (most
+importantly) to the agent itself, before it edits next.
 
-## Why
+## The problem
 
-LLM coding agents read source one file at a time. They don't see the
-*shape* of your project: the cycles, the god files, the dead code, the
-files that change together every commit. Raysense computes that shape
-once and serves it back as queryable structure — to your agents, to
-your CI, and to a live dashboard you can keep open while you work.
+A coding agent reads one file at a time. It doesn't see the *shape* of
+your project: which modules are tangled, which files are load-bearing,
+where complexity is concentrated, what changed together every commit
+last quarter. Reviewers don't see it either. By the time a structural
+regression is obvious in production, the cost of unwinding it has
+compounded.
+
+## One quality signal
+
+Six A–F dimensions, computed from your repository's dependency graph
+and commit history, distilled into one 0–100 score:
+
+- **Modularity** — how cleanly modules separate
+- **Acyclicity** — how much the dependency graph really is a graph
+- **Depth** — how layered (or how flat-and-tangled) the code is
+- **Equality** — how evenly responsibility is distributed
+- **Redundancy** — how much logic is duplicated
+- **Structural uniformity** — how consistent the patterns are
+
+The score is ungameable. You can't trick it by adding tests or
+shuffling files; the graph either has cycles or it doesn't.
 
 ## Install
 
@@ -45,50 +62,71 @@ your CI, and to a live dashboard you can keep open while you work.
 cargo install raysense
 ```
 
-Or build from source — see [Building](#building) below.
-
 ## Use
 
-One command, a few flags. The default is a health report.
-
 ```bash
-raysense .                  # health report
-raysense . --json           # machine-readable JSON
-raysense . --check          # CI gate, exits non-zero on rule failures
-raysense . --watch          # rescan + reprint on a 2s loop
-raysense . --ui             # live dashboard at http://localhost:7000
-raysense --mcp              # stdio MCP server for agents
+raysense .              # health report
+raysense . --check      # CI gate, exits non-zero on rule violations
+raysense . --watch      # rescan + reprint on a 2s loop
+raysense . --ui         # live dashboard at http://localhost:7000
+raysense --mcp          # stdio MCP server for agents
 ```
 
-Power-user operations live as subcommands: `baseline save|diff`,
-`plugin sync`, `policy init`, `trend record|show`, `whatif`. See
-`raysense --help` for the full surface.
+## For coding agents
 
-## What it measures
+Raysense ships as a Claude Code plugin:
 
-- **Coupling, cohesion, instability** — Robert Martin's stable-foundation
-  model, plus blast radius and main-sequence distance.
-- **Complexity** — cyclomatic and cognitive, per function and aggregated.
-- **Cycles and depth** — strongly-connected components, longest acyclic
-  path, upward-layer violations.
-- **Evolution** — bus factor, change-coupling pairs, temporal hotspots
-  (churn × complexity), file age.
-- **Types and inheritance** — type facts with base-class extraction
-  (Python and TypeScript via tree-sitter, others via line parsing).
-- **Test gaps** — files without nearby tests, ranked by risk.
-- **Six A–F dimensions** — modularity, acyclicity, depth, equality,
-  redundancy, structural uniformity. One 0–100 quality signal.
+```text
+/plugin marketplace add RayforceDB/raysense
+/plugin install raysense
+```
+
+Four phase-scoped skills: scan + baseline at session start, blast
+radius before edits, regression diff after, on-demand architecture
+audits. Multi-codebase isolation is cwd-driven — per-project state
+stays in `<repo>/.raysense/`. Two sessions on two repos = two
+independent baselines, zero cross-project bleed.
+
+## What you get
+
+- **Live treemap dashboard** — every file, every metric, every cycle,
+  open in your browser while you work
+- **Baselines and what-if** — diff against a saved snapshot; simulate
+  an edit (delete a file, break a cycle) before touching the tree
+- **Splayed-table agent memory** — scan results materialized as
+  columnar tables so an agent's follow-up questions are instant
+  reads, not re-scans
+- **Test gap detection** — files without nearby tests, ranked by risk
+- **Evolution signal** — bus factor, change-coupling pairs, temporal
+  hotspots (churn × complexity)
+- **45 languages out of the box** — Rust, Python, TypeScript, C, C++
+  via tree-sitter; 40 more (Go, Java, Kotlin, Swift, Ruby, Elixir,
+  Haskell, Clojure, Zig, …) via configurable plugins. Add your own in
+  `.raysense/plugins/`.
+
+## Built on Rayforce
+
+The splayed-table agent memory, the baseline tables you can query
+back, and the columnar storage behind the live dashboard are all
+powered by **[Rayforce](https://github.com/RayforceDB/rayforce)** —
+an in-memory analytics runtime optimized for graph-shaped queries.
+Rayforce is what makes "ask the same question a hundred times during
+a coding session" cost a hundred microseconds instead of a hundred
+re-scans. It's open-source and linked statically into the raysense
+binary; there is nothing extra to install.
+
+If you're building structural-analysis tooling of your own, take a
+look — Rayforce is a standalone project and useful well beyond this
+one.
 
 ## Configuration
 
-Everything is overridable in `.raysense.toml` at the repo root: rule
+`.raysense.toml` at the repo root overrides everything: rule
 thresholds, plugin language definitions, baseline scoring, what-if
 ignored paths. Per-language rule overrides let one language demand
 stricter caps than another. `raysense --help` lists every flag.
 
 ## Building from source
-
-The C dependency is vendored. Clone and build — that's it:
 
 ```bash
 git clone https://github.com/RayforceDB/raysense.git
@@ -96,7 +134,10 @@ cd raysense
 cargo build --release
 ```
 
-No external setup, no submodules, no environment variables.
+The rayforce C runtime is sourced from upstream at the SHA pinned in
+`.rayforce-version`. `build.rs` clones it on first build, or uses a
+`RAYFORCE_DIR=/abs/path` you provide. Requires `git`, `make`, and a C
+compiler (clang or gcc).
 
 ## License
 
