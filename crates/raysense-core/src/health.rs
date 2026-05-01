@@ -242,6 +242,26 @@ pub struct RuleConfig {
     pub max_call_hotspot_findings: usize,
     pub max_upward_layer_violations: usize,
     pub no_tests_detected: bool,
+    /// Per-language overrides keyed by `language_name` (case-insensitive).
+    /// Each override field, when set, takes precedence over the matching
+    /// global field for files in that language. Useful when one language's
+    /// idioms make a global threshold either too strict or too lax (e.g.
+    /// Rust `match` arms inflate cyclomatic vs Python's flat conditionals).
+    pub language_overrides: BTreeMap<String, LanguageRuleOverride>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LanguageRuleOverride {
+    pub max_function_complexity: Option<usize>,
+    pub max_cognitive_complexity: Option<usize>,
+    pub max_file_lines: Option<usize>,
+    pub max_function_lines: Option<usize>,
+    pub high_file_fan_in: Option<usize>,
+    pub high_file_fan_out: Option<usize>,
+    pub large_file_lines: Option<usize>,
+    pub high_function_fan_in: Option<usize>,
+    pub high_function_fan_out: Option<usize>,
 }
 
 impl Default for RuleConfig {
@@ -271,6 +291,7 @@ impl Default for RuleConfig {
             max_call_hotspot_findings: 5,
             max_upward_layer_violations: 0,
             no_tests_detected: true,
+            language_overrides: BTreeMap::new(),
         }
     }
 }
@@ -1121,10 +1142,24 @@ fn file_coupling_metrics(
         }
     }
 
+    let fan_out_limit = |metric: &FileCouplingMetric| -> usize {
+        report
+            .files
+            .get(metric.file_id)
+            .map(|file| high_file_fan_out_limit(file, config))
+            .unwrap_or(config.rules.high_file_fan_out)
+    };
+    let fan_in_limit = |metric: &FileCouplingMetric| -> usize {
+        report
+            .files
+            .get(metric.file_id)
+            .map(|file| high_file_fan_in_limit(file, config))
+            .unwrap_or(config.rules.high_file_fan_in)
+    };
     let mut god_files: Vec<FileCouplingMetric> = coupling
         .iter()
         .filter(|metric| {
-            metric.fan_out >= config.rules.high_file_fan_out && !is_package_index_path(&metric.path)
+            metric.fan_out >= fan_out_limit(metric) && !is_package_index_path(&metric.path)
         })
         .cloned()
         .collect();
@@ -1134,7 +1169,7 @@ fn file_coupling_metrics(
     let mut unstable_hotspots: Vec<FileCouplingMetric> = coupling
         .iter()
         .filter(|metric| {
-            metric.fan_in >= config.rules.high_file_fan_in
+            metric.fan_in >= fan_in_limit(metric)
                 && !is_package_index_path(&metric.path)
                 && ratio(metric.fan_out, metric.fan_in + metric.fan_out) >= 0.15
         })
@@ -3191,7 +3226,12 @@ fn rules(
     }
 
     for hotspot in hotspots {
-        if hotspot.fan_in >= rules.high_file_fan_in {
+        let limit = report
+            .files
+            .get(hotspot.file_id)
+            .map(|file| high_file_fan_in_limit(file, config))
+            .unwrap_or(rules.high_file_fan_in);
+        if hotspot.fan_in >= limit {
             findings.push(RuleFinding {
                 severity: if rules.no_god_files {
                     RuleSeverity::Warning
@@ -3245,7 +3285,7 @@ fn rules(
     let mut large_files: Vec<_> = report
         .files
         .iter()
-        .filter(|file| file.lines >= rules.large_file_lines)
+        .filter(|file| file.lines >= large_file_lines_limit(file, config))
         .collect();
     large_files.sort_by(|a, b| b.lines.cmp(&a.lines).then_with(|| a.path.cmp(&b.path)));
 
@@ -3301,11 +3341,25 @@ fn rules(
         });
     }
 
+    let function_threshold_in = |function: &FunctionCallMetric| -> usize {
+        report
+            .files
+            .get(function.file_id)
+            .map(|file| high_function_fan_in_limit(file, config))
+            .unwrap_or(rules.high_function_fan_in)
+    };
+    let function_threshold_out = |function: &FunctionCallMetric| -> usize {
+        report
+            .files
+            .get(function.file_id)
+            .map(|file| high_function_fan_out_limit(file, config))
+            .unwrap_or(rules.high_function_fan_out)
+    };
     for function in metrics
         .calls
         .top_called_functions
         .iter()
-        .filter(|function| function.calls >= rules.high_function_fan_in)
+        .filter(|function| function.calls >= function_threshold_in(function))
         .take(rules.max_call_hotspot_findings)
     {
         findings.push(RuleFinding {
@@ -3323,7 +3377,7 @@ fn rules(
         .calls
         .top_calling_functions
         .iter()
-        .filter(|function| function.calls >= rules.high_function_fan_out)
+        .filter(|function| function.calls >= function_threshold_out(function))
         .take(rules.max_call_hotspot_findings)
     {
         findings.push(RuleFinding {
@@ -3358,30 +3412,78 @@ fn rules(
     findings
 }
 
+fn language_override_for<'a>(
+    file: &FileFact,
+    config: &'a RaysenseConfig,
+) -> Option<&'a LanguageRuleOverride> {
+    config
+        .rules
+        .language_overrides
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(&file.language_name))
+        .map(|(_, value)| value)
+}
+
 fn function_complexity_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
-    plugin_for_file(file, config)
-        .and_then(|plugin| plugin.max_function_complexity)
+    language_override_for(file, config)
+        .and_then(|o| o.max_function_complexity)
+        .or_else(|| plugin_for_file(file, config).and_then(|plugin| plugin.max_function_complexity))
         .unwrap_or(config.rules.max_function_complexity)
 }
 
 fn cognitive_complexity_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
-    plugin_for_file(file, config)
-        .and_then(|plugin| plugin.max_cognitive_complexity)
+    language_override_for(file, config)
+        .and_then(|o| o.max_cognitive_complexity)
+        .or_else(|| {
+            plugin_for_file(file, config).and_then(|plugin| plugin.max_cognitive_complexity)
+        })
         .unwrap_or(config.rules.max_cognitive_complexity)
 }
 
 fn file_line_limit(file: &FileFact, config: &RaysenseConfig) -> Option<usize> {
-    plugin_for_file(file, config)
-        .and_then(|plugin| plugin.max_file_lines)
+    language_override_for(file, config)
+        .and_then(|o| o.max_file_lines)
+        .or_else(|| plugin_for_file(file, config).and_then(|plugin| plugin.max_file_lines))
         .or_else(|| (config.rules.max_file_lines > 0).then_some(config.rules.max_file_lines))
 }
 
 fn function_line_limit(file: &FileFact, config: &RaysenseConfig) -> Option<usize> {
-    plugin_for_file(file, config)
-        .and_then(|plugin| plugin.max_function_lines)
+    language_override_for(file, config)
+        .and_then(|o| o.max_function_lines)
+        .or_else(|| plugin_for_file(file, config).and_then(|plugin| plugin.max_function_lines))
         .or_else(|| {
             (config.rules.max_function_lines > 0).then_some(config.rules.max_function_lines)
         })
+}
+
+fn high_file_fan_in_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
+    language_override_for(file, config)
+        .and_then(|o| o.high_file_fan_in)
+        .unwrap_or(config.rules.high_file_fan_in)
+}
+
+fn high_file_fan_out_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
+    language_override_for(file, config)
+        .and_then(|o| o.high_file_fan_out)
+        .unwrap_or(config.rules.high_file_fan_out)
+}
+
+fn large_file_lines_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
+    language_override_for(file, config)
+        .and_then(|o| o.large_file_lines)
+        .unwrap_or(config.rules.large_file_lines)
+}
+
+fn high_function_fan_in_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
+    language_override_for(file, config)
+        .and_then(|o| o.high_function_fan_in)
+        .unwrap_or(config.rules.high_function_fan_in)
+}
+
+fn high_function_fan_out_limit(file: &FileFact, config: &RaysenseConfig) -> usize {
+    language_override_for(file, config)
+        .and_then(|o| o.high_function_fan_out)
+        .unwrap_or(config.rules.high_function_fan_out)
 }
 
 fn plugin_for_file<'a>(
@@ -5276,6 +5378,55 @@ order = 2
         file_commits.insert("b.rs".to_string(), 1);
         let pairs = change_coupling(&pair_counts, &file_commits);
         assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn language_override_wins_over_global_for_complexity_limit() {
+        let py_file = file(0, "src/util.py");
+        let rs_file = file(1, "src/lib.rs");
+        let mut config = RaysenseConfig::default();
+        config.rules.max_function_complexity = 50; // global ceiling
+        config.rules.language_overrides.insert(
+            "python".to_string(),
+            LanguageRuleOverride {
+                max_function_complexity: Some(8),
+                ..LanguageRuleOverride::default()
+            },
+        );
+        // Need to set the language_name on the test files since `file()` factory
+        // uses Language::Rust by default — make a Python-named one.
+        let mut py = py_file;
+        py.language_name = "python".to_string();
+
+        assert_eq!(function_complexity_limit(&py, &config), 8);
+        assert_eq!(function_complexity_limit(&rs_file, &config), 50);
+    }
+
+    #[test]
+    fn language_override_falls_through_to_plugin_then_global() {
+        let mut file_a = file(0, "src/a.go");
+        file_a.language_name = "go".to_string();
+        let mut file_b = file(1, "src/b.go");
+        file_b.language_name = "go".to_string();
+        let mut config = RaysenseConfig::default();
+        config.rules.max_file_lines = 1000;
+        // Plugin sets a Go-specific limit of 600.
+        config.scan.plugins.push(LanguagePluginConfig {
+            name: "go".to_string(),
+            max_file_lines: Some(600),
+            ..LanguagePluginConfig::default()
+        });
+        // No language_overrides entry → plugin should win.
+        assert_eq!(file_line_limit(&file_a, &config), Some(600));
+        // Add a language override of 200 → it wins over the plugin.
+        config.rules.language_overrides.insert(
+            "go".to_string(),
+            LanguageRuleOverride {
+                max_file_lines: Some(200),
+                ..LanguageRuleOverride::default()
+            },
+        );
+        assert_eq!(file_line_limit(&file_b, &config), Some(200));
     }
 
     #[test]
