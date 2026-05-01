@@ -132,39 +132,39 @@
     <div class="section-eyebrow">GRADING MODEL</div>
     <h2>Six graded dimensions, one aggregate.</h2>
     <p class="section-lead">
-      Each dimension grades A through F against the dependency graph and commit history of the repo. The overall score, 0 to 100, is their weighted aggregate. The score moves with structure, not with cosmetics: adding tests or shuffling files around will not lift it.
+      Raysense is an open-source Rust CLI and MCP server that scores codebase architecture across six structural dimensions. Each dimension grades A through F against the dependency graph and commit history of the repo. The overall score, 0 to 100, is their weighted aggregate. The score moves with structure, not with cosmetics: adding tests or shuffling files around will not lift it.
     </p>
 
     <div class="signal-grid">
       <div class="signal-card">
         <div class="signal-letter">A</div>
         <div class="signal-name">Modularity</div>
-        <p>How cleanly modules separate.</p>
+        <p>How cleanly modules separate. High when cross-module edges are rare and unidirectional; low when modules share state or no clear boundaries exist in the source layout.</p>
       </div>
       <div class="signal-card">
         <div class="signal-letter">B</div>
         <div class="signal-name">Acyclicity</div>
-        <p>How much the dependency graph really is a graph.</p>
+        <p>How much the dependency graph really is a graph. Cycles (A imports B which imports A) block parallel compilation, complicate refactoring, and signal architectural decay. Detected at file and module scope.</p>
       </div>
       <div class="signal-card">
         <div class="signal-letter">C</div>
         <div class="signal-name">Depth</div>
-        <p>How layered (or how flat-and-tangled) the code is.</p>
+        <p>Whether layering is appropriate. Both flat-and-tangled and excessively deep architectures lose points. Sweet spot: 3 to 6 layers with clear upward dependencies and no upward-violation edges.</p>
       </div>
       <div class="signal-card">
         <div class="signal-letter">D</div>
         <div class="signal-name">Equality</div>
-        <p>How evenly responsibility is distributed.</p>
+        <p>How evenly responsibility is distributed. A handful of god files holding most of the imports drops the score; an even spread of file-level coupling raises it. Surfaces bus-factor concentration.</p>
       </div>
       <div class="signal-card">
         <div class="signal-letter">E</div>
         <div class="signal-name">Redundancy</div>
-        <p>How much logic is duplicated.</p>
+        <p>Duplicated logic across the codebase. Detects copy-paste blocks and functionally equivalent definitions that could share an abstraction. High redundancy multiplies the surface area of every change.</p>
       </div>
       <div class="signal-card">
         <div class="signal-letter">F</div>
         <div class="signal-name">Uniformity</div>
-        <p>How consistent the patterns are.</p>
+        <p>Consistency of structural and naming patterns. Same file types laid out the same way, same handler shapes, same conventions. Inconsistency forces readers to relearn each module from scratch.</p>
       </div>
     </div>
   </div>
@@ -190,15 +190,35 @@
 <span class="hl-cmt">$</span> raysense --mcp          <span class="hl-cmt"># stdio MCP server for agents</span></code></pre>
       </div>
     </div>
+
+    <div class="code-block code-block-wide">
+      <div class="code-block-head">sample output (raysense .)</div>
+<pre><code>score             82 / 100
+coverage          91 / 100
+structure         68 / 100
+facts             files=32 functions=620 calls=7065 imports=246
+graph             resolved=89 cycles=0 max_fan_in=53 max_fan_out=21
+test_gap          production=15 test_files=0 missing_nearby=15
+dimensions        modularity=A acyclicity=A depth=A equality=F redundancy=C uniformity=C
+overall_grade     B</code></pre>
+    </div>
+
+    <div class="code-block code-block-wide">
+      <div class="code-block-head">CI integration (.github/workflows/ci.yml)</div>
+<pre><code><span class="hl-cmt">- name:</span> Architecture gate
+  <span class="hl-cmt">run:</span> |
+    cargo install raysense
+    raysense . --check</code></pre>
+    </div>
   </div>
 </section>
 
 <section id="agents" class="section section-alt">
   <div class="container">
     <div class="section-eyebrow">AGENT INTEGRATION</div>
-    <h2>Ships as a Claude Code plugin.</h2>
+    <h2>MCP server for any AI coding agent.</h2>
     <p class="section-lead">
-      Install the plugin and the agent gets four phase-scoped skills it can pick up at the right moments in its edit cycle. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
+      Raysense ships as a Claude Code plugin and as a stdio MCP server compatible with any client that speaks the Model Context Protocol. Install the plugin and the agent gets four phase-scoped skills it can pick up at the right moments in its edit cycle. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
     </p>
 
     <div class="code-block code-block-wide">
@@ -271,8 +291,8 @@
     <div class="section-eyebrow">BUILT ON</div>
     <a class="rayforce-card" href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">
       <img alt="Rayforce"
-           src="https://raw.githubusercontent.com/RayforceDB/rayforce/master/docs/logo-light.svg"
-           width="280"/>
+           src="assets/img/rayforce-logo-light.svg"
+           width="280" height="95" loading="lazy"/>
       <p>
         The splayed-table agent memory, the baseline tables you can query back, and the columnar storage behind the live dashboard are all powered by Rayforce. An in-memory analytics runtime optimized for graph-shaped queries. Open-source, linked statically. Nothing extra to install.
       </p>
@@ -300,7 +320,7 @@
       <a href="https://crates.io/crates/raysense" target="_blank" rel="noopener">crates.io</a>
       <a href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">Rayforce</a>
     </div>
-    <div class="footer-meta">MIT licensed. (c) 2025-2026 Anton Kundenko.</div>
+    <div class="footer-meta">MIT licensed. (c) 2025-2026 <a href="https://github.com/RayforceDB" target="_blank" rel="noopener">Anton Kundenko</a>.</div>
   </div>
 </footer>
 

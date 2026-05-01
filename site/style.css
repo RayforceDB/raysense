@@ -193,6 +193,9 @@ em { font-style: normal; color: var(--accent); font-weight: 600; }
 }
 .nav-links a:hover { color: var(--text); }
 .nav-link-strong {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   border: 1px solid var(--border);
   padding: 8px 14px;
   border-radius: var(--radius-sm);
