@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Raysense - structural X-ray for AI-edited codebases</title>
+  <meta name="description" content="Raysense reads your repository as a graph and exposes its structure to coding agents through MCP. Live local treemap, baselines, what-if simulation, splayed-table memory."/>
+  <meta name="theme-color" content="#0a0e13"/>
+
+  <meta property="og:type" content="website"/>
+  <meta property="og:title" content="Raysense"/>
+  <meta property="og:description" content="A structural X-ray for the codebases AI agents are writing."/>
+  <meta property="og:url" content="https://rayforcedb.github.io/raysense/"/>
+  <meta property="og:image" content="https://rayforcedb.github.io/raysense/assets/img/treemap-mockup.svg"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="#" class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="24" height="24">
+          <rect x="2"  y="2"  width="10" height="10" rx="1" fill="#5eead4"/>
+          <rect x="14" y="2"  width="8"  height="6"  rx="1" fill="#e9a033"/>
+          <rect x="14" y="10" width="8"  height="4"  rx="1" fill="#60a5fa"/>
+          <rect x="2"  y="14" width="6"  height="8"  rx="1" fill="#e9a033" opacity="0.7"/>
+          <rect x="10" y="14" width="12" height="8"  rx="1" fill="#5eead4" opacity="0.5"/>
+        </svg>
+      </span>
+      <span class="brand-name">raysense</span>
+    </a>
+    <div class="nav-links">
+      <a href="#blindspot">Why</a>
+      <a href="#grading">Grading</a>
+      <a href="#install">Install</a>
+      <a href="#agents">Agents</a>
+      <a class="nav-link-strong" href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-bg" aria-hidden="true">
+    <div class="hero-grid"></div>
+    <div class="hero-glow"></div>
+  </div>
+  <div class="container">
+    <div class="hero-grid-2">
+      <div class="hero-content">
+        <div class="eyebrow">LIVE &middot; LOCAL &middot; AGENT-READY</div>
+        <h1>A structural <span class="highlight">X-ray</span> for the codebases AI agents are writing.</h1>
+        <p class="lead">
+          Raysense reads your repository as a graph: who imports who, where the cycles are, which files are now load-bearing, what tends to change together. It runs locally, refreshes on save, and serves the whole picture to your coding agent over MCP. Before an edit, the agent can ask <em>what depends on this file</em>. After a chunk of edits, it can ask <em>did this regress anything</em>.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#install">
+            Install
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3 8h8.5L8 4.5l1-1L14 8.5 9 13l-1-1L11.5 9H3z"/></svg>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">View on GitHub</a>
+        </div>
+      </div>
+
+      <aside class="hero-aside" aria-label="Treemap dashboard preview">
+        <div class="device-frame">
+          <img src="assets/img/treemap-mockup.svg" alt="Raysense treemap dashboard, showing per-file health and hotspots" width="720" height="480" loading="eager"/>
+        </div>
+        <p class="hero-aside-caption">
+          Live dashboard at <code>http://localhost:7000</code>. Every file, every metric, every cycle, open while you work.
+        </p>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section id="blindspot" class="section">
+  <div class="container narrow">
+    <div class="section-eyebrow">WHY</div>
+    <h2>An agent reads source one file at a time.</h2>
+    <p class="section-lead">
+      The shape of the project (its modules, its layers, its cycles, the files that always change together) never reaches its working memory. Reviewers operate on diffs, and a diff hides structure by definition. So architectural drift is invisible until it shows up as a production bug, a regression, or a refactor that takes a week. Raysense closes that gap by computing the shape once and serving it back to everyone who can act on it.
+    </p>
+  </div>
+</section>
+
+<section id="grading" class="section section-alt">
+  <div class="container">
+    <div class="section-eyebrow">GRADING MODEL</div>
+    <h2>Six graded dimensions, one aggregate.</h2>
+    <p class="section-lead">
+      Each dimension grades A through F against the dependency graph and commit history of the repo. The overall score, 0 to 100, is their weighted aggregate. The score moves with structure, not with cosmetics: adding tests or shuffling files around will not lift it.
+    </p>
+
+    <div class="signal-grid">
+      <div class="signal-card">
+        <div class="signal-letter">A</div>
+        <div class="signal-name">Modularity</div>
+        <p>How cleanly modules separate.</p>
+      </div>
+      <div class="signal-card">
+        <div class="signal-letter">B</div>
+        <div class="signal-name">Acyclicity</div>
+        <p>How much the dependency graph really is a graph.</p>
+      </div>
+      <div class="signal-card">
+        <div class="signal-letter">C</div>
+        <div class="signal-name">Depth</div>
+        <p>How layered (or how flat-and-tangled) the code is.</p>
+      </div>
+      <div class="signal-card">
+        <div class="signal-letter">D</div>
+        <div class="signal-name">Equality</div>
+        <p>How evenly responsibility is distributed.</p>
+      </div>
+      <div class="signal-card">
+        <div class="signal-letter">E</div>
+        <div class="signal-name">Redundancy</div>
+        <p>How much logic is duplicated.</p>
+      </div>
+      <div class="signal-card">
+        <div class="signal-letter">F</div>
+        <div class="signal-name">Uniformity</div>
+        <p>How consistent the patterns are.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="section">
+  <div class="container">
+    <div class="section-eyebrow">INSTALL</div>
+    <h2>One binary. A few flags.</h2>
+
+    <div class="code-grid">
+      <div class="code-block">
+        <div class="code-block-head">install</div>
+<pre><code><span class="hl-cmt">$</span> cargo install raysense</code></pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-block-head">use</div>
+<pre><code><span class="hl-cmt">$</span> raysense .              <span class="hl-cmt"># health report</span>
+<span class="hl-cmt">$</span> raysense . --check      <span class="hl-cmt"># CI gate, exits non-zero on rule violations</span>
+<span class="hl-cmt">$</span> raysense . --watch      <span class="hl-cmt"># rescan + reprint on a 2s loop</span>
+<span class="hl-cmt">$</span> raysense . --ui         <span class="hl-cmt"># live dashboard at http://localhost:7000</span>
+<span class="hl-cmt">$</span> raysense --mcp          <span class="hl-cmt"># stdio MCP server for agents</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="agents" class="section section-alt">
+  <div class="container">
+    <div class="section-eyebrow">AGENT INTEGRATION</div>
+    <h2>Ships as a Claude Code plugin.</h2>
+    <p class="section-lead">
+      Install the plugin and the agent gets four phase-scoped skills it can pick up at the right moments in its edit cycle. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
+    </p>
+
+    <div class="code-block code-block-wide">
+      <div class="code-block-head">install</div>
+<pre><code><span class="hl-cmt">/</span>plugin marketplace add RayforceDB/raysense
+<span class="hl-cmt">/</span>plugin install raysense</code></pre>
+    </div>
+
+    <div class="phase-grid">
+      <div class="phase-card">
+        <div class="phase-step">1</div>
+        <h3>Bootstrap</h3>
+        <p>At session start. Scan, save baseline, materialize the splayed-table memory.</p>
+      </div>
+      <div class="phase-card">
+        <div class="phase-step">2</div>
+        <h3>Impact</h3>
+        <p>Before non-trivial edits. Blast radius, coupling, cycle exposure.</p>
+      </div>
+      <div class="phase-card">
+        <div class="phase-step">3</div>
+        <h3>Verify</h3>
+        <p>After edits. Rescan, rule check, baseline diff.</p>
+      </div>
+      <div class="phase-card">
+        <div class="phase-step">4</div>
+        <h3>Audit</h3>
+        <p>On request. Architecture, DSM, evolution, test gaps.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-eyebrow">CAPABILITIES</div>
+    <h2>Beyond the score.</h2>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3>Live treemap dashboard</h3>
+        <p>Every file, every metric, every cycle. Open in your browser while you work, refreshes on save.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Baselines and what-if</h3>
+        <p>Diff against a saved snapshot. Simulate an edit (delete a file, break a cycle) before touching the working tree.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Splayed-table agent memory</h3>
+        <p>Scan results materialized as columnar tables. An agent's follow-up questions are instant reads, not re-scans.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Test gap detection</h3>
+        <p>Files without nearby tests, ranked by structural risk.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Evolution signal</h3>
+        <p>Bus factor, change-coupling pairs, temporal hotspots (churn x complexity), file age windows.</p>
+      </div>
+      <div class="feature-card">
+        <h3>45 languages</h3>
+        <p>Rust, Python, TypeScript, C, C++ via tree-sitter. 40 more (Go, Java, Kotlin, Swift, Ruby, Elixir, Haskell, Clojure, Zig, ...) via configurable plugins.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-rayforce">
+  <div class="container narrow">
+    <div class="section-eyebrow">BUILT ON</div>
+    <a class="rayforce-card" href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">
+      <img alt="Rayforce"
+           src="https://raw.githubusercontent.com/RayforceDB/rayforce/master/docs/logo-light.svg"
+           width="280"/>
+      <p>
+        The splayed-table agent memory, the baseline tables you can query back, and the columnar storage behind the live dashboard are all powered by Rayforce. An in-memory analytics runtime optimized for graph-shaped queries. Open-source, linked statically. Nothing extra to install.
+      </p>
+      <span class="rayforce-cta">Visit Rayforce &rarr;</span>
+    </a>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20">
+          <rect x="2"  y="2"  width="10" height="10" rx="1" fill="#5eead4"/>
+          <rect x="14" y="2"  width="8"  height="6"  rx="1" fill="#e9a033"/>
+          <rect x="14" y="10" width="8"  height="4"  rx="1" fill="#60a5fa"/>
+          <rect x="2"  y="14" width="6"  height="8"  rx="1" fill="#e9a033" opacity="0.7"/>
+          <rect x="10" y="14" width="12" height="8"  rx="1" fill="#5eead4" opacity="0.5"/>
+        </svg>
+      </span>
+      <span>raysense</span>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://crates.io/crates/raysense" target="_blank" rel="noopener">crates.io</a>
+      <a href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">Rayforce</a>
+    </div>
+    <div class="footer-meta">MIT licensed. (c) 2025-2026 Anton Kundenko.</div>
+  </div>
+</footer>
+
+</body>
+</html>
