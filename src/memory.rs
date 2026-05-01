@@ -21,7 +21,7 @@
  *   SOFTWARE.
  */
 
-use raysense_core::{compute_health_with_config, HealthSummary, RaysenseConfig, ScanReport};
+use crate::{compute_health_with_config, HealthSummary, RaysenseConfig, ScanReport};
 use serde::Serialize;
 use std::ffi::CString;
 use std::fs;
@@ -300,14 +300,14 @@ impl RayMemory {
     fn save_table(
         &self,
         name: &'static str,
-        table: *mut rayforce_sys::ray_t,
+        table: *mut crate::sys::ray_t,
         base: &Path,
         sym_path: &Path,
     ) -> Result<(), MemoryError> {
         let path = CString::new(base.join(name).to_string_lossy().into_owned())?;
         let sym_path = CString::new(sym_path.to_string_lossy().into_owned())?;
-        let err = unsafe { rayforce_sys::ray_splay_save(table, path.as_ptr(), sym_path.as_ptr()) };
-        if err == rayforce_sys::RAY_OK {
+        let err = unsafe { crate::sys::ray_splay_save(table, path.as_ptr(), sym_path.as_ptr()) };
+        if err == crate::sys::RAY_OK {
             Ok(())
         } else {
             Err(MemoryError::SplaySave {
@@ -345,8 +345,8 @@ pub fn list_baseline_tables(dir: impl AsRef<Path>) -> Result<Vec<BaselineTableIn
         let table = read_table_object(dir, &name)?;
         tables.push(BaselineTableInfo {
             name,
-            columns: unsafe { rayforce_sys::ray_table_ncols(table.as_ptr()) },
-            rows: unsafe { rayforce_sys::ray_table_nrows(table.as_ptr()) },
+            columns: unsafe { crate::sys::ray_table_ncols(table.as_ptr()) },
+            rows: unsafe { crate::sys::ray_table_nrows(table.as_ptr()) },
         });
     }
 
@@ -400,7 +400,7 @@ fn read_table_object(dir: &Path, name: &str) -> Result<RayObject, MemoryError> {
         None
     };
     let ptr = unsafe {
-        rayforce_sys::ray_read_splayed(
+        crate::sys::ray_read_splayed(
             path.as_ptr(),
             sym_path
                 .as_ref()
@@ -413,9 +413,9 @@ fn read_table_object(dir: &Path, name: &str) -> Result<RayObject, MemoryError> {
             table: name.to_string(),
         });
     }
-    if unsafe { (*ptr).type_ } == rayforce_sys::RAY_ERROR {
+    if unsafe { (*ptr).type_ } == crate::sys::RAY_ERROR {
         let code = unsafe {
-            let code = rayforce_sys::ray_err_code(ptr);
+            let code = crate::sys::ray_err_code(ptr);
             if code.is_null() {
                 "unknown".to_string()
             } else {
@@ -434,18 +434,18 @@ fn read_table_object(dir: &Path, name: &str) -> Result<RayObject, MemoryError> {
 
 fn table_rows(
     name: &str,
-    table: *mut rayforce_sys::ray_t,
+    table: *mut crate::sys::ray_t,
     query: BaselineTableQuery,
 ) -> Result<BaselineTableRows, MemoryError> {
-    let total_rows = unsafe { rayforce_sys::ray_table_nrows(table) };
-    let ncols = unsafe { rayforce_sys::ray_table_ncols(table) };
+    let total_rows = unsafe { crate::sys::ray_table_nrows(table) };
+    let ncols = unsafe { crate::sys::ray_table_ncols(table) };
     let mut columns = Vec::new();
     let mut col_ptrs = Vec::new();
 
     for idx in 0..ncols {
-        let name_id = unsafe { rayforce_sys::ray_table_col_name(table, idx) };
+        let name_id = unsafe { crate::sys::ray_table_col_name(table, idx) };
         columns.push(symbol_text(name_id));
-        col_ptrs.push(unsafe { rayforce_sys::ray_table_get_col_idx(table, idx) });
+        col_ptrs.push(unsafe { crate::sys::ray_table_get_col_idx(table, idx) });
     }
 
     let projected = project_columns(&columns, query.columns.as_deref())?;
@@ -572,7 +572,7 @@ fn column_index(columns: &[String], name: &str) -> Result<usize, MemoryError> {
 }
 
 fn row_matches(
-    col_ptrs: &[*mut rayforce_sys::ray_t],
+    col_ptrs: &[*mut crate::sys::ray_t],
     row_idx: usize,
     filters: &[CompiledFilter],
     filter_mode: BaselineFilterMode,
@@ -676,14 +676,14 @@ fn value_sort_key(value: &serde_json::Value) -> String {
 }
 
 fn symbol_text(name_id: i64) -> String {
-    let atom = unsafe { rayforce_sys::ray_sym_str(name_id) };
+    let atom = unsafe { crate::sys::ray_sym_str(name_id) };
     if atom.is_null() {
         return format!("#{name_id}");
     }
     string_atom(atom).unwrap_or_else(|| format!("#{name_id}"))
 }
 
-fn cell_value(col: *mut rayforce_sys::ray_t, row_idx: i64) -> serde_json::Value {
+fn cell_value(col: *mut crate::sys::ray_t, row_idx: i64) -> serde_json::Value {
     if col.is_null() {
         return serde_json::Value::Null;
     }
@@ -693,37 +693,37 @@ fn cell_value(col: *mut rayforce_sys::ray_t, row_idx: i64) -> serde_json::Value 
     }
 
     match unsafe { (*col).type_ } {
-        rayforce_sys::RAY_I32 => {
+        crate::sys::RAY_I32 => {
             let data = ray_data(col).cast::<i32>();
             serde_json::Value::from(unsafe { *data.add(row_idx as usize) })
         }
-        rayforce_sys::RAY_I64 => {
+        crate::sys::RAY_I64 => {
             let data = ray_data(col).cast::<i64>();
             serde_json::Value::from(unsafe { *data.add(row_idx as usize) })
         }
-        rayforce_sys::RAY_F64 => {
+        crate::sys::RAY_F64 => {
             let data = ray_data(col).cast::<f64>();
             serde_json::Number::from_f64(unsafe { *data.add(row_idx as usize) })
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null)
         }
-        rayforce_sys::RAY_STR => string_vec_value(col, row_idx)
+        crate::sys::RAY_STR => string_vec_value(col, row_idx)
             .map(serde_json::Value::String)
             .unwrap_or(serde_json::Value::Null),
         other => serde_json::Value::String(format!("<unsupported type {other}>")),
     }
 }
 
-fn ray_data(obj: *mut rayforce_sys::ray_t) -> *const u8 {
+fn ray_data(obj: *mut crate::sys::ray_t) -> *const u8 {
     unsafe {
         obj.cast::<u8>()
-            .add(std::mem::size_of::<rayforce_sys::ray_t>())
+            .add(std::mem::size_of::<crate::sys::ray_t>())
     }
 }
 
-fn string_vec_value(col: *mut rayforce_sys::ray_t, row_idx: i64) -> Option<String> {
+fn string_vec_value(col: *mut crate::sys::ray_t, row_idx: i64) -> Option<String> {
     let mut len = 0usize;
-    let ptr = unsafe { rayforce_sys::ray_str_vec_get(col, row_idx, &mut len) };
+    let ptr = unsafe { crate::sys::ray_str_vec_get(col, row_idx, &mut len) };
     if ptr.is_null() {
         return None;
     }
@@ -733,9 +733,9 @@ fn string_vec_value(col: *mut rayforce_sys::ray_t, row_idx: i64) -> Option<Strin
     )
 }
 
-fn string_atom(atom: *mut rayforce_sys::ray_t) -> Option<String> {
-    let len = unsafe { rayforce_sys::ray_str_len(atom) };
-    let ptr = unsafe { rayforce_sys::ray_str_ptr(atom) };
+fn string_atom(atom: *mut crate::sys::ray_t) -> Option<String> {
+    let len = unsafe { crate::sys::ray_str_len(atom) };
+    let ptr = unsafe { crate::sys::ray_str_ptr(atom) };
     if ptr.is_null() {
         return None;
     }
@@ -746,21 +746,21 @@ fn string_atom(atom: *mut rayforce_sys::ray_t) -> Option<String> {
 }
 
 struct RayObject {
-    ptr: NonNull<rayforce_sys::ray_t>,
+    ptr: NonNull<crate::sys::ray_t>,
 }
 
 impl RayObject {
-    fn new(ptr: *mut rayforce_sys::ray_t, context: &'static str) -> Result<Self, MemoryError> {
+    fn new(ptr: *mut crate::sys::ray_t, context: &'static str) -> Result<Self, MemoryError> {
         NonNull::new(ptr)
             .map(|ptr| Self { ptr })
             .ok_or(MemoryError::Null(context))
     }
 
-    fn as_ptr(&self) -> *mut rayforce_sys::ray_t {
+    fn as_ptr(&self) -> *mut crate::sys::ray_t {
         self.ptr.as_ptr()
     }
 
-    fn into_raw(self) -> *mut rayforce_sys::ray_t {
+    fn into_raw(self) -> *mut crate::sys::ray_t {
         let ptr = self.ptr.as_ptr();
         std::mem::forget(self);
         ptr
@@ -770,14 +770,14 @@ impl RayObject {
 impl Drop for RayObject {
     fn drop(&mut self) {
         unsafe {
-            rayforce_sys::ray_release(self.ptr.as_ptr());
+            crate::sys::ray_release(self.ptr.as_ptr());
         }
     }
 }
 
 fn init_symbols() -> Result<(), MemoryError> {
-    let err = unsafe { rayforce_sys::ray_sym_init() };
-    if err == rayforce_sys::RAY_OK {
+    let err = unsafe { crate::sys::ray_sym_init() };
+    if err == crate::sys::RAY_OK {
         Ok(())
     } else {
         Err(MemoryError::SymbolInit(err))
@@ -1643,13 +1643,13 @@ fn i64_vec(
     values: impl IntoIterator<Item = i64>,
 ) -> Result<RayObject, MemoryError> {
     let mut vec = RayObject::new(
-        unsafe { rayforce_sys::ray_vec_new(rayforce_sys::RAY_I64, capacity as i64) },
+        unsafe { crate::sys::ray_vec_new(crate::sys::RAY_I64, capacity as i64) },
         "i64 vector",
     )?;
 
     for value in values {
         let next = unsafe {
-            rayforce_sys::ray_vec_append(
+            crate::sys::ray_vec_append(
                 vec.into_raw(),
                 (&value as *const i64).cast::<std::ffi::c_void>(),
             )
@@ -1665,14 +1665,14 @@ fn str_vec(
     values: impl IntoIterator<Item = String>,
 ) -> Result<RayObject, MemoryError> {
     let mut vec = RayObject::new(
-        unsafe { rayforce_sys::ray_vec_new(rayforce_sys::RAY_STR, capacity as i64) },
+        unsafe { crate::sys::ray_vec_new(crate::sys::RAY_STR, capacity as i64) },
         "string vector",
     )?;
 
     for value in values {
         let value = CString::new(value)?;
         let next = unsafe {
-            rayforce_sys::ray_str_vec_append(vec.into_raw(), value.as_ptr(), value.as_bytes().len())
+            crate::sys::ray_str_vec_append(vec.into_raw(), value.as_ptr(), value.as_bytes().len())
         };
         vec = RayObject::new(next, "string vector append")?;
     }
@@ -1685,32 +1685,32 @@ fn table<const N: usize>(
     columns: [(&'static str, RayObject); N],
 ) -> Result<RayObject, MemoryError> {
     let mut table = RayObject::new(
-        unsafe { rayforce_sys::ray_table_new(capacity) },
+        unsafe { crate::sys::ray_table_new(capacity) },
         "rayforce table",
     )?;
 
     for (name, col) in columns {
         let name = CString::new(name)?;
-        let name_id = unsafe { rayforce_sys::ray_sym_intern(name.as_ptr(), name.as_bytes().len()) };
+        let name_id = unsafe { crate::sys::ray_sym_intern(name.as_ptr(), name.as_bytes().len()) };
         let next =
-            unsafe { rayforce_sys::ray_table_add_col(table.into_raw(), name_id, col.as_ptr()) };
+            unsafe { crate::sys::ray_table_add_col(table.into_raw(), name_id, col.as_ptr()) };
         table = RayObject::new(next, "rayforce table column")?;
     }
 
     Ok(table)
 }
 
-fn table_summary(table: *mut rayforce_sys::ray_t) -> TableSummary {
+fn table_summary(table: *mut crate::sys::ray_t) -> TableSummary {
     TableSummary {
-        columns: unsafe { rayforce_sys::ray_table_ncols(table) },
-        rows: unsafe { rayforce_sys::ray_table_nrows(table) },
+        columns: unsafe { crate::sys::ray_table_ncols(table) },
+        rows: unsafe { crate::sys::ray_table_nrows(table) },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raysense_core::{scan_path, FileFact, Language, SnapshotFact};
+    use crate::{scan_path, FileFact, Language, SnapshotFact};
     use serde_json::json;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1740,7 +1740,7 @@ mod tests {
         assert_eq!(summary.rules.columns, 4);
         assert_eq!(summary.module_edges.columns, 3);
         assert_eq!(summary.changed_files.columns, 2);
-        let health = raysense_core::compute_health(&report);
+        let health = crate::compute_health(&report);
         assert_eq!(summary.temporal_hotspots.columns, 4);
         assert_eq!(
             summary.temporal_hotspots.rows as usize,
@@ -2038,7 +2038,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
-            graph: raysense_core::GraphMetrics::default(),
+            graph: crate::GraphMetrics::default(),
         }
     }
 

@@ -22,11 +22,11 @@
  */
 
 use anyhow::{anyhow, Context, Result};
-use raysense_core::{
+use crate::{
     build_baseline, compute_health_with_config, diff_baselines, is_foundation_file,
     scan_path_with_config, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
-use raysense_memory::{
+use crate::memory::{
     BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
     BaselineTableQuery, BaselineTableSort,
 };
@@ -50,7 +50,7 @@ struct HealthCache {
     root: PathBuf,
     signature: String,
     report_root: PathBuf,
-    health: raysense_core::HealthSummary,
+    health: crate::HealthSummary,
 }
 
 /// Tools that mutate scan inputs (config, baselines, plugins, sessions) or
@@ -830,7 +830,7 @@ fn check_rules_tool(args: &Value) -> Result<Value> {
     let pass = !health
         .rules
         .iter()
-        .any(|rule| matches!(rule.severity, raysense_core::RuleSeverity::Error));
+        .any(|rule| matches!(rule.severity, crate::RuleSeverity::Error));
     Ok(json!({
         "root": root,
         "pass": pass,
@@ -905,7 +905,7 @@ fn visualize_tool(args: &Value) -> Result<Value> {
     }
     let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
-    let html = super::visualization_html(&report, &health);
+    let html = crate::cli::visualization_html(&report, &health);
     fs::write(&output, &html).with_context(|| format!("failed to write {}", output.display()))?;
 
     Ok(json!({
@@ -928,7 +928,7 @@ fn sarif_tool(args: &Value) -> Result<Value> {
     let include_sarif = bool_arg(args, "include_sarif", false)?;
     let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
-    let sarif = super::sarif_report(&report, &health);
+    let sarif = crate::cli::sarif_report(&report, &health);
 
     if let Some(path) = output.as_ref() {
         if let Some(parent) = path.parent() {
@@ -966,7 +966,7 @@ fn standard_plugins_tool(args: &Value) -> Result<Value> {
         .map(|_| limit_arg(args, usize::MAX))
         .transpose()?
         .unwrap_or(usize::MAX);
-    let plugins = raysense_core::standard_language_plugins();
+    let plugins = crate::standard_language_plugins();
     Ok(json!({
         "plugins": limited(&plugins, limit),
         "total": plugins.len()
@@ -990,11 +990,11 @@ fn plugin_add_tool(args: &Value) -> Result<Value> {
     config
         .scan
         .plugins
-        .push(raysense_core::LanguagePluginConfig {
+        .push(crate::LanguagePluginConfig {
             name: name.to_string(),
             extensions,
             file_names,
-            ..raysense_core::LanguagePluginConfig::default()
+            ..crate::LanguagePluginConfig::default()
         });
     write_config_path(&path, &config)?;
 
@@ -1009,7 +1009,7 @@ fn plugin_sync_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
     let names = string_array_arg(args, "names")?;
     let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
-    let summary = super::sync_standard_plugins(&root, &names, force)?;
+    let summary = crate::cli::sync_standard_plugins(&root, &names, force)?;
     Ok(json!({
         "root": root,
         "wrote": summary.written.len(),
@@ -1023,7 +1023,7 @@ fn plugin_add_standard_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
     let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
     let mut config = load_or_default_config(&path)?;
-    let standard = raysense_core::standard_language_plugins();
+    let standard = crate::standard_language_plugins();
     for plugin in &standard {
         config
             .scan
@@ -1075,7 +1075,7 @@ fn plugin_validate_tool(args: &Value) -> Result<Value> {
         .or_else(|| args.get("plugin_dir"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing plugin dir"))?;
-    super::validate_plugin_dir(Path::new(dir))
+    crate::cli::validate_plugin_dir(Path::new(dir))
 }
 
 fn plugin_scaffold_tool(args: &Value) -> Result<Value> {
@@ -1088,8 +1088,8 @@ fn plugin_scaffold_tool(args: &Value) -> Result<Value> {
         .get("extension")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing plugin extension"))?;
-    let dir = super::scaffold_plugin(&root, name, extension)?;
-    let validation = super::validate_plugin_dir(&dir)?;
+    let dir = crate::cli::scaffold_plugin(&root, name, extension)?;
+    let validation = crate::cli::validate_plugin_dir(&dir)?;
     Ok(json!({
         "root": root,
         "dir": dir,
@@ -1182,8 +1182,8 @@ fn what_if_edge_tool(
     let before = build_baseline(&before_report, &before_health);
 
     let after_report = match action {
-        "remove_edge" => raysense_core::simulate::remove_edge(&before_report, from, to),
-        "add_edge" => raysense_core::simulate::add_edge(&before_report, from, to),
+        "remove_edge" => crate::simulate::remove_edge(&before_report, from, to),
+        "add_edge" => crate::simulate::add_edge(&before_report, from, to),
         _ => unreachable!("validated what-if action"),
     }
     .map_err(|err| anyhow!(err.to_string()))?;
@@ -1223,7 +1223,7 @@ fn what_if_remove_file_tool(args: &Value, root: &Path, config: &RaysenseConfig) 
     let before_report = scan_path_with_config(root, config)?;
     let before_health = compute_health_with_config(&before_report, config);
     let before = build_baseline(&before_report, &before_health);
-    let after_report = raysense_core::simulate_remove_file(&before_report, file)
+    let after_report = crate::simulate_remove_file(&before_report, file)
         .map_err(|err| anyhow!(err.to_string()))?;
     let after_health = compute_health_with_config(&after_report, config);
     let after = build_baseline(&after_report, &after_health);
@@ -1250,7 +1250,7 @@ fn what_if_move_file_tool(args: &Value, root: &Path, config: &RaysenseConfig) ->
     let before_report = scan_path_with_config(root, config)?;
     let before_health = compute_health_with_config(&before_report, config);
     let before = build_baseline(&before_report, &before_health);
-    let after_report = raysense_core::simulate_move_file(&before_report, config, from, to)
+    let after_report = crate::simulate_move_file(&before_report, config, from, to)
         .map_err(|err| anyhow!(err.to_string()))?;
     let after_health = compute_health_with_config(&after_report, config);
     let after = build_baseline(&after_report, &after_health);
@@ -1278,7 +1278,7 @@ fn what_if_break_cycle_tool(args: &Value, root: &Path, config: &RaysenseConfig) 
     let before_report = scan_path_with_config(root, config)?;
     let before_health = compute_health_with_config(&before_report, config);
     let before = build_baseline(&before_report, &before_health);
-    let after_report = raysense_core::simulate_break_cycle(&before_report, from, to)
+    let after_report = crate::simulate_break_cycle(&before_report, from, to)
         .map_err(|err| anyhow!(err.to_string()))?;
     let after_health = compute_health_with_config(&after_report, config);
     let after = build_baseline(&after_report, &after_health);
@@ -1309,7 +1309,7 @@ fn break_cycle_recommendations_tool(args: &Value) -> Result<Value> {
         .unwrap_or(500);
     let report = scan_path_with_config(&root, &config)?;
     let recommendations =
-        raysense_core::break_cycle_recommendations(&report, limit, max_candidates);
+        crate::break_cycle_recommendations(&report, limit, max_candidates);
     Ok(json!({
         "root": report.snapshot.root,
         "cycle_count_before": report.graph.cycle_count,
@@ -1319,7 +1319,7 @@ fn break_cycle_recommendations_tool(args: &Value) -> Result<Value> {
 }
 
 fn what_if_sequence_tool(actions: &[Value], root: &Path, config: &RaysenseConfig) -> Result<Value> {
-    let parsed_actions: Vec<raysense_core::simulate::Action> = actions
+    let parsed_actions: Vec<crate::simulate::Action> = actions
         .iter()
         .enumerate()
         .map(|(idx, step)| {
@@ -1332,7 +1332,7 @@ fn what_if_sequence_tool(actions: &[Value], root: &Path, config: &RaysenseConfig
     let before = build_baseline(&before_report, &before_health);
 
     let after_report =
-        raysense_core::simulate::simulate_sequence(&before_report, config, &parsed_actions)
+        crate::simulate::simulate_sequence(&before_report, config, &parsed_actions)
             .map_err(|err| anyhow!(err.to_string()))?;
 
     let after_health = compute_health_with_config(&after_report, config);
@@ -1346,7 +1346,7 @@ fn what_if_sequence_tool(actions: &[Value], root: &Path, config: &RaysenseConfig
     }))
 }
 
-fn what_if_health_summary(health: &raysense_core::HealthSummary) -> Value {
+fn what_if_health_summary(health: &crate::HealthSummary) -> Value {
     json!({
         "score": health.score,
         "quality_signal": health.quality_signal,
@@ -1382,7 +1382,7 @@ fn policy_init_tool(args: &Value) -> Result<Value> {
         .ok_or_else(|| anyhow!("missing preset"))?;
     let path = config_path_arg(args)?.unwrap_or_else(|| root.join(".raysense.toml"));
     let mut config = load_or_default_config(&path)?;
-    super::apply_policy_preset(&mut config, preset)?;
+    crate::cli::apply_policy_preset(&mut config, preset)?;
     write_config_path(&path, &config)?;
 
     Ok(json!({
@@ -1397,7 +1397,7 @@ fn memory_summary_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
     let report = scan_path_with_config(&root, &config)?;
-    let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
+    let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
 
     Ok(json!({
         "root": report.snapshot.root,
@@ -1412,7 +1412,7 @@ fn baseline_save_tool(args: &Value) -> Result<Value> {
     let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
     let baseline = build_baseline(&report, &health);
-    let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
+    let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
     let tables_dir = output.join("tables");
 
     fs::create_dir_all(&output)
@@ -1460,7 +1460,7 @@ fn baseline_tables_tool(args: &Value) -> Result<Value> {
     let root = root_arg(args)?;
     let baseline_dir = baseline_dir_arg(args, &root)?;
     let tables_dir = baseline_dir.join("tables");
-    let tables = raysense_memory::list_baseline_tables(&tables_dir)
+    let tables = crate::memory::list_baseline_tables(&tables_dir)
         .with_context(|| format!("failed to list baseline tables {}", tables_dir.display()))?;
 
     Ok(json!({
@@ -1497,7 +1497,7 @@ fn baseline_table_read_tool(args: &Value) -> Result<Value> {
         filter_mode: filter_mode_arg(args)?,
         sort: sort_arg(args)?,
     };
-    let table_rows = raysense_memory::query_baseline_table(&tables_dir, table, query)
+    let table_rows = crate::memory::query_baseline_table(&tables_dir, table, query)
         .with_context(|| format!("failed to read baseline table {}", tables_dir.display()))?;
 
     Ok(json!({
@@ -1507,7 +1507,7 @@ fn baseline_table_read_tool(args: &Value) -> Result<Value> {
     }))
 }
 
-fn health_from_args(args: &Value) -> Result<(PathBuf, raysense_core::HealthSummary)> {
+fn health_from_args(args: &Value) -> Result<(PathBuf, crate::HealthSummary)> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
     let report = scan_path_with_config(&root, &config)?;
@@ -1521,7 +1521,7 @@ fn health_from_args(args: &Value) -> Result<(PathBuf, raysense_core::HealthSumma
 fn health_from_args_cached(
     args: &Value,
     state: &mut McpState,
-) -> Result<(PathBuf, raysense_core::HealthSummary)> {
+) -> Result<(PathBuf, crate::HealthSummary)> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
     let signature = config_signature(&root, &config);
@@ -1570,7 +1570,7 @@ fn baseline_dir_arg(args: &Value, root: &Path) -> Result<PathBuf> {
         .map(|path| path.unwrap_or_else(|| root.join(".raysense/baseline")))
 }
 
-fn find_file_id(report: &raysense_core::ScanReport, requested: &str) -> Option<usize> {
+fn find_file_id(report: &crate::ScanReport, requested: &str) -> Option<usize> {
     let requested = requested.replace('\\', "/");
     report
         .files
@@ -1585,7 +1585,7 @@ fn find_file_id(report: &raysense_core::ScanReport, requested: &str) -> Option<u
         .map(|file| file.file_id)
 }
 
-fn reachable_files(report: &raysense_core::ScanReport, start: usize, limit: usize) -> Vec<Value> {
+fn reachable_files(report: &crate::ScanReport, start: usize, limit: usize) -> Vec<Value> {
     let adjacency = local_adjacency(report);
     let mut seen = HashSet::new();
     let mut queue = VecDeque::new();
@@ -1618,7 +1618,7 @@ fn reachable_files(report: &raysense_core::ScanReport, start: usize, limit: usiz
     out
 }
 
-fn reachable_count(report: &raysense_core::ScanReport, start: usize) -> usize {
+fn reachable_count(report: &crate::ScanReport, start: usize) -> usize {
     let adjacency = local_adjacency(report);
     let mut seen = HashSet::new();
     let mut queue = VecDeque::new();
@@ -1639,7 +1639,7 @@ fn reachable_count(report: &raysense_core::ScanReport, start: usize) -> usize {
     seen.len().saturating_sub(1)
 }
 
-fn local_adjacency(report: &raysense_core::ScanReport) -> HashMap<usize, Vec<usize>> {
+fn local_adjacency(report: &crate::ScanReport) -> HashMap<usize, Vec<usize>> {
     let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
     for import in &report.imports {
         let Some(to_file) = import.resolved_file else {

@@ -21,15 +21,13 @@
  *   SOFTWARE.
  */
 
-#![recursion_limit = "256"]
-
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use raysense_core::{
+use crate::{
     build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
     BaselineDiff, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
-use raysense_memory::{
+use crate::memory::{
     BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
     BaselineTableQuery, BaselineTableSort,
 };
@@ -42,7 +40,7 @@ use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-mod mcp;
+use crate::mcp;
 
 #[derive(Debug, Parser)]
 #[command(name = "raysense")]
@@ -319,7 +317,7 @@ pub fn run() -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if memory {
-                let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
+                let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
                 print_memory_summary(&memory.summary());
             } else {
                 print_summary(&report, &config);
@@ -341,12 +339,12 @@ pub fn run() -> Result<()> {
             print_edges(&report, all)?;
         }
         Command::RayforceVersion => {
-            println!("{}", rayforce_sys::version_string());
+            println!("{}", crate::sys::version_string());
         }
         Command::Memory { path, config } => {
             let config = config_for_root(&path, config.as_deref())?;
             let report = scan_path_with_config(path, &config)?;
-            let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
+            let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
             print_memory_summary(&memory.summary());
         }
         Command::Check {
@@ -492,7 +490,7 @@ pub fn run() -> Result<()> {
                 let baseline = baseline.unwrap_or_else(default_baseline_dir);
                 let tables_dir = baseline.join("tables");
                 let tables =
-                    raysense_memory::list_baseline_tables(&tables_dir).with_context(|| {
+                    crate::memory::list_baseline_tables(&tables_dir).with_context(|| {
                         format!("failed to list baseline tables {}", tables_dir.display())
                     })?;
                 if json {
@@ -523,7 +521,7 @@ pub fn run() -> Result<()> {
                     filter_mode: parse_filter_mode(&filter_mode)?,
                     sort: parse_sort(&sort, desc)?,
                 };
-                let rows = raysense_memory::query_baseline_table(&tables_dir, &table, query)
+                let rows = crate::memory::query_baseline_table(&tables_dir, &table, query)
                     .with_context(|| {
                         format!("failed to read baseline table {}", tables_dir.display())
                     })?;
@@ -588,13 +586,13 @@ fn check_project(
     let has_errors = health
         .rules
         .iter()
-        .any(|rule| matches!(rule.severity, raysense_core::RuleSeverity::Error));
+        .any(|rule| matches!(rule.severity, crate::RuleSeverity::Error));
     Ok(if has_errors { 1 } else { 0 })
 }
 
-fn sarif_report(
-    report: &raysense_core::ScanReport,
-    health: &raysense_core::HealthSummary,
+pub(crate) fn sarif_report(
+    report: &crate::ScanReport,
+    health: &crate::HealthSummary,
 ) -> Value {
     let mut seen_rules = BTreeSet::new();
     let rules = health
@@ -666,11 +664,11 @@ fn sarif_report(
     })
 }
 
-fn sarif_level(severity: raysense_core::RuleSeverity) -> &'static str {
+fn sarif_level(severity: crate::RuleSeverity) -> &'static str {
     match severity {
-        raysense_core::RuleSeverity::Error => "error",
-        raysense_core::RuleSeverity::Warning => "warning",
-        raysense_core::RuleSeverity::Info => "note",
+        crate::RuleSeverity::Error => "error",
+        crate::RuleSeverity::Warning => "warning",
+        crate::RuleSeverity::Info => "note",
     }
 }
 
@@ -894,9 +892,9 @@ fn scan_now(root: &Path, config_path: Option<&Path>) -> Result<LiveSnapshot> {
     })
 }
 
-fn visualization_html(
-    report: &raysense_core::ScanReport,
-    health: &raysense_core::HealthSummary,
+pub(crate) fn visualization_html(
+    report: &crate::ScanReport,
+    health: &crate::HealthSummary,
 ) -> String {
     let max_lines = report
         .files
@@ -1671,11 +1669,11 @@ fn add_plugin(
     config
         .scan
         .plugins
-        .push(raysense_core::LanguagePluginConfig {
+        .push(crate::LanguagePluginConfig {
             name: name.to_string(),
             extensions,
             file_names,
-            ..raysense_core::LanguagePluginConfig::default()
+            ..crate::LanguagePluginConfig::default()
         });
     let toml = toml::to_string_pretty(&config).context("failed to encode config")?;
     fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
@@ -1693,7 +1691,7 @@ fn add_standard_plugins(root: &Path, config_path: Option<&Path>) -> Result<()> {
     } else {
         RaysenseConfig::default()
     };
-    let standard = raysense_core::standard_language_plugins();
+    let standard = crate::standard_language_plugins();
     for plugin in &standard {
         config
             .scan
@@ -1740,7 +1738,7 @@ pub(crate) fn validate_plugin_dir(dir: &Path) -> Result<Value> {
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
-    let plugin: raysense_core::LanguagePluginConfig =
+    let plugin: crate::LanguagePluginConfig =
         match toml::from_str(&content).context("failed to parse plugin manifest") {
             Ok(plugin) => plugin,
             Err(error) => {
@@ -1828,7 +1826,7 @@ fn has_supported_query_capture(query: &str) -> bool {
     .any(|capture| query.contains(capture))
 }
 
-fn plugin_has_query_language(plugin: &raysense_core::LanguagePluginConfig) -> bool {
+fn plugin_has_query_language(plugin: &crate::LanguagePluginConfig) -> bool {
     plugin.grammar_path.is_some()
         || matches!(
             plugin.grammar.as_deref().unwrap_or(plugin.name.as_str()),
@@ -1863,7 +1861,7 @@ pub(crate) fn sync_standard_plugins(
     names: &[String],
     force: bool,
 ) -> Result<PluginSyncSummary> {
-    let plugins = raysense_core::standard_language_plugins();
+    let plugins = crate::standard_language_plugins();
     let filter: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
     let mut summary = PluginSyncSummary::default();
     for plugin in plugins {
@@ -1959,7 +1957,7 @@ fn init_policy(root: &Path, config_path: Option<&Path>, preset: &str) -> Result<
     Ok(())
 }
 
-fn apply_policy_preset(config: &mut RaysenseConfig, preset: &str) -> Result<()> {
+pub(crate) fn apply_policy_preset(config: &mut RaysenseConfig, preset: &str) -> Result<()> {
     match preset {
         "rust-crate" => {
             config.scan.ignored_paths = vec!["target".to_string()];
@@ -1986,17 +1984,17 @@ fn apply_policy_preset(config: &mut RaysenseConfig, preset: &str) -> Result<()> 
                 vec!["src".to_string(), "internal".to_string(), "pkg".to_string()];
             config.rules.max_function_complexity = 18;
             config.boundaries.layers = vec![
-                raysense_core::LayerConfig {
+                crate::LayerConfig {
                     name: "api".to_string(),
                     path: "src/api/*".to_string(),
                     order: 2,
                 },
-                raysense_core::LayerConfig {
+                crate::LayerConfig {
                     name: "domain".to_string(),
                     path: "src/domain/*".to_string(),
                     order: 1,
                 },
-                raysense_core::LayerConfig {
+                crate::LayerConfig {
                     name: "infra".to_string(),
                     path: "src/infra/*".to_string(),
                     order: 0,
@@ -2151,7 +2149,7 @@ fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Resu
     let report = scan_path_with_config(root, &config)?;
     let health = compute_health_with_config(&report, &config);
     let baseline = build_baseline(&report, &health);
-    let memory = raysense_memory::RayMemory::from_report_with_config(&report, &config)?;
+    let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
     let tables_dir = output.join("tables");
 
     fs::create_dir_all(output)
@@ -2298,7 +2296,7 @@ fn parse_sort_spec(sort: &str, desc: bool) -> Result<(String, BaselineSortDirect
     Ok((column.to_string(), direction))
 }
 
-fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
+fn print_memory_summary(summary: &crate::memory::MemorySummary) {
     println!(
         "files rows={} cols={}",
         summary.files.rows, summary.files.columns
@@ -2345,14 +2343,14 @@ fn print_memory_summary(summary: &raysense_memory::MemorySummary) {
     );
 }
 
-fn print_baseline_tables(tables: &[raysense_memory::BaselineTableInfo]) {
+fn print_baseline_tables(tables: &[crate::memory::BaselineTableInfo]) {
     println!("name\trows\tcolumns");
     for table in tables {
         println!("{}\t{}\t{}", table.name, table.rows, table.columns);
     }
 }
 
-fn print_baseline_rows(rows: &raysense_memory::BaselineTableRows) {
+fn print_baseline_rows(rows: &crate::memory::BaselineTableRows) {
     println!(
         "table {} rows={} matched={} offset={} limit={}",
         rows.name, rows.total_rows, rows.matched_rows, rows.offset, rows.limit
@@ -2428,7 +2426,7 @@ fn print_baseline_diff(diff: &BaselineDiff) {
     }
 }
 
-fn print_summary(report: &raysense_core::ScanReport, config: &RaysenseConfig) {
+fn print_summary(report: &crate::ScanReport, config: &RaysenseConfig) {
     let health = compute_health_with_config(report, config);
     println!("snapshot {}", report.snapshot.snapshot_id);
     println!("root {}", report.snapshot.root.display());
@@ -2458,7 +2456,7 @@ fn print_summary(report: &raysense_core::ScanReport, config: &RaysenseConfig) {
     println!("max_fan_out {}", report.graph.max_fan_out);
 }
 
-fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::HealthSummary) {
+fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
     println!("score {}", health.score);
     println!("quality_signal {}", health.quality_signal);
     println!("coverage_score {}", health.coverage_score);
@@ -2696,7 +2694,7 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
     }
 }
 
-fn print_edges(report: &raysense_core::ScanReport, all: bool) -> io::Result<()> {
+fn print_edges(report: &crate::ScanReport, all: bool) -> io::Result<()> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
 
@@ -2767,8 +2765,8 @@ mod tests {
 
     #[test]
     fn visualization_html_includes_color_mode_and_detail_panel() {
-        let report = raysense_core::scan_path(env!("CARGO_MANIFEST_DIR")).unwrap();
-        let health = raysense_core::compute_health(&report);
+        let report = crate::scan_path(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let health = crate::compute_health(&report);
         let html = visualization_html(&report, &health);
         assert!(html.contains("id=\"color-mode\""));
         assert!(html.contains("data-churn"));

@@ -21,13 +21,19 @@
  *   SOFTWARE.
  */
 
+#![recursion_limit = "256"]
+
 pub mod baseline;
+pub mod cli;
 pub mod facts;
 pub mod graph;
 pub mod health;
+pub mod mcp;
+pub mod memory;
 pub mod profile;
 pub mod scanner;
 pub mod simulate;
+pub mod sys;
 
 pub use baseline::{
     build_baseline, diff_baselines, BaselineDiff, BaselineModuleEdge, ModuleEdgeDelta,
