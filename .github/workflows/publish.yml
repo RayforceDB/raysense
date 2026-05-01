@@ -45,6 +45,27 @@ jobs:
       - name: Checkout raysense
         uses: actions/checkout@v6
 
+      - name: Vendor rayforce at pinned SHA
+        # The published .crate must contain the rayforce source so end users
+        # can `cargo install raysense` without network access. We clone it
+        # here, strip .git/, and let `cargo package` pick it up via the
+        # Cargo.toml `include` whitelist (vendor/ is gitignored otherwise).
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(cat .rayforce-version | tr -d '[:space:]')"
+          if [[ -z "$sha" ]]; then
+            echo "::error::.rayforce-version is empty" >&2
+            exit 1
+          fi
+          mkdir -p vendor
+          rm -rf vendor/rayforce
+          git -c advice.detachedHead=false clone --quiet \
+            https://github.com/RayforceDB/rayforce.git vendor/rayforce
+          git -C vendor/rayforce checkout --quiet "$sha"
+          rm -rf vendor/rayforce/.git
+          test -f vendor/rayforce/Makefile || { echo "::error::Makefile missing" >&2; exit 1; }
+
       - name: Test
         run: cargo test
 
