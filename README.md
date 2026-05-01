@@ -108,8 +108,9 @@ independent baselines, zero cross-project bleed.
 
 <a href="https://github.com/RayforceDB/rayforce">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RayforceDB/rayforce/master/docs/logo-light.svg">
-    <img alt="Rayforce" src="https://raw.githubusercontent.com/RayforceDB/rayforce/master/docs/logo.svg" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-light.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/logo-dark.svg">
+    <img alt="Rayforce" src="docs/logo-dark.svg" width="320">
   </picture>
 </a>
 
