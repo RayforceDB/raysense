@@ -587,6 +587,8 @@ pub struct EvolutionMetrics {
     pub file_ownership: Vec<EvolutionFileOwnership>,
     #[serde(default)]
     pub temporal_hotspots: Vec<EvolutionTemporalHotspot>,
+    #[serde(default)]
+    pub file_ages: Vec<EvolutionFileAge>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -609,6 +611,18 @@ pub struct EvolutionTemporalHotspot {
     pub commits: usize,
     pub max_complexity: usize,
     pub risk_score: usize,
+}
+
+/// Per-file commit-age window. Timestamps are bounded by the git log lookback,
+/// so `first_commit_unix` is the oldest commit *within the sample*, not
+/// necessarily the file's true creation date.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionFileAge {
+    pub path: String,
+    pub first_commit_unix: i64,
+    pub last_commit_unix: i64,
+    pub age_days: u64,
+    pub last_changed_days: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2549,7 +2563,13 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
 
     let log = match git_output(
         root,
-        ["log", "-n", "500", "--format=commit:%H|%ae", "--name-only"],
+        [
+            "log",
+            "-n",
+            "500",
+            "--format=commit:%H|%ae|%at",
+            "--name-only",
+        ],
     ) {
         Ok(output) => output,
         Err(reason) => {
@@ -2570,7 +2590,9 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
     let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
     let mut author_commits: BTreeMap<String, usize> = BTreeMap::new();
     let mut file_author_commits: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut file_age_window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     let mut current_author: Option<String> = None;
+    let mut current_timestamp: Option<i64> = None;
     let mut commit_files = HashSet::new();
 
     for line in log.lines() {
@@ -2582,19 +2604,23 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
             flush_commit_files_with_author(
                 &mut file_commits,
                 &mut file_author_commits,
+                &mut file_age_window,
                 &mut commit_files,
                 current_author.as_deref(),
+                current_timestamp,
             );
             commits_sampled += 1;
-            let author = rest
-                .split_once('|')
-                .map(|(_, email)| email.trim().to_string());
+            let mut parts = rest.splitn(3, '|');
+            let _hash = parts.next();
+            let author = parts.next().map(|email| email.trim().to_string());
+            let timestamp = parts.next().and_then(|raw| raw.trim().parse::<i64>().ok());
             if let Some(author) = author.as_ref() {
                 if !author.is_empty() {
                     *author_commits.entry(author.clone()).or_default() += 1;
                 }
             }
             current_author = author;
+            current_timestamp = timestamp;
             continue;
         }
 
@@ -2607,8 +2633,10 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
     flush_commit_files_with_author(
         &mut file_commits,
         &mut file_author_commits,
+        &mut file_age_window,
         &mut commit_files,
         current_author.as_deref(),
+        current_timestamp,
     );
 
     let mut top_changed_files: Vec<EvolutionFileMetric> = file_commits
@@ -2667,6 +2695,11 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
     file_ownership.truncate(20);
 
     let temporal_hotspots = temporal_hotspots(&file_commits, complexity);
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|dur| dur.as_secs() as i64)
+        .unwrap_or(0);
+    let file_ages = file_ages(&file_age_window, now_unix);
 
     EvolutionMetrics {
         available: true,
@@ -2678,7 +2711,43 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         top_authors,
         file_ownership,
         temporal_hotspots,
+        file_ages,
     }
+}
+
+/// Build the top-N oldest files within the git log window. Returns at most 20
+/// entries sorted by `age_days` descending. Files with a zero or future
+/// timestamp (clock skew, missing data) are skipped.
+fn file_ages(window: &BTreeMap<String, (i64, i64)>, now_unix: i64) -> Vec<EvolutionFileAge> {
+    if window.is_empty() || now_unix <= 0 {
+        return Vec::new();
+    }
+    const SECONDS_PER_DAY: i64 = 86_400;
+    let mut ages: Vec<EvolutionFileAge> = window
+        .iter()
+        .filter_map(|(path, (first, last))| {
+            if *first <= 0 || *last <= 0 || *first > now_unix {
+                return None;
+            }
+            let age_days = ((now_unix - *first).max(0) / SECONDS_PER_DAY) as u64;
+            let last_changed_days = ((now_unix - *last).max(0) / SECONDS_PER_DAY) as u64;
+            Some(EvolutionFileAge {
+                path: path.clone(),
+                first_commit_unix: *first,
+                last_commit_unix: *last,
+                age_days,
+                last_changed_days,
+            })
+        })
+        .collect();
+    ages.sort_by(|a, b| {
+        b.age_days
+            .cmp(&a.age_days)
+            .then_with(|| b.last_changed_days.cmp(&a.last_changed_days))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    ages.truncate(20);
+    ages
 }
 
 /// Cross-reference commit churn with cyclomatic complexity to surface files
@@ -2747,19 +2816,34 @@ fn bus_factor_for(sorted: &[(&String, &usize)], total: usize) -> usize {
 fn flush_commit_files_with_author(
     file_commits: &mut BTreeMap<String, usize>,
     file_author_commits: &mut BTreeMap<String, BTreeMap<String, usize>>,
+    file_age_window: &mut BTreeMap<String, (i64, i64)>,
     commit_files: &mut HashSet<String>,
     author: Option<&str>,
+    timestamp: Option<i64>,
 ) {
     for path in commit_files.drain() {
         *file_commits.entry(path.clone()).or_default() += 1;
         if let Some(author) = author {
             if !author.is_empty() {
                 *file_author_commits
-                    .entry(path)
+                    .entry(path.clone())
                     .or_default()
                     .entry(author.to_string())
                     .or_default() += 1;
             }
+        }
+        if let Some(ts) = timestamp {
+            file_age_window
+                .entry(path)
+                .and_modify(|(first, last)| {
+                    if ts < *first {
+                        *first = ts;
+                    }
+                    if ts > *last {
+                        *last = ts;
+                    }
+                })
+                .or_insert((ts, ts));
         }
     }
 }
@@ -5018,6 +5102,37 @@ order = 2
             hotspots[1].risk_score >= hotspots[2].risk_score,
             "results are sorted by risk_score descending",
         );
+    }
+
+    #[test]
+    fn file_ages_rank_oldest_first_and_drop_invalid() {
+        const DAY: i64 = 86_400;
+        let now: i64 = 100 * DAY;
+        let mut window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+        window.insert("ancient.rs".to_string(), (10 * DAY, 90 * DAY));
+        window.insert("recent.rs".to_string(), (95 * DAY, 99 * DAY));
+        window.insert("middle.rs".to_string(), (50 * DAY, 60 * DAY));
+        // Future timestamp from clock skew is dropped.
+        window.insert("future.rs".to_string(), (110 * DAY, 110 * DAY));
+        // Zero timestamp (no data) is dropped.
+        window.insert("zero.rs".to_string(), (0, 0));
+
+        let ages = file_ages(&window, now);
+
+        assert_eq!(ages.len(), 3, "future.rs and zero.rs must be skipped");
+        assert_eq!(ages[0].path, "ancient.rs");
+        assert_eq!(ages[0].age_days, 90);
+        assert_eq!(ages[0].last_changed_days, 10);
+        assert_eq!(ages[1].path, "middle.rs");
+        assert_eq!(ages[2].path, "recent.rs");
+        assert_eq!(ages[2].age_days, 5);
+    }
+
+    #[test]
+    fn file_ages_returns_empty_when_now_is_unknown() {
+        let mut window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+        window.insert("a.rs".to_string(), (1, 2));
+        assert!(file_ages(&window, 0).is_empty());
     }
 
     #[test]

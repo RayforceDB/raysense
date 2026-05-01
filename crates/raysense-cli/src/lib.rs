@@ -2108,6 +2108,16 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         }
     }
 
+    if !health.metrics.evolution.file_ages.is_empty() {
+        println!("oldest_files");
+        for age in &health.metrics.evolution.file_ages {
+            println!(
+                "  age_days={} last_changed_days={} {}",
+                age.age_days, age.last_changed_days, age.path,
+            );
+        }
+    }
+
     if !health.metrics.calls.top_called_functions.is_empty() {
         println!("top_called_functions");
         for function in &health.metrics.calls.top_called_functions {

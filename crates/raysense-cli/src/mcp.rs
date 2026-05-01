@@ -829,7 +829,8 @@ fn evolution_tool(args: &Value) -> Result<Value> {
             "author_count": health.metrics.evolution.author_count,
             "top_authors": limited(&health.metrics.evolution.top_authors, limit),
             "file_ownership": limited(&health.metrics.evolution.file_ownership, limit),
-            "temporal_hotspots": limited(&health.metrics.evolution.temporal_hotspots, limit)
+            "temporal_hotspots": limited(&health.metrics.evolution.temporal_hotspots, limit),
+            "file_ages": limited(&health.metrics.evolution.file_ages, limit)
         }
     }))
 }
