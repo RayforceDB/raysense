@@ -7,11 +7,13 @@
   <meta name="description" content="Raysense scores your repository's architecture on every save. Six structural dimensions, graded A through F, aggregated into a 0-to-100 number. Published to your CI, your dashboard, and your AI agent over MCP."/>
   <meta name="theme-color" content="#0a0e13"/>
 
+  <link rel="canonical" href="https://sense.rayforcedb.com/"/>
+
   <meta property="og:type" content="website"/>
   <meta property="og:title" content="Raysense"/>
   <meta property="og:description" content="A structural X-ray for the codebases AI agents are writing."/>
-  <meta property="og:url" content="https://rayforcedb.github.io/raysense/"/>
-  <meta property="og:image" content="https://rayforcedb.github.io/raysense/assets/img/treemap-mockup.svg"/>
+  <meta property="og:url" content="https://sense.rayforcedb.com/"/>
+  <meta property="og:image" content="https://sense.rayforcedb.com/assets/img/treemap-mockup.svg"/>
   <meta name="twitter:card" content="summary_large_image"/>
 
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg"/>
@@ -23,6 +25,48 @@
   <link rel="preload" href="assets/fonts/jbmono-400.woff2" as="font" type="font/woff2" crossorigin/>
 
   <link rel="stylesheet" href="style.css"/>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "@id": "https://sense.rayforcedb.com/#software",
+        "name": "Raysense",
+        "url": "https://sense.rayforcedb.com/",
+        "description": "Raysense scores a code repository's architecture across six structural dimensions, graded A through F and aggregated into a 0-to-100 number. CLI, CI gate, live treemap dashboard, and stdio MCP server for AI coding agents.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux, macOS, Windows",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "downloadUrl": "https://crates.io/crates/raysense",
+        "installUrl": "https://crates.io/crates/raysense",
+        "codeRepository": "https://github.com/RayforceDB/raysense",
+        "license": "https://opensource.org/licenses/MIT",
+        "programmingLanguage": "Rust",
+        "keywords": "codebase architecture, code quality, dependency graph, MCP, AI agents, Rust CLI, static analysis",
+        "author": {
+          "@type": "Person",
+          "name": "Anton Kundenko"
+        },
+        "publisher": {
+          "@id": "https://sense.rayforcedb.com/#org"
+        }
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://sense.rayforcedb.com/#org",
+        "name": "RayforceDB",
+        "url": "https://github.com/RayforceDB",
+        "sameAs": ["https://github.com/RayforceDB"]
+      }
+    ]
+  }
+  </script>
 </head>
 <body>
 
@@ -73,7 +117,7 @@
 
       <aside class="hero-aside" aria-label="Treemap dashboard preview">
         <div class="device-frame">
-          <img src="assets/img/treemap-mockup.svg" alt="Raysense treemap dashboard, showing per-file health and hotspots" width="720" height="480" loading="eager"/>
+          <img src="assets/img/treemap-mockup.svg" alt="Raysense treemap dashboard, showing per-file health and hotspots" width="720" height="480" loading="eager" fetchpriority="high"/>
         </div>
         <p class="hero-aside-caption">
           Live dashboard at <code>http://localhost:7000</code>. Every file, every metric, every cycle, open while you work.

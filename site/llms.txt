@@ -1,0 +1,67 @@
+# Raysense
+
+> Raysense is an open-source Rust CLI and MCP server that scores the architectural health of a code repository. It measures six structural dimensions (Modularity, Acyclicity, Depth, Equality, Redundancy, Uniformity), grades each A through F, and aggregates them into a single 0-to-100 number. The score is published to CI as a pass/fail gate, rendered as a live treemap dashboard in the browser, and exposed to AI coding agents over a stdio MCP server so the agent can read structural state before and after each edit.
+
+Raysense is built for AI-edited repositories. When agents commit dozens of changes per hour, per-diff code review cannot track whether the codebase shape is improving or degrading. Raysense closes that gap with a continuous structural signal.
+
+## Key facts
+
+- Install: `cargo install raysense` (published on crates.io)
+- License: MIT
+- Author: Anton Kundenko
+- Source: https://github.com/RayforceDB/raysense
+- Languages: 45 supported (Rust, Python, TypeScript, C, C++ via tree-sitter; 40 more via configurable plugins)
+- Claude Code plugin: `/plugin marketplace add RayforceDB/raysense`
+
+## Six graded dimensions
+
+- Modularity (A): how cleanly module boundaries separate concerns, based on the dependency graph.
+- Acyclicity (B): the degree to which the dependency graph is acyclic. Cycles reduce the score.
+- Depth (C): whether the codebase has appropriate layering. Both flat-and-tangled and excessively deep architectures are penalised.
+- Equality (D): how evenly responsibility is distributed across files and modules.
+- Redundancy (E): how much logic is duplicated.
+- Uniformity (F): how consistent structural and naming patterns are.
+
+The aggregate score moves with structural changes only. Cosmetic changes (comments, renames) do not affect it.
+
+## CLI usage
+
+```
+cargo install raysense
+
+raysense .              # health report to stdout
+raysense . --check      # CI gate, exits non-zero on rule violations
+raysense . --watch      # rescan + reprint on a 2-second loop
+raysense . --ui         # live dashboard at http://localhost:7000
+raysense --mcp          # stdio MCP server for agents
+```
+
+## Agent integration
+
+Raysense ships as a Claude Code plugin. The plugin gives the agent four phase-scoped skills:
+
+1. Bootstrap. At session start: scan, save baseline, materialise scan results as splayed-table memory.
+2. Impact. Before non-trivial edits: blast radius, coupling, cycle exposure.
+3. Verify. After edits: rescan, rule check, baseline diff.
+4. Audit. On request: architecture, DSM, evolution signals, test gaps.
+
+Project state lives in `<repo>/.raysense/`, never in a global registry. Two concurrent sessions on two different repos are strictly independent.
+
+## Capabilities beyond the score
+
+- Live treemap dashboard. Every file, every metric, every cycle, refreshed on save.
+- Baselines and what-if. Diff against a saved snapshot. Simulate an edit before touching the working tree.
+- Splayed-table agent memory. Scan results as columnar tables. Follow-up queries are instant reads, not re-scans.
+- Test gap detection. Files without nearby tests, ranked by structural risk.
+- Evolution signal. Bus factor, change-coupling pairs, temporal hotspots (churn x complexity), file age windows.
+
+## Built on Rayforce
+
+The agent memory, baseline tables, and live dashboard storage are powered by Rayforce (https://github.com/RayforceDB/rayforce), an open-source in-memory analytics runtime optimised for graph-shaped queries. Linked statically. Nothing extra to install.
+
+## Optional links
+
+- Site: https://sense.rayforcedb.com/
+- Repository: https://github.com/RayforceDB/raysense
+- Crate: https://crates.io/crates/raysense
+- Sister project: https://github.com/RayforceDB/rayforce

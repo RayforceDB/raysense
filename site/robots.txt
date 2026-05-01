@@ -1,0 +1,24 @@
+User-agent: *
+Allow: /
+
+# AI search and citation crawlers (welcome).
+User-agent: GPTBot
+Allow: /
+User-agent: OAI-SearchBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Google-Extended
+Allow: /
+
+# Mass training scrapers (declined).
+User-agent: CCBot
+Disallow: /
+User-agent: anthropic-ai
+Disallow: /
+
+Sitemap: https://sense.rayforcedb.com/sitemap.xml
