@@ -113,8 +113,7 @@ fn ensure_build_dir(manifest_dir: &Path, build_dir: &Path) {
 
 fn read_pin(manifest_dir: &Path) -> String {
     let path = manifest_dir.join(".rayforce-version");
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let sha = raw.trim();
     if sha.len() < 7 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
         panic!("`.rayforce-version` does not contain a hex SHA: {sha:?}");
