@@ -23,6 +23,7 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::facts::{
@@ -32,6 +33,20 @@ use crate::facts::{
 use crate::graph::compute_graph_metrics;
 use crate::health::RaysenseConfig;
 use crate::scanner::{matching_plugin, module_name};
+
+/// One step in a what-if simulation chain. Each variant maps to a single-action
+/// helper in this module — `simulate_sequence` applies them in order. The
+/// JSON shape matches the MCP `raysense_what_if` tool: the discriminator key
+/// is `action`, and the field names align with the per-action MCP arguments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum Action {
+    RemoveFile { file: String },
+    MoveFile { from: String, to: String },
+    AddEdge { from: String, to: String },
+    RemoveEdge { from: String, to: String },
+    BreakCycle { from: String, to: String },
+}
 
 #[derive(Debug, Error)]
 pub enum SimulateError {
@@ -413,6 +428,43 @@ pub fn break_cycle_recommendations(
     });
     candidates.truncate(limit);
     candidates
+}
+
+/// Apply a sequence of `Action`s in order, threading the mutated `ScanReport`
+/// through each step. Returns the first `SimulateError` encountered, indexed
+/// by action position so callers know which step failed. Filesystem state is
+/// never touched — every mutation is in-memory.
+pub fn simulate_sequence(
+    initial: &ScanReport,
+    config: &RaysenseConfig,
+    actions: &[Action],
+) -> Result<ScanReport, SequenceError> {
+    let mut current = initial.clone();
+    for (index, action) in actions.iter().enumerate() {
+        let result = match action {
+            Action::RemoveFile { file } => remove_file(&current, file),
+            Action::MoveFile { from, to } => move_file(&current, config, from, to),
+            Action::AddEdge { from, to } => add_edge(&current, from, to),
+            Action::RemoveEdge { from, to } => remove_edge(&current, from, to),
+            Action::BreakCycle { from, to } => break_cycle(&current, from, to),
+        };
+        current = result.map_err(|source| SequenceError {
+            index,
+            action: action.clone(),
+            source,
+        })?;
+    }
+    Ok(current)
+}
+
+/// Annotates a `SimulateError` with which step in a chain failed.
+#[derive(Debug, Error)]
+#[error("action #{index} ({action:?}) failed: {source}")]
+pub struct SequenceError {
+    pub index: usize,
+    pub action: Action,
+    #[source]
+    pub source: SimulateError,
 }
 
 fn file_id_for_path(report: &ScanReport, path: &str) -> Result<usize, SimulateError> {
@@ -855,5 +907,74 @@ mod tests {
         );
         let err = remove_file(&before, "src/missing.rs").unwrap_err();
         assert!(matches!(err, SimulateError::FileNotFound(_)));
+    }
+
+    #[test]
+    fn simulate_sequence_chains_actions_in_order() {
+        let files = vec![
+            file(0, "src/a.rs"),
+            file(1, "src/b.rs"),
+            file(2, "src/c.rs"),
+        ];
+        // a <-> b cycle, plus c isolated.
+        let imports = vec![import(0, 0, Some(1)), import(1, 1, Some(0))];
+        let before = report(
+            files,
+            Vec::new(),
+            imports,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(before.graph.cycle_count >= 1, "setup must contain a cycle");
+
+        let actions = vec![
+            Action::AddEdge {
+                from: "src/a.rs".to_string(),
+                to: "src/c.rs".to_string(),
+            },
+            Action::BreakCycle {
+                from: "src/a.rs".to_string(),
+                to: "src/b.rs".to_string(),
+            },
+        ];
+        let after = simulate_sequence(&before, &RaysenseConfig::default(), &actions).unwrap();
+
+        assert_eq!(
+            after.graph.cycle_count, 0,
+            "the second action breaks the cycle"
+        );
+        assert_eq!(
+            after.imports.len(),
+            2,
+            "added edge survives, broken edge dropped",
+        );
+        assert!(after
+            .snapshot
+            .snapshot_id
+            .contains("+add_edge:src/a.rs->src/c.rs"));
+        assert!(after
+            .snapshot
+            .snapshot_id
+            .contains("+break_cycle:src/a.rs->src/b.rs"));
+    }
+
+    #[test]
+    fn simulate_sequence_reports_failing_step_index() {
+        let before = report(
+            vec![file(0, "src/a.rs")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let actions = vec![Action::AddEdge {
+            from: "src/a.rs".to_string(),
+            to: "src/missing.rs".to_string(),
+        }];
+        let err = simulate_sequence(&before, &RaysenseConfig::default(), &actions).unwrap_err();
+        assert_eq!(err.index, 0);
+        assert!(matches!(err.source, SimulateError::FileNotFound(_)));
     }
 }
