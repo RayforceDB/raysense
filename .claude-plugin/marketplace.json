@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "raysense-marketplace",
+  "version": "0.1.0",
+  "description": "Raysense — architectural X-ray for your codebase, exposed to AI coding agents through MCP",
+  "owner": {
+    "name": "Anton Kundenko",
+    "email": "anton.kundenko@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "raysense",
+      "description": "Phase-scoped skills (bootstrap / impact / verify / audit) over the raysense MCP server. Surfaces structural health, blast radius, dependency cycles, and persisted memory to coding agents.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Anton Kundenko",
+        "email": "anton.kundenko@gmail.com"
+      },
+      "source": "./claude-plugin",
+      "category": "development"
+    }
+  ]
+}

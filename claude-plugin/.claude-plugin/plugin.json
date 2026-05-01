@@ -1,0 +1,24 @@
+{
+  "name": "raysense",
+  "version": "0.1.0",
+  "description": "Architectural telemetry for AI coding agents. Phase-scoped skills over the raysense MCP server: scan + baseline at session start, blast-radius before edits, regression diff after, on-demand architecture audits.",
+  "author": {
+    "name": "Anton Kundenko",
+    "email": "anton.kundenko@gmail.com"
+  },
+  "homepage": "https://github.com/RayforceDB/raysense",
+  "repository": "https://github.com/RayforceDB/raysense",
+  "license": "MIT",
+  "keywords": [
+    "architecture",
+    "code-quality",
+    "mcp",
+    "agent-loop",
+    "structural-health",
+    "coupling",
+    "cycles",
+    "blast-radius",
+    "memory",
+    "raysense"
+  ]
+}
