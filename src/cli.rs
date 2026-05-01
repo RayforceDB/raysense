@@ -21,20 +21,19 @@
  *   SOFTWARE.
  */
 
-use anyhow::{anyhow, Context, Result};
-use clap::{Parser, Subcommand};
-use crate::{
-    build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
-    BaselineDiff, ImportResolution, ProjectBaseline, RaysenseConfig,
-};
 use crate::memory::{
     BaselineFilterMode, BaselineFilterOp, BaselineSortDirection, BaselineTableFilter,
     BaselineTableQuery, BaselineTableSort,
 };
+use crate::{
+    build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
+    BaselineDiff, ProjectBaseline, RaysenseConfig,
+};
+use anyhow::{anyhow, Context, Result};
+use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
@@ -42,109 +41,85 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::mcp;
 
+/// One-tool CLI: `raysense [path]` runs a health report by default.
+/// Top-level flags pick a different mode (json, ui, watch, check, mcp).
+/// Advanced operations (baseline / plugin / policy / trend / whatif) live as
+/// subcommands so their multi-arg shapes don't pollute the simple path.
 #[derive(Debug, Parser)]
 #[command(name = "raysense")]
-#[command(about = "Local architectural telemetry for AI coding agents")]
+#[command(version)]
+#[command(about = "Architectural X-ray for your codebase. Live, local, agent-ready.")]
 struct Args {
+    /// Path to scan. Default: current directory.
+    #[arg(default_value = ".")]
+    path: PathBuf,
+
+    /// Emit machine-readable JSON instead of human-readable text.
+    #[arg(long)]
+    json: bool,
+
+    /// Run the rule gate. Exits non-zero if any rule fails.
+    #[arg(long)]
+    check: bool,
+
+    /// With `--check`: also write a SARIF code-scanning report here.
+    #[arg(long, value_name = "PATH")]
+    sarif: Option<PathBuf>,
+
+    /// Watch mode: rescan on a fixed interval and reprint.
+    #[arg(long)]
+    watch: bool,
+
+    /// Start the live UI HTTP server. Optional port (default 7000).
+    #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "7000")]
+    ui: Option<u16>,
+
+    /// Re-scan interval in seconds (used by `--watch` and `--ui`).
+    #[arg(long, default_value_t = 2)]
+    interval: u64,
+
+    /// Run as a stdio MCP server. Path is ignored.
+    #[arg(long)]
+    mcp: bool,
+
+    /// Print the linked C library version and exit.
+    #[arg(long)]
+    rayforce_version: bool,
+
+    /// Optional explicit `.raysense.toml` path.
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
-    command: Command,
+    advanced: Option<Command>,
 }
 
+/// Advanced subcommands. Most users never need these — the top-level flags
+/// cover the common 90 %.
 #[derive(Debug, Subcommand)]
 enum Command {
-    Observe {
-        path: PathBuf,
-        #[arg(long)]
-        json: bool,
-        #[arg(long)]
-        memory: bool,
-        #[arg(long)]
-        config: Option<PathBuf>,
+    /// Save / diff / query a baseline of the current scan.
+    Baseline {
+        #[command(subcommand)]
+        command: BaselineCommand,
     },
-    Health {
-        path: PathBuf,
-        #[arg(long)]
-        json: bool,
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
-    Edges {
-        path: PathBuf,
-        #[arg(long)]
-        all: bool,
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
-    RayforceVersion,
-    Memory {
-        path: PathBuf,
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
-    Check {
-        #[arg(default_value = ".")]
-        path: PathBuf,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long)]
-        json: bool,
-        #[arg(long)]
-        sarif: Option<PathBuf>,
-    },
-    Gate {
-        #[arg(default_value = ".")]
-        path: PathBuf,
-        #[arg(long)]
-        save: bool,
-        #[arg(long)]
-        baseline: Option<PathBuf>,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long)]
-        json: bool,
-    },
-    Watch {
-        #[arg(default_value = ".")]
-        path: PathBuf,
-        #[arg(long, default_value_t = 2)]
-        interval: u64,
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
-    /// Start a live UI server. The page subscribes to server-sent events and
-    /// reloads when the scan content hash changes — never on a fixed timer.
-    /// Single source of UI; no static HTML export.
-    Visualize {
-        #[arg(default_value = ".")]
-        path: PathBuf,
-        #[arg(long, default_value_t = 2)]
-        interval: u64,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long, default_value_t = 7000)]
-        port: u16,
-    },
+    /// Manage language plugins (list / add / sync / validate / scaffold).
     Plugin {
         #[command(subcommand)]
         command: PluginCommand,
     },
+    /// Apply or list rule policy presets.
     Policy {
         #[command(subcommand)]
         command: PolicyCommand,
     },
+    /// Record / show health-score trend snapshots.
     Trend {
         #[command(subcommand)]
         command: TrendCommand,
     },
-    Remediate {
-        #[arg(default_value = ".")]
-        path: PathBuf,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long)]
-        json: bool,
-    },
-    WhatIf {
+    /// What-if simulation: rescan with extra ignored / generated paths.
+    Whatif {
         #[arg(default_value = ".")]
         path: PathBuf,
         #[arg(long)]
@@ -156,11 +131,6 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    Baseline {
-        #[command(subcommand)]
-        command: BaselineCommand,
-    },
-    Mcp,
 }
 
 #[derive(Debug, Subcommand)]
@@ -305,78 +275,47 @@ enum BaselineCommand {
 pub fn run() -> Result<()> {
     let args = Args::parse();
 
-    match args.command {
-        Command::Observe {
-            path,
-            json,
-            memory,
-            config,
-        } => {
-            let config = config_for_root(&path, config.as_deref())?;
-            let report = scan_path_with_config(path, &config)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else if memory {
-                let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
-                print_memory_summary(&memory.summary());
-            } else {
-                print_summary(&report, &config);
-            }
-        }
-        Command::Health { path, json, config } => {
-            let config = config_for_root(&path, config.as_deref())?;
-            let report = scan_path_with_config(path, &config)?;
-            let health = compute_health_with_config(&report, &config);
-            if json {
-                println!("{}", serde_json::to_string_pretty(&health)?);
-            } else {
-                print_health(&report, &health);
-            }
-        }
-        Command::Edges { path, all, config } => {
-            let config = config_for_root(&path, config.as_deref())?;
-            let report = scan_path_with_config(path, &config)?;
-            print_edges(&report, all)?;
-        }
-        Command::RayforceVersion => {
-            println!("{}", crate::sys::version_string());
-        }
-        Command::Memory { path, config } => {
-            let config = config_for_root(&path, config.as_deref())?;
-            let report = scan_path_with_config(path, &config)?;
-            let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
-            print_memory_summary(&memory.summary());
-        }
-        Command::Check {
-            path,
-            config,
-            json,
-            sarif,
-        } => {
-            let exit = check_project(&path, config.as_deref(), json, sarif.as_deref())?;
-            process::exit(exit);
-        }
-        Command::Gate {
-            path,
-            save,
-            baseline,
-            config,
-            json,
-        } => {
-            let exit = gate_project(&path, baseline, config.as_deref(), save, json)?;
-            process::exit(exit);
-        }
-        Command::Watch {
-            path,
-            interval,
-            config,
-        } => watch_project(&path, config.as_deref(), interval)?,
-        Command::Visualize {
-            path,
-            interval,
-            config,
-            port,
-        } => serve_visualization(&path, config.as_deref(), interval, port)?,
+    if let Some(command) = args.advanced {
+        return run_advanced(command);
+    }
+
+    if args.rayforce_version {
+        println!("{}", crate::sys::version_string());
+        return Ok(());
+    }
+    if args.mcp {
+        return mcp::run();
+    }
+    if let Some(port) = args.ui {
+        return serve_visualization(&args.path, args.config.as_deref(), args.interval, port);
+    }
+    if args.watch {
+        return watch_project(&args.path, args.config.as_deref(), args.interval);
+    }
+    if args.check {
+        let exit = check_project(
+            &args.path,
+            args.config.as_deref(),
+            args.json,
+            args.sarif.as_deref(),
+        )?;
+        process::exit(exit);
+    }
+
+    // Default mode: health report.
+    let config = config_for_root(&args.path, args.config.as_deref())?;
+    let report = scan_path_with_config(&args.path, &config)?;
+    let health = compute_health_with_config(&report, &config);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&health)?);
+    } else {
+        print_health(&report, &health);
+    }
+    Ok(())
+}
+
+fn run_advanced(command: Command) -> Result<()> {
+    match command {
         Command::Plugin { command } => match command {
             PluginCommand::List { path, config } => list_plugins(&path, config.as_deref())?,
             PluginCommand::Add {
@@ -446,10 +385,7 @@ pub fn run() -> Result<()> {
                 show_trend(&path, config.as_deref(), json)?
             }
         },
-        Command::Remediate { path, config, json } => {
-            print_remediations(&path, config.as_deref(), json)?
-        }
-        Command::WhatIf {
+        Command::Whatif {
             path,
             config,
             ignore_paths,
@@ -532,9 +468,6 @@ pub fn run() -> Result<()> {
                 }
             }
         },
-        Command::Mcp => {
-            mcp::run()?;
-        }
     }
 
     Ok(())
@@ -590,10 +523,7 @@ fn check_project(
     Ok(if has_errors { 1 } else { 0 })
 }
 
-pub(crate) fn sarif_report(
-    report: &crate::ScanReport,
-    health: &crate::HealthSummary,
-) -> Value {
+pub(crate) fn sarif_report(report: &crate::ScanReport, health: &crate::HealthSummary) -> Value {
     let mut seen_rules = BTreeSet::new();
     let rules = health
         .rules
@@ -680,32 +610,6 @@ fn sarif_uri(root: &Path, path: &str) -> String {
     } else {
         relative.to_string_lossy().replace('\\', "/")
     }
-}
-
-fn gate_project(
-    root: &Path,
-    baseline: Option<PathBuf>,
-    config_path: Option<&Path>,
-    save: bool,
-    json: bool,
-) -> Result<i32> {
-    let baseline = baseline.unwrap_or_else(|| root.join(".raysense/baseline"));
-    if save {
-        save_baseline(root, &baseline, config_path)?;
-        println!("baseline {}", baseline.display());
-        return Ok(0);
-    }
-    let diff = diff_baseline(root, &baseline, config_path)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&diff)?);
-    } else {
-        print_baseline_diff(&diff);
-    }
-    Ok(if diff.score_delta < 0 || !diff.added_rules.is_empty() {
-        1
-    } else {
-        0
-    })
 }
 
 fn watch_project(root: &Path, config_path: Option<&Path>, interval: u64) -> Result<()> {
@@ -1666,15 +1570,12 @@ fn add_plugin(
         RaysenseConfig::default()
     };
     config.scan.plugins.retain(|plugin| plugin.name != name);
-    config
-        .scan
-        .plugins
-        .push(crate::LanguagePluginConfig {
-            name: name.to_string(),
-            extensions,
-            file_names,
-            ..crate::LanguagePluginConfig::default()
-        });
+    config.scan.plugins.push(crate::LanguagePluginConfig {
+        name: name.to_string(),
+        extensions,
+        file_names,
+        ..crate::LanguagePluginConfig::default()
+    });
     let toml = toml::to_string_pretty(&config).context("failed to encode config")?;
     fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
     println!("plugin {} {}", name, path.display());
@@ -2062,21 +1963,6 @@ fn show_trend(root: &Path, config_path: Option<&Path>, json: bool) -> Result<()>
     Ok(())
 }
 
-fn print_remediations(root: &Path, config_path: Option<&Path>, json: bool) -> Result<()> {
-    let config = config_for_root(root, config_path)?;
-    let report = scan_path_with_config(root, &config)?;
-    let health = compute_health_with_config(&report, &config);
-    if json {
-        println!("{}", serde_json::to_string_pretty(&health.remediations)?);
-    } else {
-        for item in health.remediations {
-            println!("{} {} - {}", item.code, item.path, item.action);
-            println!("  {}", item.command);
-        }
-    }
-    Ok(())
-}
-
 fn print_what_if(
     root: &Path,
     config_path: Option<&Path>,
@@ -2296,53 +2182,6 @@ fn parse_sort_spec(sort: &str, desc: bool) -> Result<(String, BaselineSortDirect
     Ok((column.to_string(), direction))
 }
 
-fn print_memory_summary(summary: &crate::memory::MemorySummary) {
-    println!(
-        "files rows={} cols={}",
-        summary.files.rows, summary.files.columns
-    );
-    println!(
-        "functions rows={} cols={}",
-        summary.functions.rows, summary.functions.columns
-    );
-    println!(
-        "entry_points rows={} cols={}",
-        summary.entry_points.rows, summary.entry_points.columns
-    );
-    println!(
-        "imports rows={} cols={}",
-        summary.imports.rows, summary.imports.columns
-    );
-    println!(
-        "calls rows={} cols={}",
-        summary.calls.rows, summary.calls.columns
-    );
-    println!(
-        "call_edges rows={} cols={}",
-        summary.call_edges.rows, summary.call_edges.columns
-    );
-    println!(
-        "health rows={} cols={}",
-        summary.health.rows, summary.health.columns
-    );
-    println!(
-        "hotspots rows={} cols={}",
-        summary.hotspots.rows, summary.hotspots.columns
-    );
-    println!(
-        "rules rows={} cols={}",
-        summary.rules.rows, summary.rules.columns
-    );
-    println!(
-        "module_edges rows={} cols={}",
-        summary.module_edges.rows, summary.module_edges.columns
-    );
-    println!(
-        "changed_files rows={} cols={}",
-        summary.changed_files.rows, summary.changed_files.columns
-    );
-}
-
 fn print_baseline_tables(tables: &[crate::memory::BaselineTableInfo]) {
     println!("name\trows\tcolumns");
     for table in tables {
@@ -2424,36 +2263,6 @@ fn print_baseline_diff(diff: &BaselineDiff) {
             );
         }
     }
-}
-
-fn print_summary(report: &crate::ScanReport, config: &RaysenseConfig) {
-    let health = compute_health_with_config(report, config);
-    println!("snapshot {}", report.snapshot.snapshot_id);
-    println!("root {}", report.snapshot.root.display());
-    println!("score {}", health.score);
-    println!("quality_signal {}", health.quality_signal);
-    println!("coverage_score {}", health.coverage_score);
-    println!("structural_score {}", health.structural_score);
-    println!("files {}", report.snapshot.file_count);
-    println!("functions {}", report.snapshot.function_count);
-    println!("calls {}", report.snapshot.call_count);
-    println!("call_edges {}", report.call_edges.len());
-    println!(
-        "entry_points total={} binaries={} examples={} tests={}",
-        report.entry_points.len(),
-        health.metrics.entry_points.binaries,
-        health.metrics.entry_points.examples,
-        health.metrics.entry_points.tests
-    );
-    println!("imports {}", report.snapshot.import_count);
-    println!("local_imports {}", health.resolution.local);
-    println!("external_imports {}", health.resolution.external);
-    println!("system_imports {}", health.resolution.system);
-    println!("unresolved_imports {}", health.resolution.unresolved);
-    println!("resolved_edges {}", report.graph.resolved_edge_count);
-    println!("cycles {}", report.graph.cycle_count);
-    println!("max_fan_in {}", report.graph.max_fan_in);
-    println!("max_fan_out {}", report.graph.max_fan_out);
 }
 
 fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
@@ -2692,41 +2501,6 @@ fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
             );
         }
     }
-}
-
-fn print_edges(report: &crate::ScanReport, all: bool) -> io::Result<()> {
-    let stdout = io::stdout();
-    let mut stdout = stdout.lock();
-
-    for import in &report.imports {
-        if !all && import.resolution != ImportResolution::Local {
-            continue;
-        }
-
-        let from = report
-            .files
-            .get(import.from_file)
-            .map(|file| file.path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("#{}", import.from_file));
-        let to = import
-            .resolved_file
-            .and_then(|file_id| report.files.get(file_id))
-            .map(|file| file.path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| import.target.clone());
-
-        if let Err(err) = writeln!(
-            stdout,
-            "{:?} {} -> {} ({})",
-            import.resolution, from, to, import.kind
-        ) {
-            if err.kind() == io::ErrorKind::BrokenPipe {
-                return Ok(());
-            }
-            return Err(err);
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

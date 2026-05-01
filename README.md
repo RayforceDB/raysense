@@ -49,36 +49,20 @@ Or build from source — see [Building](#building) below.
 
 ## Use
 
-Three things, one binary.
-
-**Live dashboard.** Open it once, leave it open. Updates the moment your
-code does, never on a fixed timer.
+One command, a few flags. The default is a health report.
 
 ```bash
-raysense visualize .
+raysense .                  # health report
+raysense . --json           # machine-readable JSON
+raysense . --check          # CI gate, exits non-zero on rule failures
+raysense . --watch          # rescan + reprint on a 2s loop
+raysense . --ui             # live dashboard at http://localhost:7000
+raysense --mcp              # stdio MCP server for agents
 ```
 
-**Health report.** A single number out of 100, plus A–F grades on six
-dimensions, plus the rules currently failing.
-
-```bash
-raysense health .
-```
-
-**CI gate.** Exit non-zero if any rule fails or scores drop against a
-saved baseline.
-
-```bash
-raysense check .
-```
-
-**Agent connector.** Hook Raysense into Claude, Cursor, or any MCP-capable
-client. 40+ tools — scan, edges, hotspots, what-if simulation, baseline
-diff, evolution metrics — all queryable.
-
-```bash
-raysense mcp
-```
+Power-user operations live as subcommands: `baseline save|diff`,
+`plugin sync`, `policy init`, `trend record|show`, `whatif`. See
+`raysense --help` for the full surface.
 
 ## What it measures
 
