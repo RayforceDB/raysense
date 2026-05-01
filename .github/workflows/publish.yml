@@ -45,19 +45,8 @@ jobs:
       - name: Checkout raysense
         uses: actions/checkout@v6
 
-      - name: Checkout rayforce
-        uses: actions/checkout@v6
-        with:
-          repository: RayforceDB/rayforce
-          path: deps/rayforce
-
-      - name: Build rayforce library
-        run: make -C deps/rayforce lib
-
-      - name: Test workspace
+      - name: Test
         run: cargo test
-        env:
-          RAYFORCE_DIR: ${{ github.workspace }}/deps/rayforce
 
       - name: Package and publish crates
         shell: bash
@@ -119,30 +108,22 @@ jobs:
             wait_for_crate "$package" "$version"
           }
 
-          publish_crate rayforce-sys
-          publish_crate raysense-core
-          publish_crate raysense-memory
-          publish_crate raysense-cli
           publish_crate raysense
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          RAYFORCE_DIR: ${{ github.workspace }}/deps/rayforce
 
       - name: Post-release smoke
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
         shell: bash
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/raysense/Cargo.toml | head -n 1)"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           smoke_dir="$(mktemp -d)"
 
-          RAYFORCE_DIR="${{ github.workspace }}/deps/rayforce" \
-            cargo install raysense --version "$version" --root "$smoke_dir/install"
-          "$smoke_dir/install/bin/raysense" rayforce-version
+          cargo install raysense --version "$version" --root "$smoke_dir/install"
+          "$smoke_dir/install/bin/raysense" --version
 
           cargo new "$smoke_dir/library-smoke"
           cd "$smoke_dir/library-smoke"
           cargo add "raysense@$version"
-          RAYFORCE_DIR="${{ github.workspace }}/deps/rayforce" cargo check
-        env:
-          RAYFORCE_DIR: ${{ github.workspace }}/deps/rayforce
+          cargo check

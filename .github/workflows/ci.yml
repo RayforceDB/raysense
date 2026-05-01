@@ -40,19 +40,8 @@ jobs:
       - name: Checkout raysense
         uses: actions/checkout@v6
 
-      - name: Checkout rayforce
-        uses: actions/checkout@v6
-        with:
-          repository: RayforceDB/rayforce
-          path: deps/rayforce
-
-      - name: Build rayforce library
-        run: make -C deps/rayforce lib
-
       - name: Check formatting
         run: cargo fmt --check
 
       - name: Run tests
         run: cargo test
-        env:
-          RAYFORCE_DIR: ${{ github.workspace }}/deps/rayforce
