@@ -585,6 +585,8 @@ pub struct EvolutionMetrics {
     pub top_authors: Vec<EvolutionAuthorMetric>,
     #[serde(default)]
     pub file_ownership: Vec<EvolutionFileOwnership>,
+    #[serde(default)]
+    pub temporal_hotspots: Vec<EvolutionTemporalHotspot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,6 +599,16 @@ pub struct EvolutionFileMetric {
 pub struct EvolutionAuthorMetric {
     pub author: String,
     pub commits: usize,
+}
+
+/// `risk_score = commits * max_cyclomatic_complexity` — high values flag files
+/// that are both volatile and intricate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionTemporalHotspot {
+    pub path: String,
+    pub commits: usize,
+    pub max_complexity: usize,
+    pub risk_score: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -791,16 +803,18 @@ fn metrics(
     hotspots: &[FileHotspot],
     config: &RaysenseConfig,
 ) -> MetricsSummary {
+    let complexity = complexity_metrics(report, config);
+    let evolution = evolution_metrics(report, &complexity);
     MetricsSummary {
         coupling: coupling_metrics(report, hotspots, config),
         calls: call_metrics(report),
         architecture: architecture_metrics(report, config),
-        complexity: complexity_metrics(report, config),
+        complexity,
         size: size_metrics(report),
         entry_points: entry_point_metrics(report),
         test_gap: test_gap_metrics(report, config),
         dsm: dsm_metrics(report, config),
-        evolution: evolution_metrics(report),
+        evolution,
         trend: trend_metrics(report),
     }
 }
@@ -2520,7 +2534,7 @@ fn dsm_metrics(report: &ScanReport, config: &RaysenseConfig) -> DsmMetrics {
     }
 }
 
-fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
+fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> EvolutionMetrics {
     let root = &report.snapshot.root;
     let prefix = match git_output(root, ["rev-parse", "--show-prefix"]) {
         Ok(output) => output.trim().replace('\\', "/"),
@@ -2652,6 +2666,8 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
     });
     file_ownership.truncate(20);
 
+    let temporal_hotspots = temporal_hotspots(&file_commits, complexity);
+
     EvolutionMetrics {
         available: true,
         reason: String::new(),
@@ -2661,7 +2677,56 @@ fn evolution_metrics(report: &ScanReport) -> EvolutionMetrics {
         author_count,
         top_authors,
         file_ownership,
+        temporal_hotspots,
     }
+}
+
+/// Cross-reference commit churn with cyclomatic complexity to surface files
+/// that are both volatile and intricate. Risk = commits × max-cyclomatic;
+/// files with risk == 0 (no commits or trivial complexity) are dropped.
+fn temporal_hotspots(
+    file_commits: &BTreeMap<String, usize>,
+    complexity: &ComplexityMetrics,
+) -> Vec<EvolutionTemporalHotspot> {
+    if file_commits.is_empty() || complexity.all_functions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut max_complexity_per_file: HashMap<&str, usize> = HashMap::new();
+    for func in &complexity.all_functions {
+        let entry = max_complexity_per_file
+            .entry(func.path.as_str())
+            .or_default();
+        if func.value > *entry {
+            *entry = func.value;
+        }
+    }
+
+    let mut hotspots: Vec<EvolutionTemporalHotspot> = file_commits
+        .iter()
+        .filter_map(|(path, commits)| {
+            let max_cc = max_complexity_per_file.get(path.as_str()).copied()?;
+            let risk = commits.saturating_mul(max_cc);
+            if risk == 0 {
+                return None;
+            }
+            Some(EvolutionTemporalHotspot {
+                path: path.clone(),
+                commits: *commits,
+                max_complexity: max_cc,
+                risk_score: risk,
+            })
+        })
+        .collect();
+
+    hotspots.sort_by(|a, b| {
+        b.risk_score
+            .cmp(&a.risk_score)
+            .then_with(|| b.commits.cmp(&a.commits))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    hotspots.truncate(10);
+    hotspots
 }
 
 fn bus_factor_for(sorted: &[(&String, &usize)], total: usize) -> usize {
@@ -4897,5 +4962,82 @@ order = 2
             caller_function,
             callee_function,
         }
+    }
+
+    fn complexity_metric(file_id: usize, path: &str, value: usize) -> FunctionComplexityMetric {
+        FunctionComplexityMetric {
+            function_id: 0,
+            file_id,
+            path: path.to_string(),
+            name: format!("fn_{file_id}"),
+            value,
+            cognitive_value: value,
+        }
+    }
+
+    #[test]
+    fn temporal_hotspots_rank_by_churn_times_complexity() {
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("src/hot.rs".to_string(), 12);
+        file_commits.insert("src/quiet.rs".to_string(), 1);
+        file_commits.insert("src/simple.rs".to_string(), 50);
+        file_commits.insert("src/orphan.rs".to_string(), 3);
+
+        let complexity = ComplexityMetrics {
+            all_functions: vec![
+                complexity_metric(0, "src/hot.rs", 4),
+                complexity_metric(0, "src/hot.rs", 9),
+                complexity_metric(1, "src/quiet.rs", 20),
+                complexity_metric(2, "src/simple.rs", 1),
+            ],
+            ..ComplexityMetrics::default()
+        };
+
+        let hotspots = temporal_hotspots(&file_commits, &complexity);
+
+        assert_eq!(hotspots.len(), 3, "orphan.rs has no complexity → dropped");
+        assert!(
+            hotspots.iter().all(|h| h.path != "src/orphan.rs"),
+            "files with no functions must not appear",
+        );
+
+        let top = &hotspots[0];
+        assert_eq!(top.path, "src/hot.rs");
+        assert_eq!(top.commits, 12);
+        assert_eq!(
+            top.max_complexity, 9,
+            "uses max function complexity per file"
+        );
+        assert_eq!(top.risk_score, 12 * 9);
+
+        let simple = hotspots.iter().find(|h| h.path == "src/simple.rs").unwrap();
+        let quiet = hotspots.iter().find(|h| h.path == "src/quiet.rs").unwrap();
+        assert_eq!(simple.risk_score, 50);
+        assert_eq!(quiet.risk_score, 20);
+        assert!(
+            hotspots[1].risk_score >= hotspots[2].risk_score,
+            "results are sorted by risk_score descending",
+        );
+    }
+
+    #[test]
+    fn temporal_hotspots_skip_zero_risk() {
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("src/zero.rs".to_string(), 0);
+        file_commits.insert("src/some.rs".to_string(), 4);
+
+        let complexity = ComplexityMetrics {
+            all_functions: vec![
+                complexity_metric(0, "src/zero.rs", 5),
+                complexity_metric(1, "src/some.rs", 0),
+            ],
+            ..ComplexityMetrics::default()
+        };
+
+        let hotspots = temporal_hotspots(&file_commits, &complexity);
+        assert!(
+            hotspots.is_empty(),
+            "either factor being zero means no risk score",
+        );
     }
 }

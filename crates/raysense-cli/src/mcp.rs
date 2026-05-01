@@ -825,7 +825,11 @@ fn evolution_tool(args: &Value) -> Result<Value> {
             "reason": health.metrics.evolution.reason,
             "commits_sampled": health.metrics.evolution.commits_sampled,
             "changed_files": health.metrics.evolution.changed_files,
-            "top_changed_files": limited(&health.metrics.evolution.top_changed_files, limit)
+            "top_changed_files": limited(&health.metrics.evolution.top_changed_files, limit),
+            "author_count": health.metrics.evolution.author_count,
+            "top_authors": limited(&health.metrics.evolution.top_authors, limit),
+            "file_ownership": limited(&health.metrics.evolution.file_ownership, limit),
+            "temporal_hotspots": limited(&health.metrics.evolution.temporal_hotspots, limit)
         }
     }))
 }

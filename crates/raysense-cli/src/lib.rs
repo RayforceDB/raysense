@@ -2098,6 +2098,16 @@ fn print_health(report: &raysense_core::ScanReport, health: &raysense_core::Heal
         }
     }
 
+    if !health.metrics.evolution.temporal_hotspots.is_empty() {
+        println!("temporal_hotspots");
+        for hotspot in &health.metrics.evolution.temporal_hotspots {
+            println!(
+                "  risk={} commits={} max_complexity={} {}",
+                hotspot.risk_score, hotspot.commits, hotspot.max_complexity, hotspot.path,
+            );
+        }
+    }
+
     if !health.metrics.calls.top_called_functions.is_empty() {
         println!("top_called_functions");
         for function in &health.metrics.calls.top_called_functions {
