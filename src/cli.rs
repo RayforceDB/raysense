@@ -32,12 +32,11 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::mcp;
 
@@ -66,17 +65,14 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     sarif: Option<PathBuf>,
 
-    /// Watch mode: rescan on a fixed interval and reprint.
+    /// Watch mode: rescan and reprint when files change. Filesystem-driven
+    /// (no polling); ignores changes inside target / .git / node_modules / .raysense.
     #[arg(long)]
     watch: bool,
 
     /// Start the live UI HTTP server. Optional port (default 7000).
     #[arg(long, value_name = "PORT", num_args = 0..=1, default_missing_value = "7000")]
     ui: Option<u16>,
-
-    /// Re-scan interval in seconds (used by `--watch` and `--ui`).
-    #[arg(long, default_value_t = 2)]
-    interval: u64,
 
     /// Run as a stdio MCP server. Path is ignored.
     #[arg(long)]
@@ -287,10 +283,10 @@ pub fn run() -> Result<()> {
         return mcp::run();
     }
     if let Some(port) = args.ui {
-        return serve_visualization(&args.path, args.config.as_deref(), args.interval, port);
+        return serve_visualization(&args.path, args.config.as_deref(), port);
     }
     if args.watch {
-        return watch_project(&args.path, args.config.as_deref(), args.interval);
+        return watch_project(&args.path, args.config.as_deref());
     }
     if args.check {
         let exit = check_project(
@@ -612,25 +608,89 @@ fn sarif_uri(root: &Path, path: &str) -> String {
     }
 }
 
-fn watch_project(root: &Path, config_path: Option<&Path>, interval: u64) -> Result<()> {
+fn watch_project(root: &Path, config_path: Option<&Path>) -> Result<()> {
     let mut last_snapshot = String::new();
-    loop {
+    let mut emit = || -> Result<()> {
         let config = config_for_root(root, config_path)?;
         let report = scan_path_with_config(root, &config)?;
         let health = compute_health_with_config(&report, &config);
         if report.snapshot.snapshot_id != last_snapshot {
             println!(
-                "snapshot {} quality_signal={} score={} files={} rules={}",
+                "snapshot {} score={} files={} rules={}",
                 report.snapshot.snapshot_id,
-                health.quality_signal,
                 health.score,
                 report.snapshot.file_count,
                 health.rules.len()
             );
             last_snapshot = report.snapshot.snapshot_id;
         }
-        thread::sleep(Duration::from_secs(interval.max(1)));
+        Ok(())
+    };
+    emit()?;
+    watch_paths_blocking(root, emit)
+}
+
+/// Watch a project root with `notify`, debounce events that fall in
+/// always-ignored directories (target, .git, node_modules, .raysense),
+/// and call `on_change` once per debounced burst (~150 ms window).
+fn watch_paths_blocking<F>(root: &Path, mut on_change: F) -> Result<()>
+where
+    F: FnMut() -> Result<()>,
+{
+    use notify::{RecursiveMode, Watcher};
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel::<()>();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            if relevant_event(&event) {
+                let _ = tx.send(());
+            }
+        }
+    })
+    .context("failed to start filesystem watcher")?;
+    watcher
+        .watch(root, RecursiveMode::Recursive)
+        .with_context(|| format!("failed to watch {}", root.display()))?;
+    loop {
+        // wait for at least one event
+        if rx.recv().is_err() {
+            break;
+        }
+        // drain rapid bursts
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match rx.recv_timeout(deadline - now) {
+                Ok(()) => continue,
+                Err(_) => break,
+            }
+        }
+        on_change()?;
     }
+    Ok(())
+}
+
+fn relevant_event(event: &notify::Event) -> bool {
+    use notify::EventKind;
+    if !matches!(
+        event.kind,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+    ) {
+        return false;
+    }
+    event.paths.iter().any(|p| !is_ignored_event_path(p))
+}
+
+fn is_ignored_event_path(path: &Path) -> bool {
+    path.components().any(|c| {
+        matches!(
+            c.as_os_str().to_str(),
+            Some("target" | ".git" | "node_modules" | ".raysense")
+        )
+    })
 }
 
 /// Run a tokio HTTP server that hosts the live visualization. The server
@@ -639,15 +699,9 @@ fn watch_project(root: &Path, config_path: Option<&Path>, interval: u64) -> Resu
 /// the HTML page without any meta-refresh. Browsers connected to `/events`
 /// reload the page on each change; other state (filter selections, scroll,
 /// expanded panels) survives whenever data didn't actually change.
-fn serve_visualization(
-    root: &Path,
-    config_path: Option<&Path>,
-    interval: u64,
-    port: u16,
-) -> Result<()> {
+fn serve_visualization(root: &Path, config_path: Option<&Path>, port: u16) -> Result<()> {
     let root = root.to_path_buf();
     let config_path = config_path.map(Path::to_path_buf);
-    let interval = interval.max(1);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -672,15 +726,48 @@ fn serve_visualization(
             tx: broadcast::channel::<()>(16).0,
         });
 
+        // Bridge filesystem events into a tokio mpsc; the watcher's callback
+        // runs on a private notify thread (sync), and we drain into the
+        // async runtime for debouncing + rescan.
+        let (fs_tx, mut fs_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let watcher_root = root.clone();
+        let _watcher_keepalive = tokio::task::spawn_blocking(move || {
+            use notify::{RecursiveMode, Watcher};
+            let mut watcher =
+                match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                    if let Ok(event) = res {
+                        if relevant_event(&event) {
+                            let _ = fs_tx.send(());
+                        }
+                    }
+                }) {
+                    Ok(w) => w,
+                    Err(err) => {
+                        eprintln!("filesystem watcher init failed: {err}");
+                        return;
+                    }
+                };
+            if let Err(err) = watcher.watch(&watcher_root, RecursiveMode::Recursive) {
+                eprintln!("filesystem watcher attach failed: {err}");
+                return;
+            }
+            // Park here forever; dropping the watcher would stop events.
+            std::thread::park();
+        });
+
         let scanner_state = state.clone();
         let scanner_root = root.clone();
         let scanner_config = config_path.clone();
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            ticker.tick().await; // first tick fires immediately; we already scanned.
-            loop {
-                ticker.tick().await;
+            let debounce = std::time::Duration::from_millis(150);
+            while let Some(()) = fs_rx.recv().await {
+                // drain rapid bursts
+                loop {
+                    match tokio::time::timeout(debounce, fs_rx.recv()).await {
+                        Ok(Some(())) => continue,
+                        _ => break,
+                    }
+                }
                 let scan = match tokio::task::spawn_blocking({
                     let root = scanner_root.clone();
                     let cfg = scanner_config.clone();
@@ -743,11 +830,7 @@ fn serve_visualization(
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .with_context(|| format!("failed to bind {addr}"))?;
-        println!(
-            "visualization http://{addr} interval={interval}s — Ctrl+C to stop",
-            addr = addr,
-            interval = interval,
-        );
+        println!("visualization http://{addr} (filesystem watcher; Ctrl+C to stop)");
 
         axum::serve(listener, app)
             .with_graceful_shutdown(async {
@@ -933,54 +1016,145 @@ pub(crate) fn visualization_html(
     )
     .unwrap_or_else(|_| "[]".to_string());
 
-    let cells = report
-        .files
-        .iter()
-        .map(|file| {
-            let width = ((file.lines as f64 / max_lines as f64) * 100.0).max(8.0);
-            let path = file.path.to_string_lossy();
-            let churn = churn_by_path.get(path.as_ref()).copied().unwrap_or(0);
-            let age = age_by_path.get(path.as_ref()).copied().unwrap_or(0);
-            let risk = risk_by_path.get(path.as_ref()).copied().unwrap_or(0);
-            let instability = instability_by_module
-                .get(file.module.as_str())
-                .copied()
-                .unwrap_or(0.0);
-            let directory = directory_for(path.as_ref());
-            let is_entry = if entry_point_files.contains(&file.file_id) { 1 } else { 0 };
-            format!(
-                "<div class=\"file\" data-path=\"{}\" data-lines=\"{}\" data-language=\"{}\" data-churn=\"{}\" data-age=\"{}\" data-risk=\"{}\" data-instability=\"{:.3}\" data-directory=\"{}\" data-entry=\"{}\" style=\"flex-basis:{width:.1}%\"><b>{}</b><span>{} lines</span><small>{}</small></div>",
-                html_escape(&path),
-                file.lines,
-                html_escape(&file.language_name),
-                churn,
-                age,
-                risk,
-                instability,
-                html_escape(&directory),
-                is_entry,
-                html_escape(&path),
-                file.lines,
-                html_escape(&file.language_name)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    let modules = health
+    let _ = max_lines;
+    let author_by_path: std::collections::HashMap<&str, &str> = health
         .metrics
-        .dsm
-        .top_module_edges
+        .evolution
+        .file_ownership
         .iter()
-        .map(|edge| {
-            format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
-                html_escape(&edge.from_module),
-                html_escape(&edge.to_module),
-                edge.edges
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
+        .map(|o| (o.path.as_str(), o.top_author.as_str()))
+        .collect();
+    let bus_by_path: std::collections::HashMap<&str, usize> = health
+        .metrics
+        .evolution
+        .file_ownership
+        .iter()
+        .map(|o| (o.path.as_str(), o.bus_factor))
+        .collect();
+    let test_gap_paths: std::collections::HashSet<&str> = health
+        .metrics
+        .test_gap
+        .candidates
+        .iter()
+        .map(|c| c.path.as_str())
+        .collect();
+    let cycle_index_by_path: std::collections::HashMap<String, usize> = health
+        .metrics
+        .architecture
+        .cycles
+        .iter()
+        .enumerate()
+        .flat_map(|(idx, files)| files.iter().map(move |f| (f.clone(), idx)))
+        .collect();
+    let files_json = serde_json::to_string(
+        &report
+            .files
+            .iter()
+            .map(|file| {
+                let path = file.path.to_string_lossy().into_owned();
+                let churn = churn_by_path.get(path.as_str()).copied().unwrap_or(0);
+                let age = age_by_path.get(path.as_str()).copied().unwrap_or(0);
+                let risk = risk_by_path.get(path.as_str()).copied().unwrap_or(0);
+                let instability = instability_by_module
+                    .get(file.module.as_str())
+                    .copied()
+                    .unwrap_or(0.0);
+                let directory = directory_for(path.as_str());
+                let is_entry = entry_point_files.contains(&file.file_id);
+                let author = author_by_path
+                    .get(path.as_str())
+                    .copied()
+                    .unwrap_or("")
+                    .to_string();
+                let bus = bus_by_path.get(path.as_str()).copied().unwrap_or(0);
+                let in_test_gap = test_gap_paths.contains(path.as_str());
+                let cycle = cycle_index_by_path.get(path.as_str()).copied();
+                serde_json::json!({
+                    "path": path,
+                    "lines": file.lines,
+                    "language": file.language_name,
+                    "churn": churn,
+                    "age": age,
+                    "risk": risk,
+                    "instability": instability,
+                    "directory": directory,
+                    "entry": is_entry,
+                    "author": author,
+                    "bus": bus,
+                    "test_gap": in_test_gap,
+                    "cycle": cycle,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
+
+    let cycles_json = serde_json::to_string(&health.metrics.architecture.cycles)
+        .unwrap_or_else(|_| "[]".to_string());
+    let change_coupling_json = serde_json::to_string(&health.metrics.evolution.change_coupling)
+        .unwrap_or_else(|_| "[]".to_string());
+    let distance_metrics_json = serde_json::to_string(
+        &health
+            .metrics
+            .architecture
+            .distance_metrics
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "module": m.module,
+                    "instability": m.instability,
+                    "abstractness": m.abstractness,
+                    "distance": m.distance,
+                    "is_foundation": m.is_foundation,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string());
+    let dsm_json = serde_json::to_string(&health.metrics.dsm.top_module_edges)
+        .unwrap_or_else(|_| "[]".to_string());
+    let trend_json = read_trend_samples(&report.snapshot.root)
+        .map(|s| serde_json::to_string(&s).unwrap_or_else(|_| "[]".to_string()))
+        .unwrap_or_else(|| "[]".to_string());
+    let functions_json = {
+        use std::collections::HashMap;
+        // group functions by file with their cyclomatic complexity from the
+        // health complexity table; each entry is { path, functions: [...] }
+        let mut complexity_by_function: HashMap<usize, &crate::FunctionComplexityMetric> =
+            HashMap::new();
+        for fc in &health.metrics.complexity.all_functions {
+            complexity_by_function.insert(fc.function_id, fc);
+        }
+        let mut grouped: HashMap<usize, Vec<serde_json::Value>> = HashMap::new();
+        for func in &report.functions {
+            let lines = func.end_line.saturating_sub(func.start_line) + 1;
+            let value = complexity_by_function
+                .get(&func.function_id)
+                .map(|fc| fc.value)
+                .unwrap_or(0);
+            grouped
+                .entry(func.file_id)
+                .or_default()
+                .push(serde_json::json!({
+                    "name": func.name,
+                    "lines": lines,
+                    "value": value,
+                }));
+        }
+        let entries: Vec<serde_json::Value> = report
+            .files
+            .iter()
+            .filter_map(|file| {
+                grouped.get(&file.file_id).map(|fns| {
+                    serde_json::json!({
+                        "path": file.path.to_string_lossy(),
+                        "functions": fns,
+                    })
+                })
+            })
+            .collect();
+        serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+    };
     let complex = health
         .metrics
         .complexity
@@ -1042,65 +1216,37 @@ pub(crate) fn visualization_html(
         .collect::<Vec<_>>()
         .join("");
 
-    let mut module_names = BTreeSet::new();
-    for module in &health.metrics.architecture.unstable_modules {
-        if !module.module.is_empty() {
-            module_names.insert(module.module.clone());
-        }
-    }
-    for edge in &health.metrics.dsm.top_module_edges {
-        if !edge.from_module.is_empty() {
-            module_names.insert(edge.from_module.clone());
-        }
-        if !edge.to_module.is_empty() {
-            module_names.insert(edge.to_module.clone());
-        }
-    }
-    let module_names = module_names.into_iter().take(16).collect::<Vec<_>>();
-    let stability_by_module = health
+    // Module edges and instability are now surfaced in the left panel as
+    // text rows; the central viz is a treemap, not a node-link diagram.
+    let unstable_modules = health
         .metrics
         .architecture
         .unstable_modules
         .iter()
-        .map(|module| (module.module.clone(), module.instability))
-        .collect::<BTreeMap<_, _>>();
-    let module_positions = module_names
-        .iter()
-        .enumerate()
-        .map(|(idx, module)| {
-            let x = 80 + (idx % 4) * 190;
-            let y = 70 + (idx / 4) * 70;
-            (module.clone(), (x, y))
+        .take(8)
+        .map(|m| {
+            format!(
+                "<tr><td>{}</td><td>{:.3}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&m.module),
+                m.instability,
+                m.fan_in,
+                m.fan_out,
+            )
         })
-        .collect::<BTreeMap<_, _>>();
-    let module_edges = health
+        .collect::<Vec<_>>()
+        .join("");
+    let module_edges_rows = health
         .metrics
         .dsm
         .top_module_edges
         .iter()
-        .filter_map(|edge| {
-            let (x1, y1) = module_positions.get(&edge.from_module)?;
-            let (x2, y2) = module_positions.get(&edge.to_module)?;
-            let width = edge.edges.min(8).max(1);
-            Some(format!(
-                "<line x1=\"{x1}\" y1=\"{y1}\" x2=\"{x2}\" y2=\"{y2}\" stroke-width=\"{width}\"/>"
-            ))
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    let module_nodes = module_names
-        .iter()
-        .map(|module| {
-            let (x, y) = module_positions[module];
-            let instability = stability_by_module.get(module).copied().unwrap_or(0.0);
-            let radius = 22 + (instability * 18.0).round() as usize;
-            let label = compact_label(module, 24);
+        .take(8)
+        .map(|edge| {
             format!(
-                "<g><circle cx=\"{x}\" cy=\"{y}\" r=\"{radius}\"/><text x=\"{x}\" y=\"{text_y}\" text-anchor=\"middle\">{}</text><title>{} instability {:.3}</title></g>",
-                html_escape(&label),
-                html_escape(module),
-                instability,
-                text_y = y + radius + 16
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&edge.from_module),
+                html_escape(&edge.to_module),
+                edge.edges,
             )
         })
         .collect::<Vec<_>>()
@@ -1120,349 +1266,790 @@ pub(crate) fn visualization_html(
         "hotspots": health.hotspots,
     }))
     .unwrap_or_else(|_| "{}".to_string());
+    let project_name = report
+        .snapshot
+        .root
+        .canonicalize()
+        .ok()
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .or_else(|| report.snapshot.root.file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| report.snapshot.root.to_string_lossy().into_owned());
+    let arch = &health.metrics.architecture;
+    let evo = &health.metrics.evolution;
+    let cycles = arch.cycles.len();
+    let upward = arch.upward_violations.len();
+    let max_blast = arch.max_blast_radius;
+    let attack_pct = arch.attack_surface_ratio * 100.0;
+    let commits = evo.commits_sampled;
+    let authors = evo.author_count;
+    let changed = evo.changed_files;
     format!(
         r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>Raysense</title>
 <style>
-body{{font-family:system-ui,sans-serif;margin:24px;background:#111;color:#eee;line-height:1.4}}
-.top{{display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap}}
-.metric{{font-size:14px;color:#aaa}}.metric b{{display:block;color:#fff;font-size:28px}}
-.grid{{display:flex;flex-wrap:wrap;gap:8px;margin:24px 0}}
-.file{{min-width:120px;min-height:72px;background:#1d2838;border:1px solid #31445d;padding:8px;box-sizing:border-box}}
-.file b,.file span,.file small{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.file span{{color:#9db5d6}}.file small{{color:#7d8999}}
-.panels{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}}
-.bar{{height:8px;background:#263b57;margin-top:6px}}.bar span{{display:block;height:8px;background:#78a6d8}}
-svg{{width:100%;max-width:820px;height:330px;background:#151b24;border:1px solid #333}}
-svg line{{stroke:#78a6d8;opacity:.42}}svg circle{{fill:#263b57;stroke:#9cc7ef;stroke-width:2}}
-svg text{{fill:#eee;font-size:11px}}
-table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom:1px solid #333;padding:6px;text-align:left}}
-.controls{{display:flex;gap:8px;align-items:center;margin:12px 0}}
-.controls label{{color:#aaa}}.controls select{{background:#1d2838;color:#eee;border:1px solid #31445d;padding:4px 8px}}
-.file{{cursor:pointer}}
-.file[data-language="rust"]{{background:#3b2a18}}.file[data-language="typescript"]{{background:#1f2a3a}}.file[data-language="python"]{{background:#1f3327}}.file[data-language="c"],.file[data-language="cpp"]{{background:#332238}}
-.detail{{position:fixed;top:24px;right:24px;width:320px;background:#1d2838;border:1px solid #31445d;padding:16px;z-index:5;box-shadow:0 6px 16px rgba(0,0,0,.5)}}
-.detail dt{{color:#9db5d6;font-size:12px;margin-top:8px}}.detail dd{{margin:0;color:#fff}}
-.detail button{{float:right;background:#31445d;color:#eee;border:0;padding:4px 10px;cursor:pointer}}
+/* Nord palette (https://www.nordtheme.com) — low-fatigue, eye-friendly. */
+:root{{
+  --bg:#2e3440;       /* nord0  polar night */
+  --surface:#3b4252;  /* nord1 */
+  --surface2:#434c5e; /* nord2 */
+  --line:#4c566a;     /* nord3 */
+  --text:#eceff4;     /* nord6  snow storm */
+  --muted:#9aa6b6;    /* between nord3 and nord4 */
+  --accent:#88c0d0;   /* nord8  frost */
+  --good:#a3be8c;     /* nord14 aurora green */
+  --warn:#ebcb8b;     /* nord13 aurora yellow */
+  --bad:#bf616a;      /* nord11 aurora red */
+}}
+*{{box-sizing:border-box;}}
+html,body{{margin:0;padding:0;height:100%;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:13px;line-height:1.4;}}
+*{{scrollbar-color:#2a3340 #0c1014;scrollbar-width:thin;}}
+*::-webkit-scrollbar{{width:10px;height:10px;}}
+*::-webkit-scrollbar-track{{background:var(--bg);}}
+*::-webkit-scrollbar-thumb{{background:var(--surface2);border-radius:5px;border:2px solid var(--bg);}}
+*::-webkit-scrollbar-thumb:hover{{background:var(--line);}}
+*::-webkit-scrollbar-corner{{background:var(--bg);}}
+.app{{display:grid;grid-template-rows:auto 1fr auto;height:100vh;}}
+header{{display:flex;align-items:center;gap:16px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--line);}}
+header h1{{margin:0;font-size:14px;color:var(--accent);letter-spacing:.04em;text-transform:uppercase;display:flex;gap:10px;align-items:baseline;}}
+header h1 .project{{color:var(--text);font-weight:600;letter-spacing:0;text-transform:none;font-size:14px;}}
+header .toolbar{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}}
+header label{{color:var(--muted);font-size:12px;}}
+header select,header input[type=checkbox]{{background:var(--surface2);color:var(--text);border:1px solid var(--line);padding:3px 6px;font-size:12px;}}
+.body{{display:grid;grid-template-columns:300px 1fr;min-height:0;}}
+aside.left{{overflow-y:auto;border-right:1px solid var(--line);padding:14px 14px;background:var(--surface);}}
+aside.left h3{{margin:14px 0 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}}
+aside.left h3:first-child{{margin-top:0;}}
+.bar{{height:6px;background:var(--surface2);margin:6px 0 10px;}}
+.bar > span{{display:block;height:100%;background:var(--accent);}}
+.kv{{display:grid;grid-template-columns:1fr auto auto;gap:4px 12px;align-items:baseline;font-size:12px;}}
+.kv .k{{color:var(--muted);}}
+.kv .v{{color:var(--text);white-space:nowrap;font-variant-numeric:tabular-nums;}}
+.kv .g{{color:var(--good);font-weight:600;}}
+.q-num{{font-size:32px;color:var(--text);font-weight:600;line-height:1;}}
+.q-sub{{color:var(--muted);font-size:13px;font-weight:normal;}}
+table.compact{{border-collapse:collapse;width:100%;font-size:11px;margin-top:4px;}}
+table.compact th,table.compact td{{padding:3px 4px;border-bottom:1px solid var(--line);text-align:left;}}
+table.compact th{{color:var(--muted);font-weight:normal;}}
+ul.cycles{{list-style:none;margin:0;padding:0;font-size:11px;}}
+ul.cycles li{{cursor:pointer;padding:3px 0;color:var(--text);border-bottom:1px solid var(--line);}}
+ul.cycles li:hover{{color:var(--bad);}}
+ul.cycles li.selected{{color:var(--bad);font-weight:600;}}
+ul.cycles li small{{color:var(--muted);margin-left:4px;}}
+#main-seq{{margin-top:6px;background:var(--bg);}}
+#main-seq circle{{fill:var(--accent);}}
+#main-seq circle.foundation{{fill:var(--good);}}
+#main-seq circle.off{{fill:var(--bad);}}
+#main-seq line.guide{{stroke:var(--line);stroke-dasharray:2 3;}}
+#main-seq text{{fill:var(--muted);font-size:9px;}}
+#trend-spark{{margin-top:8px;}}
+#trend-spark path{{fill:none;stroke:var(--accent);stroke-width:1.5;}}
+#trend-spark .last{{fill:var(--accent);}}
+.dsm-grid{{display:grid;gap:1px;background:var(--line);}}
+.dsm-cell{{background:var(--surface2);padding:2px 4px;font-size:10px;color:var(--text);text-align:right;font-variant-numeric:tabular-nums;}}
+.dsm-row-label{{padding:2px 6px;background:var(--surface);color:var(--muted);font-size:10px;text-align:right;}}
+.dsm-col-label{{padding:2px 4px;background:var(--surface);color:var(--muted);font-size:10px;text-align:left;writing-mode:vertical-rl;}}
+main.canvas{{position:relative;overflow:hidden;background:var(--bg);}}
+#treemap{{width:100%;height:100%;display:block;background:var(--bg);}}
+.tile{{stroke:var(--bg);stroke-width:0.5;cursor:pointer;}}
+.tile:hover{{stroke:var(--accent);stroke-width:2;}}
+.tile.selected{{stroke:#ffd86b;stroke-width:3;}}
+.tile.dim{{opacity:.18;}}
+.tile.upstream{{stroke:var(--warn);stroke-width:2;}}
+.tile.downstream{{stroke:var(--good);stroke-width:2;}}
+.tile.cycle{{stroke:var(--bad);stroke-width:2;}}
+.tile.gap{{filter:url(#stripe);}}
+.tile-label{{pointer-events:none;fill:var(--text);font-size:10px;}}
+.edge{{pointer-events:none;opacity:.7;fill:none;stroke-linecap:round;stroke-width:1.4;}}
+.edge.imports{{stroke:var(--accent);}}
+.edge.calls{{stroke:var(--good);}}
+.edge.inherits{{stroke:var(--warn);}}
+.edge.dim{{opacity:.08;}}
+.ribbon{{pointer-events:none;fill:none;}}
+.zoom-overlay{{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(12,16,20,0.92);z-index:4;cursor:zoom-out;}}
+.zoom-overlay[hidden]{{display:none;}}
+.zoom-overlay rect.fn{{fill:var(--surface2);stroke:var(--bg);}}
+.zoom-overlay rect.fn:hover{{stroke:var(--accent);stroke-width:2;}}
+.zoom-overlay text.fn-label{{pointer-events:none;fill:var(--text);font-size:10px;}}
+.zoom-overlay text.zoom-title{{fill:var(--accent);font-size:14px;}}
+.zoom-overlay text.zoom-hint{{fill:var(--muted);font-size:11px;}}
+.detail{{position:absolute;top:12px;right:12px;width:280px;background:var(--surface2);border:1px solid var(--line);padding:12px;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.5);}}
+.detail h3{{margin:0 0 8px;font-size:13px;word-break:break-all;color:var(--text);}}
+.detail dl{{margin:0;}}
+.detail dt{{color:var(--muted);font-size:11px;margin-top:6px;}}
+.detail dd{{margin:0;color:var(--text);}}
+.detail button{{float:right;background:var(--surface);color:var(--text);border:1px solid var(--line);padding:0 8px;cursor:pointer;font-size:14px;line-height:18px;}}
+footer{{background:var(--surface);border-top:1px solid var(--line);max-height:35vh;overflow-y:auto;}}
+footer details{{padding:8px 16px;}}
+footer summary{{cursor:pointer;color:var(--muted);font-size:12px;}}
+footer details[open] summary{{margin-bottom:8px;}}
+footer .panels{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;}}
+footer table{{border-collapse:collapse;width:100%;font-size:11px;}}
+footer th,footer td{{border-bottom:1px solid var(--line);padding:4px 6px;text-align:left;}}
+footer th{{color:var(--muted);font-weight:normal;}}
+footer h4{{margin:0 0 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}}
 </style></head><body>
-<div class="top">
-<div class="metric"><b>{}</b>quality signal</div>
-<div class="metric"><b>{}</b>score</div>
-<div class="metric"><b>{}</b>coverage</div>
-<div class="metric"><b>{}</b>structure</div>
-<div class="metric"><b>{}</b>files</div>
-<div class="metric"><b>{}</b>functions</div>
-<div class="metric"><b>{}</b>rules</div>
-<div class="metric"><b>{:.3}</b>modularity<div class="bar"><span style="width:{:.1}%"></span></div></div>
-<div class="metric"><b>{:.3}</b>redundancy<div class="bar"><span style="width:{:.1}%"></span></div></div>
-</div>
-<h2>Files</h2>
-<div class="controls">
-<label for="color-mode">Color by</label>
-<select id="color-mode">
-<option value="language">language</option>
-<option value="mono">mono</option>
-<option value="lines">lines</option>
-<option value="churn">churn</option>
-<option value="age">age</option>
-<option value="risk">risk</option>
-<option value="instability">instability</option>
-</select>
-<label for="focus-mode">Focus</label>
-<select id="focus-mode">
-<option value="all">all files</option>
-<option value="language">by language</option>
-<option value="directory">by directory</option>
-<option value="entry">entry points</option>
-<option value="impact">impact radius</option>
-</select>
+<div class="app">
+<header>
+<h1>raysense <span class="project">{}</span></h1>
+<div class="toolbar">
+<label>color <select id="color-mode"><option value="language">language</option><option value="mono">mono</option><option value="lines">lines</option><option value="churn">churn</option><option value="age">age</option><option value="risk">risk</option><option value="instability">instability</option><option value="author">author</option><option value="bus">bus factor</option><option value="test_gap">test gap</option></select></label>
+<label>focus <select id="focus-mode"><option value="all">all</option><option value="language">language</option><option value="directory">directory</option><option value="entry">entry points</option><option value="impact">impact radius</option></select></label>
 <select id="focus-value" hidden></select>
-<label for="edge-filter">Edges</label>
-<select id="edge-filter">
-<option value="all">all</option>
-<option value="imports">imports</option>
-<option value="calls">calls</option>
-<option value="inherits">inherits</option>
-</select>
-<label for="show-edges"><input type="checkbox" id="show-edges">show edges</label>
+<label>edges <select id="edge-filter"><option value="all">all</option><option value="imports">imports</option><option value="calls">calls</option><option value="inherits">inherits</option></select></label>
+<label><input type="checkbox" id="show-edges"> show edges</label>
+<label><input type="checkbox" id="show-ribbons"> coupling ribbons</label>
 </div>
-<div class="files-area">
-<div class="grid" id="files-grid">{}</div>
-<svg id="file-edges" class="overlay" aria-hidden="true"></svg>
+</header>
+<div class="body">
+<aside class="left">
+<h3>Quality</h3>
+<div class="q-num" style="color:hsl({},70%,60%)">{}<span class="q-sub"> / 100</span></div>
+<div class="bar"><span style="width:{}%;background:hsl({},65%,45%)"></span></div>
+<svg id="trend-spark" width="100%" height="36" preserveAspectRatio="none"></svg>
+<div class="kv">
+<span class="k">coverage</span><span class="v">{} / 100</span><span></span>
+<span class="k">structure</span><span class="v">{} / 100</span><span></span>
+<span class="k">files</span><span class="v">{}</span><span></span>
+<span class="k">functions</span><span class="v">{}</span><span></span>
+<span class="k">rules</span><span class="v">{}</span><span></span>
 </div>
-<aside id="file-detail" class="detail" hidden>
-<button type="button" id="file-detail-close">close</button>
-<h3 id="file-detail-title"></h3>
-<dl id="file-detail-body"></dl>
+<h3>Dimensions</h3>
+<div class="kv">
+<span class="k">modularity</span><span class="v">{} / 100</span><span class="g">{}</span>
+<span class="k">acyclicity</span><span class="v">{} / 100</span><span class="g">{}</span>
+<span class="k">depth</span><span class="v">{} / 100</span><span class="g">{}</span>
+<span class="k">equality</span><span class="v">{} / 100</span><span class="g">{}</span>
+<span class="k">redundancy</span><span class="v">{} / 100</span><span class="g">{}</span>
+<span class="k">uniformity</span><span class="v">{} / 100</span><span class="g">{}</span>
+</div>
+<h3>Architecture</h3>
+<div class="kv">
+<span class="k">cycles</span><span class="v">{}</span><span></span>
+<span class="k">max blast</span><span class="v">{}</span><span></span>
+<span class="k">attack surface</span><span class="v">{:.0}%</span><span></span>
+<span class="k">upward violations</span><span class="v">{}</span><span></span>
+</div>
+<svg id="main-seq" width="100%" height="160" viewBox="0 0 220 160" preserveAspectRatio="xMidYMid meet"></svg>
+<h3>Evolution</h3>
+<div class="kv">
+<span class="k">commits sampled</span><span class="v">{}</span><span></span>
+<span class="k">authors</span><span class="v">{}</span><span></span>
+<span class="k">changed files</span><span class="v">{}</span><span></span>
+</div>
+<h3>Unstable Modules</h3>
+<table class="compact"><tr><th>module</th><th>I</th><th>in</th><th>out</th></tr>{}</table>
+<h3>Cycles</h3>
+<ul id="cycles-list" class="cycles"></ul>
 </aside>
-<div class="panels">
-<section><h2>Modules</h2><svg viewBox="0 0 820 330">{}{}</svg></section>
-<section><h2>Module Edges</h2><table><tr><th>from</th><th>to</th><th>edges</th></tr>{}</table></section>
-<section><h2>Hotspots</h2><table><tr><th>file</th><th>module</th><th>fan in</th><th>fan out</th></tr>{}</table></section>
-<section><h2>Rules</h2><table><tr><th>severity</th><th>code</th><th>path</th><th>message</th></tr>{}</table></section>
-<section><h2>Complexity</h2><table><tr><th>file</th><th>function</th><th>value</th></tr>{}</table></section>
-<section><h2>Test Gaps</h2><table><tr><th>source</th><th>expected tests</th></tr>{}</table></section>
+<main class="canvas">
+<svg id="treemap"></svg>
+<svg id="zoom" class="zoom-overlay" hidden></svg>
+<aside class="detail" id="detail" hidden>
+<button id="detail-close" type="button">×</button>
+<h3 id="detail-title"></h3>
+<dl id="detail-body"></dl>
+</aside>
+</main>
 </div>
-<script type="application/json" id="raysense-telemetry">{}</script>
+<footer>
+<details>
+<summary>Tables</summary>
+<div class="panels">
+<section><h4>Module DSM</h4><div id="dsm-grid" class="dsm-grid"></div></section>
+<section><h4>Module Edges</h4><table><tr><th>from</th><th>to</th><th>edges</th></tr>{}</table></section>
+<section><h4>Hotspots</h4><table><tr><th>file</th><th>module</th><th>fan in</th><th>fan out</th></tr>{}</table></section>
+<section><h4>Rules</h4><table><tr><th>severity</th><th>code</th><th>path</th><th>message</th></tr>{}</table></section>
+<section><h4>Complexity</h4><table><tr><th>file</th><th>function</th><th>value</th></tr>{}</table></section>
+<section><h4>Test Gaps</h4><table><tr><th>source</th><th>expected tests</th></tr>{}</table></section>
+</div>
+</details>
+</footer>
+</div>
+<script type="application/json" id="raysense-files">{}</script>
 <script type="application/json" id="raysense-adjacency">{}</script>
-<style>
-.file.dim{{opacity:.18}}.file.upstream{{outline:2px solid #f0a040}}
-.file.downstream{{outline:2px solid #4ec0a8}}.file.selected{{outline:3px solid #ffd86b}}
-.files-area{{position:relative}}
-.overlay{{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1}}
-.overlay line{{stroke:#78a6d8;opacity:.45;stroke-width:1}}
-.overlay line.imports{{stroke:#78a6d8}}
-.overlay line.calls{{stroke:#4ec0a8}}
-.overlay line.inherits{{stroke:#f0a040}}
-.overlay line.dim{{opacity:.08}}
-</style>
+<script type="application/json" id="raysense-telemetry">{}</script>
+<script type="application/json" id="raysense-cycles">{}</script>
+<script type="application/json" id="raysense-coupling">{}</script>
+<script type="application/json" id="raysense-distance">{}</script>
+<script type="application/json" id="raysense-dsm">{}</script>
+<script type="application/json" id="raysense-trend">{}</script>
+<script type="application/json" id="raysense-functions">{}</script>
 <script>
 (function() {{
-  var grid = document.getElementById('files-grid');
-  var detail = document.getElementById('file-detail');
-  var title = document.getElementById('file-detail-title');
-  var body = document.getElementById('file-detail-body');
-  var closeBtn = document.getElementById('file-detail-close');
+  var files = JSON.parse(document.getElementById('raysense-files').textContent || '[]');
+  var adjacency = JSON.parse(document.getElementById('raysense-adjacency').textContent || '[]');
+  var adjByPath = {{}}; adjacency.forEach(function(e){{ adjByPath[e.path] = e; }});
+  var svg = document.getElementById('treemap');
+  var detail = document.getElementById('detail');
+  var detailTitle = document.getElementById('detail-title');
+  var detailBody = document.getElementById('detail-body');
+  var closeBtn = document.getElementById('detail-close');
   var colorSelect = document.getElementById('color-mode');
   var focusModeSelect = document.getElementById('focus-mode');
   var focusValueSelect = document.getElementById('focus-value');
-  var edgeFilterSelect = document.getElementById('edge-filter');
-  var adjacencyEl = document.getElementById('raysense-adjacency');
-  var adjacency = adjacencyEl ? JSON.parse(adjacencyEl.textContent || '[]') : [];
-  var adjacencyByPath = {{}};
-  adjacency.forEach(function(entry) {{ adjacencyByPath[entry.path] = entry; }});
+  var edgeSelect = document.getElementById('edge-filter');
+  var showEdges = document.getElementById('show-edges');
+  if (!svg) return;
   var selectedPath = null;
-  if (!grid || !colorSelect) return;
-  var cells = Array.prototype.slice.call(grid.querySelectorAll('.file'));
-  var cellsByPath = {{}};
-  cells.forEach(function(el) {{ cellsByPath[el.getAttribute('data-path')] = el; }});
-  var ATTR_FOR_MODE = {{
-    lines: 'data-lines',
-    churn: 'data-churn',
-    age: 'data-age',
-    risk: 'data-risk',
-    instability: 'data-instability'
+  var ATTR = {{lines:'lines', churn:'churn', age:'age', risk:'risk', instability:'instability'}};
+  var HUE = {{lines:210, churn:12, age:280, risk:350, instability:50}};
+  // Nord palette — every color drawn from frost (cool blues/teals) and
+  // aurora (warm accents). Languages share the same saturation and
+  // lightness, so the treemap reads as one theme.
+  var LANG = {{
+    rust:       '#d08770', // nord12 aurora orange
+    c:          '#81a1c1', // nord9  frost slate-blue
+    cpp:        '#b48ead', // nord15 aurora purple
+    python:     '#a3be8c', // nord14 aurora green
+    typescript: '#5e81ac', // nord10 frost dark blue
+    javascript: '#ebcb8b', // nord13 aurora yellow
+    go:         '#8fbcbb', // nord7  frost teal
+    java:       '#bf616a', // nord11 aurora red
+    ruby:       '#bf616a', // nord11
+    markdown:   '#4c566a', // nord3  polar night lightest
+    toml:       '#4c566a',
+    yaml:       '#4c566a',
+    json:       '#4c566a',
+    html:       '#d08770',
+    css:        '#88c0d0', // nord8  frost
+    shell:      '#a3be8c'  // share with python (script colour)
   }};
-  var HUE_FOR_MODE = {{
-    lines: 210,
-    churn: 12,
-    age: 280,
-    risk: 350,
-    instability: 50
-  }};
-  function maxOf(attr) {{
-    return cells.reduce(function(acc, el) {{
-      var v = parseFloat(el.getAttribute(attr)) || 0;
-      return v > acc ? v : acc;
-    }}, 0);
+  var pathToRect = {{}};
+
+  function squarify(items, x, y, w, h, total) {{
+    var out = [];
+    if (!items.length || w <= 0 || h <= 0 || total <= 0) return out;
+    var idx = 0;
+    while (idx < items.length) {{
+      var row = []; var bestAR = Infinity; var k = idx;
+      while (k < items.length) {{
+        var attempt = row.concat([items[k]]);
+        var sumW = attempt.reduce(function(s,it){{return s+it.weight;}}, 0);
+        var ar = worstAR(attempt, sumW, total, w, h);
+        if (row.length > 0 && ar > bestAR) break;
+        row = attempt; bestAR = ar; k++;
+      }}
+      var rowSum = row.reduce(function(s,it){{return s+it.weight;}}, 0);
+      if (rowSum <= 0) break;
+      var ratio = rowSum / total;
+      if (w >= h) {{
+        var stripW = w * ratio; var yo = y;
+        row.forEach(function(it){{
+          var itH = h * (it.weight / rowSum);
+          out.push({{path:it.path, x:x, y:yo, w:stripW, h:itH, item:it.item}});
+          yo += itH;
+        }});
+        x += stripW; w -= stripW;
+      }} else {{
+        var stripH = h * ratio; var xo = x;
+        row.forEach(function(it){{
+          var itW = w * (it.weight / rowSum);
+          out.push({{path:it.path, x:xo, y:y, w:itW, h:stripH, item:it.item}});
+          xo += itW;
+        }});
+        y += stripH; h -= stripH;
+      }}
+      total -= rowSum; idx = k;
+    }}
+    return out;
   }}
-  function recolor(mode) {{
-    if (mode === 'language') {{
-      cells.forEach(function(el) {{ el.style.background = ''; }});
-      return;
-    }}
-    if (mode === 'mono') {{
-      cells.forEach(function(el) {{ el.style.background = '#1d2838'; }});
-      return;
-    }}
-    var attr = ATTR_FOR_MODE[mode];
-    if (!attr) {{ return; }}
-    var max = maxOf(attr);
-    var hue = HUE_FOR_MODE[mode] || 210;
-    cells.forEach(function(el) {{
-      var v = parseFloat(el.getAttribute(attr)) || 0;
-      var ratio = max > 0 ? v / max : 0;
-      var lightness = 18 + Math.round(ratio * 32);
-      el.style.background = 'hsl(' + hue + ',60%,' + lightness + '%)';
+  function worstAR(row, sumW, total, w, h) {{
+    if (sumW <= 0 || total <= 0) return Infinity;
+    var ratio = sumW / total;
+    var stripLong, stripShort;
+    if (w >= h) {{ stripLong = h; stripShort = w * ratio; }}
+    else        {{ stripLong = w; stripShort = h * ratio; }}
+    if (stripLong <= 0 || stripShort <= 0) return Infinity;
+    var max = 0;
+    row.forEach(function(it){{
+      var f = it.weight / sumW;
+      var l = stripLong * f;
+      if (l <= 0) {{ max = Infinity; return; }}
+      max = Math.max(max, Math.max(l/stripShort, stripShort/l));
     }});
+    return max;
+  }}
+  function authorHue(name) {{
+    if (!name) return 210;
+    var h = 0;
+    for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    return h % 360;
+  }}
+  function colorFor(item, mode) {{
+    var FB = '#434c5e'; // nord2 — neutral mid-tone
+    if (mode === 'mono') return FB;
+    if (mode === 'language') return LANG[item.language] || FB;
+    if (mode === 'author') {{
+      if (!item.author) return FB;
+      // Sample only Nord aurora + frost hues so it stays in-theme.
+      var hues = [193, 213, 220, 14, 25, 38, 92, 311];
+      return 'hsl(' + hues[authorHue(item.author) % hues.length] + ',32%,55%)';
+    }}
+    if (mode === 'bus') {{
+      var bf = +item.bus || 0;
+      if (bf === 0) return FB;
+      if (bf === 1) return '#bf616a'; // nord11 red
+      if (bf === 2) return '#ebcb8b'; // nord13 yellow
+      return '#a3be8c';                // nord14 green
+    }}
+    if (mode === 'test_gap') {{
+      return item.test_gap ? '#d08770' : FB; // nord12 orange
+    }}
+    var attr = ATTR[mode]; if (!attr) return FB;
+    var v = +item[attr] || 0;
+    var max = files.reduce(function(m,it){{ return Math.max(m, +it[attr]||0); }}, 1) || 1;
+    var ratio = v / max;
+    var hue = HUE[mode] || 210;
+    var lightness = 38 + Math.round(ratio * 22);
+    return 'hsl(' + hue + ',32%,' + lightness + '%)';
+  }}
+  // Auxiliary data
+  var cycles = JSON.parse(document.getElementById('raysense-cycles').textContent || '[]');
+  var distance = JSON.parse(document.getElementById('raysense-distance').textContent || '[]');
+  var dsm = JSON.parse(document.getElementById('raysense-dsm').textContent || '[]');
+  var trend = JSON.parse(document.getElementById('raysense-trend').textContent || '[]');
+  var coupling = JSON.parse(document.getElementById('raysense-coupling').textContent || '[]');
+  var fnsRaw = JSON.parse(document.getElementById('raysense-functions').textContent || '[]');
+  var fnsByFile = {{}}; fnsRaw.forEach(function(e){{ fnsByFile[e.path] = e.functions || []; }});
+  var selectedCycle = null;
+  function renderCyclesList() {{
+    var list = document.getElementById('cycles-list');
+    if (!list) return;
+    if (!cycles.length) {{ list.innerHTML = '<li><small>no cycles</small></li>'; return; }}
+    list.innerHTML = cycles.map(function(cyc, i){{
+      return '<li data-cycle="'+i+'">cycle '+(i+1)+' <small>'+cyc.length+' files</small></li>';
+    }}).join('');
+    list.querySelectorAll('li[data-cycle]').forEach(function(li){{
+      li.addEventListener('click', function(){{
+        var idx = +li.getAttribute('data-cycle');
+        selectedCycle = (selectedCycle === idx) ? null : idx;
+        list.querySelectorAll('li').forEach(function(x){{ x.classList.toggle('selected', +x.getAttribute('data-cycle') === selectedCycle); }});
+        drawHighlight();
+        drawEdges();
+      }});
+    }});
+  }}
+  function renderTrend() {{
+    var spark = document.getElementById('trend-spark');
+    if (!spark) return;
+    spark.innerHTML = '';
+    if (trend.length < 2) return;
+    var box = spark.getBoundingClientRect();
+    var W = box.width, H = 36;
+    var max = trend.reduce(function(m,p){{ return Math.max(m, p.score); }}, 1);
+    var min = trend.reduce(function(m,p){{ return Math.min(m, p.score); }}, max);
+    var span = Math.max(max - min, 1);
+    var n = trend.length;
+    var pts = trend.map(function(p, i){{
+      var x = (i / (n - 1)) * W;
+      var y = H - ((p.score - min) / span) * (H - 4) - 2;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }});
+    spark.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    var path = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    path.setAttribute('points', pts.join(' '));
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'var(--accent)');
+    path.setAttribute('stroke-width', '1.5');
+    spark.appendChild(path);
+    var lastDot = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    var last = pts[pts.length - 1].split(',');
+    lastDot.setAttribute('cx', last[0]); lastDot.setAttribute('cy', last[1]);
+    lastDot.setAttribute('r', '2.5');
+    lastDot.setAttribute('fill', 'var(--accent)');
+    spark.appendChild(lastDot);
+  }}
+  function renderMainSequence() {{
+    var s = document.getElementById('main-seq');
+    if (!s) return;
+    s.innerHTML = '';
+    if (!distance.length) return;
+    var pad = 22, W = 220, H = 160;
+    var iw = W - pad * 2, ih = H - pad * 2;
+    // axes + the main-sequence diagonal (A + I = 1)
+    var bg = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    bg.innerHTML =
+      '<line class="guide" x1="'+pad+'" y1="'+(H-pad)+'" x2="'+(W-pad)+'" y2="'+(H-pad)+'"/>'+
+      '<line class="guide" x1="'+pad+'" y1="'+pad+'" x2="'+pad+'" y2="'+(H-pad)+'"/>'+
+      '<line class="guide" x1="'+pad+'" y1="'+pad+'" x2="'+(W-pad)+'" y2="'+(H-pad)+'"/>'+
+      '<text x="'+pad+'" y="'+(H-6)+'">stable</text>'+
+      '<text x="'+(W-pad-26)+'" y="'+(H-6)+'">unstable</text>'+
+      '<text x="3" y="'+pad+'">abstract</text>'+
+      '<text x="3" y="'+(H-pad)+'">concrete</text>'+
+      '<text x="'+(W/2 - 38)+'" y="12">main-sequence (A+I=1)</text>';
+    s.appendChild(bg);
+    distance.forEach(function(m){{
+      var cx = pad + m.instability * iw;
+      var cy = (H - pad) - m.abstractness * ih;
+      var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('cx', cx.toFixed(1));
+      c.setAttribute('cy', cy.toFixed(1));
+      c.setAttribute('r', '3');
+      var cls = m.is_foundation ? 'foundation' : (m.distance > 0.5 ? 'off' : '');
+      if (cls) c.setAttribute('class', cls);
+      var t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+      t.textContent = m.module + ' I=' + m.instability.toFixed(2) + ' A=' + m.abstractness.toFixed(2) + ' D=' + m.distance.toFixed(2);
+      c.appendChild(t);
+      s.appendChild(c);
+    }});
+  }}
+  function drawRibbons() {{
+    var existing = svg.querySelectorAll('path.ribbon');
+    existing.forEach(function(e){{ e.remove(); }});
+    var toggle = document.getElementById('show-ribbons');
+    if (!toggle || !toggle.checked) return;
+    if (!coupling || !coupling.length) return;
+    coupling.forEach(function(p){{
+      var a = pathToRect[p.left]; if (!a) return;
+      var b = pathToRect[p.right]; if (!b) return;
+      var ax = a.x + a.w/2, ay = a.y + a.h/2;
+      var bx = b.x + b.w/2, by = b.y + b.h/2;
+      var dx = bx - ax, dy = by - ay;
+      var dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      var pull = Math.min(dist * 0.35, 90);
+      var midX = (ax + bx) / 2 + (-dy / dist) * pull;
+      var midY = (ay + by) / 2 + (dx / dist) * pull;
+      var d = 'M' + ax.toFixed(1) + ',' + ay.toFixed(1) +
+        ' Q' + midX.toFixed(1) + ',' + midY.toFixed(1) +
+        ' ' + bx.toFixed(1) + ',' + by.toFixed(1);
+      var alpha = 0.18 + p.coupling_strength * 0.55;
+      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('class', 'ribbon');
+      path.setAttribute('d', d);
+      path.setAttribute('stroke', 'hsla(310, 70%, 60%, ' + alpha.toFixed(2) + ')');
+      path.setAttribute('stroke-width', String(0.6 + p.coupling_strength * 2.5));
+      svg.appendChild(path);
+    }});
+  }}
+  function showFunctions(filePath) {{
+    var fns = fnsByFile[filePath] || [];
+    if (!fns.length) return;
+    var zoom = document.getElementById('zoom');
+    zoom.innerHTML = '';
+    zoom.removeAttribute('hidden');
+    var rect = svg.getBoundingClientRect();
+    var W = rect.width, H = rect.height;
+    zoom.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    var title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    title.setAttribute('class', 'zoom-title');
+    title.setAttribute('x', '12'); title.setAttribute('y', '20');
+    title.textContent = filePath;
+    zoom.appendChild(title);
+    var hint = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    hint.setAttribute('class', 'zoom-hint');
+    hint.setAttribute('x', '12'); hint.setAttribute('y', '36');
+    hint.textContent = fns.length + ' functions — click anywhere or press Esc to close';
+    zoom.appendChild(hint);
+    var items = fns.map(function(f){{
+      return {{ path: f.name, weight: Math.max(+f.value || 1, 1), item: f }};
+    }});
+    items.sort(function(a, b){{ return b.weight - a.weight; }});
+    var total = items.reduce(function(s, it){{ return s + it.weight; }}, 0);
+    var laid = squarify(items, 12, 46, W - 24, H - 58, total);
+    var maxValue = items.reduce(function(m, it){{ return Math.max(m, it.weight); }}, 1);
+    laid.forEach(function(r){{
+      var fillRatio = (r.item.value || 0) / maxValue;
+      var lightness = 18 + Math.round(fillRatio * 30);
+      var rectEl = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rectEl.setAttribute('class', 'fn');
+      rectEl.setAttribute('x', r.x); rectEl.setAttribute('y', r.y);
+      rectEl.setAttribute('width', Math.max(r.w-1, 0));
+      rectEl.setAttribute('height', Math.max(r.h-1, 0));
+      rectEl.setAttribute('fill', 'hsl(350, 55%, ' + lightness + '%)');
+      var ttip = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+      ttip.textContent = r.item.name + ' — cyclomatic ' + r.item.value + ', ' + r.item.lines + ' lines';
+      rectEl.appendChild(ttip);
+      zoom.appendChild(rectEl);
+      if (r.w > 60 && r.h > 18) {{
+        var label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        label.setAttribute('class', 'fn-label');
+        label.setAttribute('x', r.x + 4);
+        label.setAttribute('y', r.y + 12);
+        label.textContent = r.item.name;
+        zoom.appendChild(label);
+      }}
+    }});
+  }}
+  function hideFunctions() {{
+    var zoom = document.getElementById('zoom');
+    if (zoom) {{ zoom.setAttribute('hidden', ''); zoom.innerHTML = ''; }}
+  }}
+  function renderDsm() {{
+    var host = document.getElementById('dsm-grid');
+    if (!host) return;
+    host.innerHTML = '';
+    if (!dsm.length) {{ host.textContent = 'no module edges'; return; }}
+    var modules = {{}};
+    dsm.forEach(function(e){{ modules[e.from_module] = true; modules[e.to_module] = true; }});
+    var keys = Object.keys(modules).sort().slice(0, 12);
+    var by = {{}};
+    dsm.forEach(function(e){{ by[e.from_module + '|' + e.to_module] = e.edges; }});
+    var max = dsm.reduce(function(m,e){{ return Math.max(m, e.edges); }}, 1);
+    host.style.gridTemplateColumns = '160px repeat(' + keys.length + ', 36px)';
+    // header row
+    host.appendChild(empty('dsm-row-label', ''));
+    keys.forEach(function(k){{ host.appendChild(empty('dsm-col-label', shortName(k))); }});
+    keys.forEach(function(row){{
+      host.appendChild(empty('dsm-row-label', shortName(row)));
+      keys.forEach(function(col){{
+        var v = by[row + '|' + col] || 0;
+        var cell = empty('dsm-cell', v ? String(v) : '');
+        if (v) {{
+          var t = Math.min(v / max, 1);
+          cell.style.background = 'hsl(210,55%,' + Math.round(15 + t * 30) + '%)';
+        }}
+        host.appendChild(cell);
+      }});
+    }});
+    function empty(cls, text) {{ var d = document.createElement('div'); d.className = cls; d.textContent = text; return d; }}
+    function shortName(s) {{ return s.length > 14 ? s.slice(0, 13) + '…' : s; }}
   }}
   function reachable(path, dir) {{
-    var visited = {{}};
-    var queue = [path];
+    var seen = {{}}; var queue = [path];
     while (queue.length) {{
       var p = queue.shift();
-      if (visited[p]) continue;
-      visited[p] = true;
-      var entry = adjacencyByPath[p];
-      if (!entry) continue;
-      var edges = edgeFilterSelect.value;
-      var keys = (edges === 'all'
-        ? ['imports_' + dir, 'calls_' + dir, 'inherits_' + dir]
-        : [edges + '_' + dir]);
-      keys.forEach(function(k) {{
-        (entry[k] || []).forEach(function(next) {{
-          if (!visited[next]) queue.push(next);
-        }});
-      }});
+      if (seen[p]) continue; seen[p] = true;
+      var entry = adjByPath[p]; if (!entry) continue;
+      var f = edgeSelect ? edgeSelect.value : 'all';
+      var keys = (f === 'all') ? ['imports_'+dir,'calls_'+dir,'inherits_'+dir] : [f+'_'+dir];
+      keys.forEach(function(k){{ (entry[k]||[]).forEach(function(n){{ if (!seen[n]) queue.push(n); }}); }});
     }}
-    return visited;
+    return seen;
   }}
-  function applyFocus() {{
-    var mode = focusModeSelect.value;
-    var value = focusValueSelect.value;
-    cells.forEach(function(el) {{
-      var show = true;
-      if (mode === 'language') {{
-        show = el.getAttribute('data-language') === value;
-      }} else if (mode === 'directory') {{
-        show = el.getAttribute('data-directory') === value;
-      }} else if (mode === 'entry') {{
-        show = el.getAttribute('data-entry') === '1';
-      }} else if (mode === 'impact') {{
-        if (!selectedPath) {{
-          show = true;
-        }} else {{
-          var down = reachable(selectedPath, 'out');
-          var up = reachable(selectedPath, 'in');
-          var p = el.getAttribute('data-path');
-          show = !!(down[p] || up[p]);
-        }}
-      }}
-      el.style.display = show ? '' : 'none';
-    }});
+  function focusFilter(file) {{
+    var mode = focusModeSelect ? focusModeSelect.value : 'all';
+    var val = focusValueSelect ? focusValueSelect.value : '';
+    if (mode === 'language') return file.language === val;
+    if (mode === 'directory') return file.directory === val;
+    if (mode === 'entry') return !!file.entry;
+    if (mode === 'impact') {{
+      if (!selectedPath) return true;
+      var down = reachable(selectedPath, 'out');
+      var up = reachable(selectedPath, 'in');
+      return file.path === selectedPath || down[file.path] || up[file.path];
+    }}
+    return true;
   }}
   function rebuildFocusValues() {{
+    if (!focusModeSelect || !focusValueSelect) return;
     var mode = focusModeSelect.value;
     if (mode !== 'language' && mode !== 'directory') {{
-      focusValueSelect.innerHTML = '';
-      focusValueSelect.hidden = true;
-      applyFocus();
+      focusValueSelect.innerHTML = ''; focusValueSelect.hidden = true; return;
+    }}
+    var seen = {{}};
+    files.forEach(function(f){{ var v = f[mode]||''; if (v) seen[v] = true; }});
+    var keys = Object.keys(seen).sort();
+    focusValueSelect.innerHTML = keys.map(function(k){{
+      return '<option value="'+escapeAttr(k)+'">'+escapeAttr(k)+'</option>';
+    }}).join('');
+    focusValueSelect.hidden = !keys.length;
+  }}
+  function escapeAttr(v) {{ return String(v).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }}
+  function render() {{
+    var rect = svg.getBoundingClientRect();
+    var W = rect.width, H = rect.height;
+    if (W <= 0 || H <= 0) return;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.innerHTML = '';
+    pathToRect = {{}};
+    var mode = colorSelect ? colorSelect.value : 'language';
+    var visible = files.filter(focusFilter);
+    if (!visible.length) return;
+    var items = visible.map(function(f){{ return {{path:f.path, weight:Math.max(+f.lines||0, 1), item:f}}; }});
+    items.sort(function(a,b){{ return b.weight - a.weight; }});
+    var total = items.reduce(function(s,it){{ return s+it.weight; }}, 0);
+    var laid = squarify(items, 0, 0, W, H, total);
+    laid.forEach(function(r){{
+      pathToRect[r.path] = r;
+      var rectEl = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      rectEl.setAttribute('class','tile');
+      rectEl.setAttribute('data-path', r.path);
+      rectEl.setAttribute('x', r.x); rectEl.setAttribute('y', r.y);
+      rectEl.setAttribute('width', Math.max(r.w-1, 0));
+      rectEl.setAttribute('height', Math.max(r.h-1, 0));
+      rectEl.setAttribute('fill', colorFor(r.item, mode));
+      svg.appendChild(rectEl);
+      if (r.w > 60 && r.h > 18) {{
+        var label = document.createElementNS('http://www.w3.org/2000/svg','text');
+        label.setAttribute('class','tile-label');
+        label.setAttribute('x', r.x + 4);
+        label.setAttribute('y', r.y + 12);
+        label.textContent = (r.path.split('/').pop() || '');
+        svg.appendChild(label);
+      }}
+    }});
+    drawHighlight();
+    drawEdges();
+    drawRibbons();
+  }}
+  function drawHighlight() {{
+    var rects = svg.querySelectorAll('rect.tile');
+    rects.forEach(function(el){{ el.classList.remove('selected','upstream','downstream','dim','cycle'); }});
+    if (selectedCycle !== null && cycles[selectedCycle]) {{
+      var members = {{}};
+      cycles[selectedCycle].forEach(function(p){{ members[p] = true; }});
+      rects.forEach(function(el){{
+        var p = el.getAttribute('data-path');
+        if (members[p]) el.classList.add('cycle');
+        else el.classList.add('dim');
+      }});
       return;
     }}
-    var attr = mode === 'language' ? 'data-language' : 'data-directory';
-    var seen = {{}};
-    cells.forEach(function(el) {{
-      var v = el.getAttribute(attr) || '';
-      if (v && !seen[v]) {{ seen[v] = true; }}
-    }});
-    var keys = Object.keys(seen).sort();
-    focusValueSelect.innerHTML = keys.map(function(k) {{
-      return '<option value="' + k + '">' + k + '</option>';
-    }}).join('');
-    focusValueSelect.hidden = keys.length === 0;
-    applyFocus();
-  }}
-  function highlightRoutes() {{
-    cells.forEach(function(el) {{
-      el.classList.remove('upstream', 'downstream', 'selected', 'dim');
-    }});
     if (!selectedPath) return;
     var down = reachable(selectedPath, 'out');
     var up = reachable(selectedPath, 'in');
-    cells.forEach(function(el) {{
+    rects.forEach(function(el){{
       var p = el.getAttribute('data-path');
-      if (p === selectedPath) {{ el.classList.add('selected'); return; }}
-      if (down[p]) {{ el.classList.add('downstream'); return; }}
-      if (up[p]) {{ el.classList.add('upstream'); return; }}
-      el.classList.add('dim');
+      if (p === selectedPath) el.classList.add('selected');
+      else if (down[p]) el.classList.add('downstream');
+      else if (up[p]) el.classList.add('upstream');
+      else el.classList.add('dim');
     }});
   }}
-  function neighborSummary(path) {{
-    var entry = adjacencyByPath[path];
-    if (!entry) return '0/0/0 out, 0/0/0 in';
-    return (entry.imports_out.length + '/' + entry.calls_out.length + '/' + entry.inherits_out.length +
-      ' out, ' +
-      entry.imports_in.length + '/' + entry.calls_in.length + '/' + entry.inherits_in.length + ' in');
+  function sideAnchor(rect, ox, oy) {{
+    var cx = rect.x + rect.w/2, cy = rect.y + rect.h/2;
+    var dx = ox - cx, dy = oy - cy;
+    // Pick the border the line cx,cy → ox,oy crosses first.
+    if (Math.abs(dx) * rect.h > Math.abs(dy) * rect.w) {{
+      return dx > 0
+        ? {{ x: rect.x + rect.w, y: cy, side: 'r' }}
+        : {{ x: rect.x, y: cy, side: 'l' }};
+    }}
+    return dy > 0
+      ? {{ x: cx, y: rect.y + rect.h, side: 'b' }}
+      : {{ x: cx, y: rect.y, side: 't' }};
   }}
-  var overlay = document.getElementById('file-edges');
-  var showEdgesToggle = document.getElementById('show-edges');
-  function visibleCenter(el, areaRect) {{
-    if (!el || el.style.display === 'none') return null;
-    var r = el.getBoundingClientRect();
-    return [r.left + r.width / 2 - areaRect.left, r.top + r.height / 2 - areaRect.top];
+  function pullOut(anchor, len) {{
+    switch (anchor.side) {{
+      case 'r': return {{ x: anchor.x + len, y: anchor.y }};
+      case 'l': return {{ x: anchor.x - len, y: anchor.y }};
+      case 't': return {{ x: anchor.x, y: anchor.y - len }};
+      case 'b': return {{ x: anchor.x, y: anchor.y + len }};
+    }}
+    return {{ x: anchor.x, y: anchor.y }};
   }}
-  function renderEdges() {{
-    if (!overlay) return;
-    overlay.innerHTML = '';
-    if (!showEdgesToggle || !showEdgesToggle.checked) return;
-    var area = overlay.parentElement;
-    var areaRect = area.getBoundingClientRect();
-    overlay.setAttribute('width', areaRect.width);
-    overlay.setAttribute('height', areaRect.height);
-    var filter = edgeFilterSelect ? edgeFilterSelect.value : 'all';
-    var types = filter === 'all'
-      ? ['imports', 'calls', 'inherits']
-      : [filter];
+  function curvePath(a, b, lane) {{
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var dist = Math.sqrt(dx*dx + dy*dy) || 1;
+    var pull = Math.min(dist * 0.4, 80);
+    var ac = pullOut(a, pull);
+    var bc = pullOut(b, pull);
+    // Lane offset perpendicular to overall edge direction (separates edge types)
+    var nx = -dy / dist * lane, ny = dx / dist * lane;
+    return 'M' + a.x.toFixed(1) + ',' + a.y.toFixed(1) +
+      ' C' + (ac.x + nx).toFixed(1) + ',' + (ac.y + ny).toFixed(1) +
+      ' ' + (bc.x + nx).toFixed(1) + ',' + (bc.y + ny).toFixed(1) +
+      ' ' + b.x.toFixed(1) + ',' + b.y.toFixed(1);
+  }}
+  function drawEdges() {{
+    var existing = svg.querySelectorAll('path.edge');
+    existing.forEach(function(e){{ e.remove(); }});
+    if (!showEdges || !showEdges.checked) return;
+    var f = edgeSelect ? edgeSelect.value : 'all';
+    var types = (f === 'all') ? ['imports','calls','inherits'] : [f];
+    var laneOf = {{ imports: -2, calls: 0, inherits: 2 }};
     var down = selectedPath ? reachable(selectedPath, 'out') : null;
     var up = selectedPath ? reachable(selectedPath, 'in') : null;
-    adjacency.forEach(function(entry) {{
-      var fromCell = cellsByPath[entry.path];
-      var fromCenter = visibleCenter(fromCell, areaRect);
-      if (!fromCenter) return;
-      types.forEach(function(type) {{
-        (entry[type + '_out'] || []).forEach(function(toPath) {{
-          var toCell = cellsByPath[toPath];
-          var toCenter = visibleCenter(toCell, areaRect);
-          if (!toCenter) return;
-          var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-          line.setAttribute('x1', fromCenter[0]);
-          line.setAttribute('y1', fromCenter[1]);
-          line.setAttribute('x2', toCenter[0]);
-          line.setAttribute('y2', toCenter[1]);
-          var classes = type;
-          if (selectedPath) {{
-            var inRoute = (entry.path === selectedPath || toPath === selectedPath ||
-              (down && (down[entry.path] || down[toPath])) ||
-              (up && (up[entry.path] || up[toPath])));
-            if (!inRoute) classes += ' dim';
-          }}
-          line.setAttribute('class', classes);
-          overlay.appendChild(line);
+    // Aggregate: count multiplicity per (from, to, type) — for raysense
+    // each edge type is already deduplicated in adjacency, so multiplicity
+    // is 1 today; we keep the structure so future per-edge counts plug in.
+    var edges = [];
+    adjacency.forEach(function(entry){{
+      var a = pathToRect[entry.path]; if (!a) return;
+      types.forEach(function(t){{
+        (entry[t+'_out']||[]).forEach(function(toPath){{
+          var b = pathToRect[toPath]; if (!b) return;
+          edges.push({{ from: entry.path, to: toPath, type: t, a: a, b: b, count: 1 }});
         }});
       }});
     }});
-  }}
-  if (showEdgesToggle) {{
-    showEdgesToggle.addEventListener('change', renderEdges);
-  }}
-  window.addEventListener('resize', renderEdges);
-  colorSelect.addEventListener('change', function() {{ recolor(colorSelect.value); }});
-  if (focusModeSelect) {{
-    focusModeSelect.addEventListener('change', function() {{
-      rebuildFocusValues();
-      renderEdges();
-    }});
-    focusValueSelect.addEventListener('change', function() {{
-      applyFocus();
-      renderEdges();
-    }});
-    rebuildFocusValues();
-  }}
-  if (edgeFilterSelect) {{
-    edgeFilterSelect.addEventListener('change', function() {{
-      highlightRoutes();
-      if (focusModeSelect.value === 'impact') applyFocus();
-      renderEdges();
+    edges.forEach(function(e){{
+      var bcx = e.b.x + e.b.w/2, bcy = e.b.y + e.b.h/2;
+      var acx = e.a.x + e.a.w/2, acy = e.a.y + e.a.h/2;
+      var aA = sideAnchor(e.a, bcx, bcy);
+      var bA = sideAnchor(e.b, acx, acy);
+      var lane = laneOf[e.type] || 0;
+      var d = curvePath(aA, bA, lane);
+      var pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      pathEl.setAttribute('class', 'edge ' + e.type);
+      pathEl.setAttribute('d', d);
+      pathEl.setAttribute('stroke-width', String(0.8 + Math.min(e.count - 1, 4) * 0.4));
+      if (selectedPath) {{
+        var inRoute = e.from === selectedPath || e.to === selectedPath ||
+          (down && (down[e.from] || down[e.to])) ||
+          (up && (up[e.from] || up[e.to]));
+        if (!inRoute) pathEl.classList.add('dim');
+      }}
+      svg.appendChild(pathEl);
     }});
   }}
-  cells.forEach(function(el) {{
-    el.addEventListener('click', function() {{
-      var path = el.getAttribute('data-path');
-      selectedPath = path;
-      title.textContent = path;
-      body.innerHTML = '<dt>language</dt><dd>' + el.getAttribute('data-language') +
-        '</dd><dt>lines</dt><dd>' + el.getAttribute('data-lines') +
-        '</dd><dt>churn (commits)</dt><dd>' + el.getAttribute('data-churn') +
-        '</dd><dt>age (days)</dt><dd>' + el.getAttribute('data-age') +
-        '</dd><dt>risk score</dt><dd>' + el.getAttribute('data-risk') +
-        '</dd><dt>instability</dt><dd>' + el.getAttribute('data-instability') +
-        '</dd><dt>entry point</dt><dd>' + (el.getAttribute('data-entry') === '1' ? 'yes' : 'no') +
-        '</dd><dt>edges (imports/calls/inherits)</dt><dd>' + neighborSummary(path) + '</dd>';
-      detail.hidden = false;
-      highlightRoutes();
-      if (focusModeSelect.value === 'impact') applyFocus();
-      renderEdges();
-    }});
+  function showDetail(file) {{
+    detailTitle.textContent = file.path;
+    var lines = [
+      ['language', file.language],
+      ['lines', file.lines],
+      ['churn (commits)', file.churn],
+      ['age (days)', file.age],
+      ['risk score', file.risk],
+      ['instability', (+file.instability).toFixed(3)],
+      ['entry point', file.entry ? 'yes' : 'no']
+    ];
+    var entry = adjByPath[file.path];
+    if (entry) {{
+      lines.push(['imports out / in', entry.imports_out.length + ' / ' + entry.imports_in.length]);
+      lines.push(['calls out / in', entry.calls_out.length + ' / ' + entry.calls_in.length]);
+      lines.push(['inherits out / in', entry.inherits_out.length + ' / ' + entry.inherits_in.length]);
+    }}
+    detailBody.innerHTML = lines.map(function(p){{
+      return '<dt>'+escapeAttr(p[0])+'</dt><dd>'+escapeAttr(p[1])+'</dd>';
+    }}).join('');
+    detail.hidden = false;
+  }}
+  svg.addEventListener('click', function(e){{
+    var target = e.target.closest && e.target.closest('rect.tile');
+    if (!target) return;
+    var p = target.getAttribute('data-path');
+    selectedPath = p;
+    selectedCycle = null;
+    var list = document.getElementById('cycles-list');
+    if (list) list.querySelectorAll('li').forEach(function(x){{ x.classList.remove('selected'); }});
+    var file = files.find(function(f){{ return f.path === p; }});
+    if (file) showDetail(file);
+    drawHighlight(); drawEdges();
+    if (focusModeSelect && focusModeSelect.value === 'impact') render();
   }});
-  if (closeBtn) {{
-    closeBtn.addEventListener('click', function() {{
-      detail.hidden = true;
-      selectedPath = null;
-      highlightRoutes();
-      if (focusModeSelect.value === 'impact') applyFocus();
-      renderEdges();
-    }});
-  }}
+  if (closeBtn) closeBtn.addEventListener('click', function(){{
+    detail.hidden = true; selectedPath = null;
+    drawHighlight(); drawEdges();
+    if (focusModeSelect && focusModeSelect.value === 'impact') render();
+  }});
+  if (colorSelect) colorSelect.addEventListener('change', render);
+  if (focusModeSelect) focusModeSelect.addEventListener('change', function(){{ rebuildFocusValues(); render(); }});
+  if (focusValueSelect) focusValueSelect.addEventListener('change', render);
+  if (edgeSelect) edgeSelect.addEventListener('change', function(){{ drawEdges(); if (focusModeSelect && focusModeSelect.value === 'impact') render(); }});
+  if (showEdges) showEdges.addEventListener('change', drawEdges);
+  var ribbonsToggle = document.getElementById('show-ribbons');
+  if (ribbonsToggle) ribbonsToggle.addEventListener('change', drawRibbons);
+  svg.addEventListener('dblclick', function(e){{
+    var target = e.target.closest && e.target.closest('rect.tile');
+    if (!target) return;
+    showFunctions(target.getAttribute('data-path'));
+  }});
+  var zoomEl = document.getElementById('zoom');
+  if (zoomEl) zoomEl.addEventListener('click', hideFunctions);
+  document.addEventListener('keydown', function(e){{
+    if (e.key === 'Escape') hideFunctions();
+  }});
+  window.addEventListener('resize', function(){{ render(); renderTrend(); }});
+  rebuildFocusValues();
+  renderCyclesList();
+  renderTrend();
+  renderMainSequence();
+  renderDsm();
+  render();
 }})();
 </script>
 <script>
@@ -1475,27 +2062,50 @@ table{{border-collapse:collapse;width:100%;margin-top:16px}}td,th{{border-bottom
 }})();
 </script>
 </body></html>"#,
-        health.quality_signal,
+        html_escape(&project_name),
+        (health.score as f64 * 1.3).round() as u32,
         health.score,
+        health.score,
+        (health.score as f64 * 1.3).round() as u32,
         health.coverage_score,
         health.structural_score,
         report.files.len(),
         report.functions.len(),
         health.rules.len(),
-        health.root_causes.modularity,
-        health.root_causes.modularity * 100.0,
-        health.root_causes.redundancy,
-        health.root_causes.redundancy * 100.0,
-        cells,
-        module_edges,
-        module_nodes,
-        modules,
+        (health.root_causes.modularity * 100.0).round() as u32,
+        html_escape(&health.grades.modularity),
+        (health.root_causes.acyclicity * 100.0).round() as u32,
+        html_escape(&health.grades.acyclicity),
+        (health.root_causes.depth * 100.0).round() as u32,
+        html_escape(&health.grades.depth),
+        (health.root_causes.equality * 100.0).round() as u32,
+        html_escape(&health.grades.equality),
+        (health.root_causes.redundancy * 100.0).round() as u32,
+        html_escape(&health.grades.redundancy),
+        (health.root_causes.structural_uniformity * 100.0).round() as u32,
+        html_escape(&health.grades.structural_uniformity),
+        cycles,
+        max_blast,
+        attack_pct,
+        upward,
+        commits,
+        authors,
+        changed,
+        unstable_modules,
+        module_edges_rows,
         hotspots,
         rules,
         complex,
         gaps,
+        json_script_escape(&files_json),
+        json_script_escape(&adjacency_json),
         json_script_escape(&telemetry),
-        json_script_escape(&adjacency_json)
+        json_script_escape(&cycles_json),
+        json_script_escape(&change_coupling_json),
+        json_script_escape(&distance_metrics_json),
+        json_script_escape(&dsm_json),
+        json_script_escape(&trend_json),
+        json_script_escape(&functions_json),
     )
 }
 
@@ -1514,23 +2124,17 @@ fn json_script_escape(value: &str) -> String {
         .replace('&', "\\u0026")
 }
 
-fn compact_label(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    let tail = value
-        .rsplit(['/', '.'])
-        .find(|part| !part.is_empty())
-        .unwrap_or(value);
-    if tail.chars().count() <= max_chars {
-        tail.to_string()
-    } else {
-        let prefix = tail
-            .chars()
-            .take(max_chars.saturating_sub(3))
-            .collect::<String>();
-        format!("{prefix}...")
-    }
+#[derive(serde::Deserialize, serde::Serialize)]
+struct TrendPoint {
+    score: u8,
+}
+
+/// Read `.raysense/trends/history.json` if it exists. The file is only
+/// written by `--trend record`; absence is normal and silent.
+fn read_trend_samples(root: &Path) -> Option<Vec<TrendPoint>> {
+    let path = root.join(".raysense/trends/history.json");
+    let content = fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<Vec<TrendPoint>>(&content).ok()
 }
 
 fn list_plugins(root: &Path, config_path: Option<&Path>) -> Result<()> {
@@ -1951,10 +2555,9 @@ fn show_trend(root: &Path, config_path: Option<&Path>, json: bool) -> Result<()>
         println!("{}", serde_json::to_string_pretty(&health.metrics.trend)?);
     } else if health.metrics.trend.available {
         println!(
-            "trend samples={} score_delta={} quality_signal_delta={} rule_delta={}",
+            "trend samples={} score_delta={} rule_delta={}",
             health.metrics.trend.samples,
             health.metrics.trend.score_delta,
-            health.metrics.trend.quality_signal_delta,
             health.metrics.trend.rule_delta
         );
     } else {
@@ -2008,11 +2611,9 @@ fn print_what_if(
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!(
-            "what_if score {} -> {} quality_signal {} -> {} files {} -> {} rules {} -> {}",
+            "what_if score {} -> {} / 100 files {} -> {} rules {} -> {}",
             before_health.score,
             after_health.score,
-            before_health.quality_signal,
-            after_health.quality_signal,
             before_report.snapshot.file_count,
             after_report.snapshot.file_count,
             before_health.rules.len(),
@@ -2266,10 +2867,9 @@ fn print_baseline_diff(diff: &BaselineDiff) {
 }
 
 fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
-    println!("score {}", health.score);
-    println!("quality_signal {}", health.quality_signal);
-    println!("coverage_score {}", health.coverage_score);
-    println!("structural_score {}", health.structural_score);
+    println!("score {} / 100", health.score);
+    println!("coverage {} / 100", health.coverage_score);
+    println!("structure {} / 100", health.structural_score);
     println!("root {}", report.snapshot.root.display());
     println!(
         "facts files={} functions={} calls={} call_edges={} imports={}",
@@ -2350,25 +2950,23 @@ fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
         "dsm modules={} module_edges={}",
         health.metrics.dsm.module_count, health.metrics.dsm.module_edges
     );
+    let pct = |v: f64| (v * 100.0).round() as u32;
     println!(
-        "root_causes modularity={:.3} acyclicity={:.3} depth={:.3} equality={:.3} redundancy={:.3} structural_uniformity={:.3}",
-        health.root_causes.modularity,
-        health.root_causes.acyclicity,
-        health.root_causes.depth,
-        health.root_causes.equality,
-        health.root_causes.redundancy,
-        health.root_causes.structural_uniformity
-    );
-    println!(
-        "grades overall={} modularity={} acyclicity={} depth={} equality={} redundancy={} structural_uniformity={}",
-        health.grades.overall,
+        "dimensions modularity={}/100 ({}) acyclicity={}/100 ({}) depth={}/100 ({}) equality={}/100 ({}) redundancy={}/100 ({}) structural_uniformity={}/100 ({})",
+        pct(health.root_causes.modularity),
         health.grades.modularity,
+        pct(health.root_causes.acyclicity),
         health.grades.acyclicity,
+        pct(health.root_causes.depth),
         health.grades.depth,
+        pct(health.root_causes.equality),
         health.grades.equality,
+        pct(health.root_causes.redundancy),
         health.grades.redundancy,
-        health.grades.structural_uniformity
+        pct(health.root_causes.structural_uniformity),
+        health.grades.structural_uniformity,
     );
+    println!("overall_grade {}", health.grades.overall);
     println!(
         "architecture depth={} max_blast_radius={} max_blast_radius_file={} max_non_foundation_blast_radius={} max_non_foundation_blast_radius_file={} attack_surface_files={} attack_surface_ratio={:.3} upward_violations={} upward_violation_ratio={:.3} average_distance_from_main_sequence={:.3}",
         health.metrics.architecture.module_depth,
@@ -2538,14 +3136,17 @@ mod tests {
     }
 
     #[test]
-    fn visualization_html_includes_color_mode_and_detail_panel() {
+    fn visualization_html_includes_treemap_and_panels() {
         let report = crate::scan_path(env!("CARGO_MANIFEST_DIR")).unwrap();
         let health = crate::compute_health(&report);
         let html = visualization_html(&report, &health);
         assert!(html.contains("id=\"color-mode\""));
-        assert!(html.contains("data-churn"));
-        assert!(html.contains("id=\"file-detail\""));
+        assert!(html.contains("id=\"treemap\""));
+        assert!(html.contains("id=\"raysense-files\""));
+        assert!(html.contains("id=\"raysense-adjacency\""));
         assert!(html.contains("id=\"raysense-telemetry\""));
+        assert!(html.contains("\"churn\""), "files JSON should carry churn");
+        assert!(html.contains("class=\"app\""));
     }
 
     #[test]
