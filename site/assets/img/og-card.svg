@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <pattern id="og-grid" width="60" height="60" patternUnits="userSpaceOnUse">
+      <path d="M 60 0 L 0 0 0 60" fill="none" stroke="#172029" stroke-width="0.5"/>
+    </pattern>
+    <radialGradient id="og-glow" cx="50%" cy="0%" r="60%">
+      <stop offset="0%" stop-color="#5eead4" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#5eead4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- background + grid + glow -->
+  <rect width="1200" height="630" fill="#0a0e13"/>
+  <rect width="1200" height="630" fill="url(#og-grid)" opacity="0.7"/>
+  <rect width="1200" height="630" fill="url(#og-glow)"/>
+
+  <!-- top-left: brand mark + wordmark -->
+  <g transform="translate(72, 72)">
+    <!-- heartbeat brand tile -->
+    <g>
+      <rect width="72" height="72" rx="14" fill="#0a0e13" stroke="#1f2933" stroke-width="1.5"/>
+      <path d="M 7 38 L 27 38 L 30 34 L 35 13 L 40 58 L 45 38 L 65 38"
+            fill="none" stroke="#5eead4" stroke-width="3.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="65" cy="38" r="4" fill="#e9a033"/>
+    </g>
+    <!-- wordmark -->
+    <text x="92" y="50"
+          font-family="Inter, Arial, sans-serif" font-weight="700"
+          font-size="42" fill="#e6edf3" letter-spacing="-0.5">raysense</text>
+  </g>
+
+  <!-- top-right: small marker line -->
+  <g transform="translate(1128, 90)">
+    <text x="0" y="0" text-anchor="end"
+          font-family="JetBrainsMono Nerd Font, Consolas, monospace" font-weight="400"
+          font-size="16" fill="#5eead4" letter-spacing="3">LIVE  ·  LOCAL  ·  AGENT-READY</text>
+  </g>
+
+  <!-- main tagline (3 lines) -->
+  <g transform="translate(72, 250)" font-family="Inter, Arial, sans-serif" font-weight="700" font-size="78" fill="#e6edf3" letter-spacing="-2">
+    <text x="0" y="0">A structural <tspan fill="#5eead4">X-ray</tspan> for the</text>
+    <text x="0" y="92">codebases AI agents</text>
+    <text x="0" y="184">are writing.</text>
+  </g>
+
+  <!-- subtitle -->
+  <g transform="translate(72, 510)">
+    <text x="0" y="0"
+          font-family="Inter, Arial, sans-serif" font-weight="400"
+          font-size="24" fill="#9eaab8" letter-spacing="-0.2">Six structural dimensions, graded A-F. One 0-to-100 score. CLI, CI gate, MCP server.</text>
+  </g>
+
+  <!-- bottom-left: install command -->
+  <g transform="translate(72, 568)">
+    <text x="0" y="0"
+          font-family="JetBrainsMono Nerd Font, Consolas, monospace" font-weight="400"
+          font-size="22" fill="#5eead4">$ cargo install raysense</text>
+  </g>
+
+  <!-- bottom-right: domain -->
+  <g transform="translate(1128, 568)">
+    <text x="0" y="0" text-anchor="end"
+          font-family="JetBrainsMono Nerd Font, Consolas, monospace" font-weight="400"
+          font-size="20" fill="#5b6671" letter-spacing="1">sense.rayforcedb.com</text>
+  </g>
+</svg>
