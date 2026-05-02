@@ -42,4 +42,19 @@ land better.
 - The user asked a narrow question. Use `raysense-impact` or a
   single targeted MCP call instead.
 - The repo is tiny (under ~50 files). The audit will produce mostly
-  noise — just call `raysense_health` and read out the grade.
+  noise -- just call `raysense_health` and read out the grade.
+
+## See also
+
+The audit's typed tools surface what raysense already knows.  When
+the user asks an audit-shaped question that doesn't fit a typed
+tool, the **raysense-query** skill exposes Rayfall directly via
+`raysense_baseline_query`:
+
+- Custom architectural breakdowns -- group calls by caller module,
+  count cross-layer imports, find ownership-by-language splits.
+- `.graph.pagerank` / `.graph.louvain` / `.graph.betweenness` over
+  call_edges or module_edges for centrality-based audits.
+- `raysense_baseline_import_csv` to bring external audit data
+  (coverage, lint counts, test runtime) into the same query
+  substrate as the structural baseline.

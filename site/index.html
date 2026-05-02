@@ -313,7 +313,49 @@
   </div>
 </section>
 
-<section class="section section-alt">
+<section id="byod" class="section section-alt">
+  <div class="container">
+    <div class="section-eyebrow">BRING YOUR OWN DATA</div>
+    <h2>Coverage. Lint counts. Embeddings. Same query language.</h2>
+    <p class="section-lead">
+      Drop a CSV; it joins the baseline.  First row is headers, column types are inferred, and the shared symbol table means cross-table predicates like <code>(in path (at coverage 'path))</code> work without ETL.  Vector primitives - <code>cos-dist</code>, <code>l2-dist</code>, <code>knn</code>, <code>hnsw-build</code>, <code>ann</code> - are built into Rayfall, so embeddings imported alongside the structural baseline serve semantic similarity from the same query expression that drives policy gates.
+    </p>
+
+    <div class="code-block code-block-wide">
+      <div class="code-block-head">join coverage.csv with raysense's own temporal hotspots</div>
+<pre><code><span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> baseline import-csv coverage <span class="hl-str">./coverage.csv</span>
+<span class="hl-cmt">  imported ./coverage.csv -&gt; .raysense/baseline/tables/coverage</span>
+
+<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> baseline query temporal_hotspots \
+    <span class="hl-str">'(select {from: t
+              where: (in path
+                         (at (select {from: coverage where: (&lt; covered_pct 50)})
+                             (quote path)))
+              desc: risk_score})'</span></code></pre>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3>External signals as tables</h3>
+        <p>Coverage, lint counts, error budgets, runtime traces, ownership-from-elsewhere - any CSV becomes addressable from <code>baseline query</code>, <code>policy check</code>, and the MCP tools.  Subsequent re-imports overwrite cleanly; the schema-version stamp keeps stale baselines from silently mis-rendering.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Vector search as policy</h3>
+        <p>Pair CSV import with embeddings: <code>cos-dist</code> for direct similarity, <code>knn</code> for brute-force scans on small sets, <code>hnsw-build</code> + <code>ann</code> for sub-linear queries on &gt;10k vectors.  An <code>.rfl</code> policy that flags near-duplicate functions is six lines.</p>
+      </div>
+      <div class="feature-card">
+        <h3>One sym table, one schema</h3>
+        <p>Imported tables share the baseline's interned-string space, so <code>path</code> in <code>coverage</code> and <code>path</code> in <code>files</code> point to the same sym ID.  Joins are predicate equality, not ETL plumbing - and the schema-version stamp catches imports against an out-of-date baseline directory.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Live progress on stderr</h3>
+        <p>Long Rayfall queries print throttled progress lines to stderr - <code>op_name</code>, <code>phase</code>, <code>rows_done / rows_total</code>, elapsed seconds, memory used.  JSON callers stay byte-clean; humans on a TTY get the live signal.  Quick queries (under 200ms) stay silent by design.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
   <div class="container">
     <div class="section-eyebrow">CAPABILITIES</div>
     <h2>Beyond the score.</h2>
@@ -359,7 +401,7 @@
   </div>
 </section>
 
-<section id="languages" class="section">
+<section id="languages" class="section section-alt">
   <div class="container">
     <div class="section-eyebrow">LANGUAGE COVERAGE</div>
     <h2>69 languages, three tiers of analysis depth.</h2>

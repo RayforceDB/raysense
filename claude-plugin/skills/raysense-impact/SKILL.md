@@ -46,3 +46,18 @@ the target file path relative to that root.
 - Local-only edit inside one file with no signature changes (typo
   fix, comment, internal rename). No downstream effect, no need.
 - Brand-new file. Nothing depends on it yet.
+
+## See also
+
+For cases the typed tools above don't cover, the **raysense-query**
+skill exposes Rayfall directly via `raysense_baseline_query`:
+
+- Custom reachability rules through Datalog -- declarative
+  `(reaches ?a ?b)` plus a recursive arm gives the same shape as
+  `raysense_blast_radius` but with a rule the agent picks at query
+  time.
+- `.graph.shortest-path` / `.graph.k-shortest` for path-aware impact
+  ("which call paths reach this entry point") that go beyond the
+  blast-radius set.
+- Ad-hoc joins between `call_edges` and `change_coupling` /
+  `file_ownership` to weight blast radius by author / commit history.

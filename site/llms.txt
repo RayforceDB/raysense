@@ -57,6 +57,21 @@ Every saved baseline is a queryable columnar database. Two surfaces share one su
 
 A policy is just a Rayfall expression that returns a table with columns severity, code, path, message. Empty result table = policy passed.
 
+## Bring your own data
+
+Drop a CSV; it joins the baseline.  `raysense baseline import-csv <name> <path>` (CLI) or `raysense_baseline_import_csv` (MCP) reads the CSV with first-row headers, infers column types, and writes it as a splayed table alongside the built-in ones.  Subsequent queries can join across imported and built-in tables because they share the baseline's interned-string sym table - `path` in an imported coverage CSV points to the same sym ID as `path` in the structural `files` table.
+
+Vector primitives are built into Rayfall:
+- `cos-dist` / `l2-dist` / `inner-prod` / `norm` for direct similarity.
+- `knn` for brute-force nearest-neighbor over a list of candidate vectors; returns a (_rowid, _dist) table sorted ascending.
+- `hnsw-build` / `ann` / `hnsw-save` / `hnsw-load` / `hnsw-info` for sub-linear approximate-nearest-neighbor on >10k vector spaces.
+
+Pair the two: import an embeddings CSV (file_id + e0..eN columns), build an HNSW index, and ship a `.rfl` policy that flags near-duplicate functions or finds the most-similar files to a target.  Vector search becomes a CI gate without a separate service.
+
+## Live progress
+
+Long Rayfall queries (group-by aggregations, pivots) emit throttled progress lines on stderr from the CLI surfaces - `[rayfall] op / phase  rows_done / rows_total  elapsed=Xs  mem=YMB`.  JSON callers (--json, MCP, pipes) stay byte-clean.  Quick queries under 200ms emit nothing.
+
 ## Capabilities beyond the score
 
 - Live treemap dashboard. Every file, every metric, every cycle, refreshed on save.

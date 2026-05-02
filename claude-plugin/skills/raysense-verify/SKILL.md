@@ -45,3 +45,18 @@ report is:
   affect imports.
 - The session bootstrapped less than a minute ago and the working
   tree shows trivial changes (`git diff --stat` is one or two lines).
+
+## See also
+
+For verify checks the typed tools don't cover natively:
+
+- `raysense_policy_check` -- evaluates `.rfl` files in
+  `<repo>/.raysense/policies/`.  Use this when the team has shipped
+  custom architectural rules; they fire alongside the built-in
+  `raysense_check_rules` but are code-reviewable in the repo.  Exit
+  code 1 = a policy itself failed to evaluate, 2 = at least one
+  error-severity finding.
+- `raysense_baseline_query` -- the **raysense-query** skill covers
+  the syntax.  Useful when a verify-time question is shaped like "did
+  any new file land that violates X" and X needs a custom Rayfall
+  expression.

@@ -40,10 +40,24 @@ After bootstrap, the agent should remember (briefly):
 
 ## When to skip
 
-- Session is read-only (the user just asked a question — no edits
+- Session is read-only (the user just asked a question -- no edits
   planned). Skip bootstrap; reach for `raysense-audit` instead if
   structural context is needed.
 - A baseline already exists from a recent session and no commits have
   landed since (`git log -1 --since='1 hour ago'` shows nothing).
   Re-using the previous baseline is fine; just call `raysense_health`
   for a fresh grade and skip the rest.
+
+## See also
+
+The baseline this skill produces is queryable, not just a dump.
+After bootstrap, the agent has access to:
+
+- `raysense_baseline_query` -- run any Rayfall expression against a
+  saved table.  Syntax and worked examples in the **raysense-query**
+  skill (select / `.graph.*` / Datalog / vector search).
+- `raysense_policy_check` -- evaluate `.rfl` policy packs in
+  `<repo>/.raysense/policies/`; ships its own exit-code semantics for
+  CI gating.
+- `raysense_baseline_import_csv` -- bring external CSVs (coverage,
+  lint counts, embeddings) into the baseline as queryable tables.
