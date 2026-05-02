@@ -104,7 +104,7 @@ pub fn scan_path_with_config(
 
         let path = entry.path();
         let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
-        if is_internal_path(&relative_path) {
+        if is_internal_path(&relative_path) || is_default_ignored(&relative_path) {
             continue;
         }
         if is_ignored_path(&relative_path, &config.scan.ignored_paths)
@@ -309,6 +309,46 @@ fn is_ignored_path(path: &Path, ignored_paths: &[String]) -> bool {
 
 fn is_internal_path(path: &Path) -> bool {
     normalize_relative_path(path).starts_with(".raysense/")
+}
+
+/// Build / vendor / cache directories that are almost never project source.
+/// Skipped in addition to whatever the project's `.gitignore` already
+/// excludes, so trees without a project `.gitignore` (extracted `.crate`
+/// tarballs, downloaded archives, fresh checkouts that haven't been opened
+/// in their build tool yet) don't blow up raysense's analysis with
+/// thousands of vendored or generated files.
+///
+/// `vendor/` is intentionally NOT in the list -- some projects (Go modules
+/// with `vendor/`, PHP/Composer, raysense's own published `.crate`) treat
+/// it as committed source.  Those that don't can add it via the project's
+/// `.raysense.toml` `[scan] ignored_paths` list.
+const DEFAULT_IGNORED_DIRS: &[&str] = &[
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "coverage",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".gradle",
+    ".idea",
+    ".vscode",
+];
+
+fn is_default_ignored(path: &Path) -> bool {
+    let path = normalize_relative_path(path);
+    DEFAULT_IGNORED_DIRS
+        .iter()
+        .any(|dir| path == *dir || path.starts_with(&format!("{dir}/")))
 }
 
 fn matches_path_pattern(path: &str, pattern: &str) -> bool {
@@ -3448,6 +3488,34 @@ fn extract_rayfall_types(file_id: usize, content: &str) -> Vec<TypeFact> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn default_ignored_skips_build_artifact_dirs_at_any_depth() {
+        // Top-level matches.
+        assert!(is_default_ignored(Path::new("target")));
+        assert!(is_default_ignored(Path::new("node_modules")));
+        assert!(is_default_ignored(Path::new("dist")));
+        assert!(is_default_ignored(Path::new("__pycache__")));
+        // Subpaths under an ignored dir.
+        assert!(is_default_ignored(Path::new("target/release/build/foo.rs")));
+        assert!(is_default_ignored(Path::new("node_modules/react/index.js")));
+        assert!(is_default_ignored(Path::new(
+            ".venv/lib/python3.12/site.py"
+        )));
+
+        // vendor is intentionally NOT in the default list -- some projects
+        // commit vendored sources.  Users opt in via .raysense.toml.
+        assert!(!is_default_ignored(Path::new("vendor")));
+        assert!(!is_default_ignored(Path::new(
+            "vendor/rayforce/include/rayforce.h"
+        )));
+
+        // Real source paths must not match.
+        assert!(!is_default_ignored(Path::new("src/scanner.rs")));
+        assert!(!is_default_ignored(Path::new(
+            "examples/policies/no-huge-files.rfl"
+        )));
+    }
 
     #[test]
     fn extracts_rust_facts() {

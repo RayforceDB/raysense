@@ -2570,13 +2570,23 @@ mod tests {
 
     #[test]
     fn reads_default_config() {
+        // Point the test at a known-empty directory so it doesn't pick up
+        // raysense's own .raysense.toml when running inside the source
+        // tree.  /tmp/raysense-test-empty-* is created on demand and
+        // guaranteed not to carry a config.
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("raysense-empty-config-{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir_str = dir.to_string_lossy();
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"raysense_config_read","arguments":{{"path":"{dir_str}"}}}}}}"#,
+        );
+
         let mut state = McpState::default();
-        let response = handle_message(
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"raysense_config_read","arguments":{}}}"#,
-            &mut state,
-        )
-        .unwrap()
-        .unwrap();
+        let response = handle_message(&request, &mut state).unwrap().unwrap();
         let content = &response["result"]["structuredContent"];
 
         assert_eq!(content["source"], "default");

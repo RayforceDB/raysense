@@ -39,6 +39,7 @@ include = [
     "LICENSE",
     "docs/*.svg",
     ".rayforce-version",
+    ".raysense.toml",
     # Bundled rayforce source — narrow to just what `make lib` needs.
     # Excludes website/, docs/, test/, examples/, bench/ to keep the
     # published .crate well under the crates.io 10 MiB ceiling.

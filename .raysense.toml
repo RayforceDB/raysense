@@ -1,0 +1,14 @@
+# raysense's own scan config.  Mostly here so that anyone who runs
+# `raysense .` against an extracted .crate tarball (which bundles
+# vendor/rayforce/** for the build) does not accidentally analyze the
+# upstream rayforce C codebase as if it were raysense source.
+#
+# The published .crate has no .gitignore (cargo strips it during
+# packaging), so without this file the scanner would walk straight
+# into the vendored upstream tree -- thousands of files that belong
+# to rayforce, not to raysense.
+
+[scan]
+ignored_paths = [
+  "vendor",
+]
