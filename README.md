@@ -21,6 +21,12 @@
   SOFTWARE.
 -->
 
+<p align="center">
+  <a href="https://sense.rayforcedb.com/">
+    <img src="https://sense.rayforcedb.com/assets/img/og-card.png" alt="Raysense — a structural X-ray for the codebases AI agents are writing" width="820"/>
+  </a>
+</p>
+
 # Raysense
 
 [![Crates.io](https://img.shields.io/crates/v/raysense.svg?logo=rust&color=orange)](https://crates.io/crates/raysense)
@@ -79,6 +85,33 @@ raysense . --watch      # rescan + reprint on a 2s loop
 raysense . --ui         # live dashboard at http://localhost:7000
 raysense --mcp          # stdio MCP server for agents
 ```
+
+## Sample output
+
+Pointed at this very repo (`raysense .`):
+
+```text
+score 82 / 100
+coverage 90 / 100
+structure 68 / 100
+facts files=34 functions=656 calls=7518 call_edges=1383 imports=247
+imports local=98 external=124 system=0 unresolved=25
+graph resolved_edges=89 cycles=0 max_fan_in=53 max_fan_out=21
+coupling local_edges=98 cross_module_edges=0 god_files=2 unstable_hotspots=0
+size max_file_lines=5907 max_function_lines=1345 large_files=7 long_functions=20
+test_gap production_files=13 test_files=0 files_without_nearby_tests=13
+dimensions modularity=100/100 (A) acyclicity=100/100 (A) depth=100/100 (A)
+           equality=45/100 (F) redundancy=80/100 (B) structural_uniformity=79/100 (C)
+overall_grade B
+architecture depth=4 max_blast_radius=7 max_blast_radius_file=src/facts.rs
+complexity max=140 avg=4.261 cognitive_max=119 cognitive_avg=3.457 dead_functions=50
+evolution available=true commits_sampled=151 changed_files=34 authors=2 bug_fix_commits=1
+```
+
+`--json` produces the same facts in machine-readable form for CI gates,
+diffs, and agent consumption. `--ui` brings up the same data live in
+the browser, `--watch` keeps the terminal report fresh as you edit, and
+`--mcp` exposes every fact and rule to your coding agent over MCP.
 
 ## Agent integration
 
