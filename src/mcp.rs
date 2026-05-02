@@ -610,7 +610,13 @@ fn module_edges_tool(args: &Value) -> Result<Value> {
 
 fn architecture_tool(args: &Value, state: &mut McpState) -> Result<Value> {
     let (root, health) = health_from_args_cached(args, state)?;
-    let summary = summary_arg(args);
+    // Default flipped: summary by default, full only when detail=true.
+    // The full surface is what every architecture analysis returns
+    // through baseline tables anyway -- agents that want to keep
+    // working context small can stop here, agents that want everything
+    // pass detail=true.  The legacy `summary: true` keyword still works.
+    let detail = detail_arg(args);
+    let summary = !detail || summary_arg(args);
     let limit = if summary {
         SUMMARY_TOP_N
     } else {
@@ -618,9 +624,6 @@ fn architecture_tool(args: &Value, state: &mut McpState) -> Result<Value> {
     };
 
     if summary {
-        // Headline scalars + tiny top-N previews.  The full surface is
-        // still available with summary=false; this mode is shaped for
-        // agents that want to keep working context small.
         return Ok(json!({
             "root": root,
             "score": health.score,
@@ -642,7 +645,8 @@ fn architecture_tool(args: &Value, state: &mut McpState) -> Result<Value> {
                 "top_cycles": limited(&health.metrics.architecture.cycles, limit),
                 "top_unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
                 "top_upward_violations": limited(&health.metrics.architecture.upward_violations, limit),
-            }
+            },
+            "explore": EXPLORE_HINT_ARCHITECTURE.clone(),
         }));
     }
 
@@ -959,7 +963,8 @@ fn evolution_tool(args: &Value, state: &mut McpState) -> Result<Value> {
 
 fn dsm_tool(args: &Value, state: &mut McpState) -> Result<Value> {
     let (root, health) = health_from_args_cached(args, state)?;
-    let summary = summary_arg(args);
+    let detail = detail_arg(args);
+    let summary = !detail || summary_arg(args);
     let limit = if summary {
         SUMMARY_TOP_N
     } else {
@@ -967,10 +972,6 @@ fn dsm_tool(args: &Value, state: &mut McpState) -> Result<Value> {
     };
 
     if summary {
-        // Headline counts + the strongest module edges and worst
-        // architectural offenders.  Drops the full DSM matrix
-        // (level_assignments, instability, dependencies) because
-        // those scale with module count and are the bloat source.
         return Ok(json!({
             "root": root,
             "summary": {
@@ -983,7 +984,8 @@ fn dsm_tool(args: &Value, state: &mut McpState) -> Result<Value> {
                 "top_module_edges": limited(&health.metrics.dsm.top_module_edges, limit),
                 "top_unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
                 "top_upward_violations": limited(&health.metrics.architecture.upward_violations, limit),
-            }
+            },
+            "explore": EXPLORE_HINT_DSM.clone(),
         }));
     }
 
@@ -2258,7 +2260,8 @@ fn health_limit_schema(limit_description: &str) -> Value {
             "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
             "config": config_schema(),
             "limit": {"type": "integer", "minimum": 1, "description": limit_description},
-            "summary": {"type": "boolean", "description": "When true, return only headline scalars and small previews (top-5 lists). Cuts response size by 10-50x on real-size repos.  Defaults to false for backwards compatibility."}
+            "summary": {"type": "boolean", "description": "Legacy alias for the default summary mode.  Default is summary; pass detail=true to opt into the full surface."},
+            "detail": {"type": "boolean", "description": "When true, return the full surface (module-level distance vectors, every cycle, every unstable module).  Defaults to false: typed tools answer 'is this OK?' with headlines, the substrate (raysense_baseline_query) answers 'tell me about it' with arbitrary Rayfall queries."}
         }
     })
 }
@@ -2269,9 +2272,59 @@ fn summary_arg(args: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn detail_arg(args: &Value) -> bool {
+    args.get("detail").and_then(Value::as_bool).unwrap_or(false)
+}
+
 /// Cap used for top-N previews in summary mode -- small enough for an
 /// agent to keep in working memory, large enough to spot the worst offenders.
 const SUMMARY_TOP_N: usize = 5;
+
+fn explore_hint_architecture() -> Value {
+    json!({
+        "hint": "Pass detail: true for the full surface, or query baseline tables directly with raysense_baseline_query for arbitrary slices.",
+        "tables": [
+            "module_edges",
+            "hotspots",
+            "rules",
+            "temporal_hotspots",
+            "files",
+            "imports"
+        ],
+        "examples": [
+            "(select {from: t where: (> edges 5) desc: edges})",
+            "(.graph.pagerank (.graph.build t (quote caller_function) (quote callee_function)) 30 0.85)"
+        ]
+    })
+}
+
+fn explore_hint_dsm() -> Value {
+    json!({
+        "hint": "Pass detail: true for the full DSM surface (level assignments, instability, full distance vectors), or query baseline tables directly with raysense_baseline_query.",
+        "tables": [
+            "module_edges",
+            "hotspots",
+            "rules",
+            "files"
+        ],
+        "examples": [
+            "(select {from: t desc: edges take: 20})",
+            "(select {from: t where: (and (> fan_in 10) (> fan_out 10))})"
+        ]
+    })
+}
+
+// Static-construction trick: the `EXPLORE_HINT_*` slots are referenced by
+// callers as `EXPLORE_HINT_*.clone()` so they read like constants.  serde_json
+// values are not const-constructible, so we proxy through helper fns above.
+struct ExploreHint(fn() -> Value);
+impl ExploreHint {
+    fn clone(&self) -> Value {
+        (self.0)()
+    }
+}
+const EXPLORE_HINT_ARCHITECTURE: ExploreHint = ExploreHint(explore_hint_architecture);
+const EXPLORE_HINT_DSM: ExploreHint = ExploreHint(explore_hint_dsm);
 
 fn blast_radius_schema() -> Value {
     json!({
