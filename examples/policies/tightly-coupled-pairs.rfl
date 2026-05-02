@@ -1,0 +1,18 @@
+;; Policy: emerging architectural coupling.
+;;
+;; Files that change together more than half the time (per-mille > 500)
+;; AND have at least 3 co-commits are signaling hidden coupling: either
+;; they should live together (extract module) or one is leaking concerns
+;; into the other.  The right-hand partner column is preserved in the
+;; result table so reviewers can see both files - raysense surfaces
+;; extra columns alongside the required severity/code/path/message.
+
+(select {severity: "info"
+         code:     "tight-coupling"
+         path:     left
+         message:  "co-changes with another file more than 50% of the time"
+         partner:  right
+         co_commits: co_commits
+         from:     change_coupling
+         where:    (and (> coupling_strength_milli 500)
+                        (>= co_commits 3))})

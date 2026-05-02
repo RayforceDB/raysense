@@ -397,7 +397,12 @@ fn run_advanced(command: Command) -> Result<()> {
                 baseline,
                 policies,
                 json,
-            } => run_policy_check(baseline, policies, json)?,
+            } => {
+                let exit = run_policy_check(baseline, policies, json)?;
+                if exit != 0 {
+                    process::exit(exit);
+                }
+            }
         },
         Command::Trend { command } => match command {
             TrendCommand::Record { path, config } => record_trend(&path, config.as_deref())?,
@@ -2886,11 +2891,16 @@ fn default_policies_dir() -> PathBuf {
     PathBuf::from(".raysense/policies")
 }
 
+/// Returns 0 on success, 1 if any policy fails to evaluate (parse / type
+/// error, schema mismatch, missing columns), or 2 if any policy reports an
+/// error-severity finding. Eval errors take precedence over findings:
+/// "I cannot tell whether the rule passed" is worse than "the rule
+/// definitively failed."
 fn run_policy_check(
     baseline: Option<PathBuf>,
     policies: Option<PathBuf>,
     json: bool,
-) -> Result<()> {
+) -> Result<i32> {
     let baseline = baseline.unwrap_or_else(default_baseline_dir);
     let tables_dir = baseline.join("tables");
     let policies_dir = policies.unwrap_or_else(default_policies_dir);
@@ -2902,6 +2912,8 @@ fn run_policy_check(
                 policies_dir.display()
             )
         })?;
+
+    let exit = crate::memory::policy_exit_code(&results);
 
     if json {
         let payload: Vec<serde_json::Value> = results
@@ -2919,8 +2931,14 @@ fn run_policy_check(
                 }),
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&payload)?);
-        return Ok(());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "exit": exit,
+                "policies": payload,
+            }))?
+        );
+        return Ok(exit);
     }
 
     if results.is_empty() {
@@ -2928,7 +2946,7 @@ fn run_policy_check(
             "no policies found at {} (looking for *.rfl files)",
             policies_dir.display(),
         );
-        return Ok(());
+        return Ok(exit);
     }
     let mut total = 0usize;
     let mut errors = 0usize;
@@ -2951,12 +2969,13 @@ fn run_policy_check(
         }
     }
     println!(
-        "{} policy file(s) evaluated, {} finding(s), {} eval error(s)",
+        "{} policy file(s) evaluated, {} finding(s), {} eval error(s); exit {}",
         results.len(),
         total,
         errors,
+        exit,
     );
-    Ok(())
+    Ok(exit)
 }
 
 fn parse_columns(columns: Option<&str>) -> Result<Option<Vec<String>>> {

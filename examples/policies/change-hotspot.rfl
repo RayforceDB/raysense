@@ -1,0 +1,14 @@
+;; Policy: high churn x high complexity hotspots.
+;;
+;; raysense's temporal_hotspots table already multiplies commits by
+;; max_complexity into a single risk_score. Files past 200 are the
+;; spots most likely to break under further change.
+;;
+;; Demonstrates a single-column threshold on a derived metric.
+
+(select {severity: "warning"
+         code:     "change-hotspot"
+         path:     path
+         message:  "high commit-frequency x complexity; refactor before adding more"
+         from:     temporal_hotspots
+         where:    (> risk_score 200)})

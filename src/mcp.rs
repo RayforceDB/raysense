@@ -885,16 +885,12 @@ fn policy_check_tool(args: &Value) -> Result<Value> {
             }),
         })
         .collect();
-    let pass = results.iter().all(|r| match &r.findings {
-        Ok(findings) => !findings
-            .iter()
-            .any(|f| matches!(f.severity, crate::RuleSeverity::Error)),
-        Err(_) => false,
-    });
+    let exit = crate::memory::policy_exit_code(&results);
     Ok(json!({
         "root": root,
         "policies_path": policies_dir,
-        "pass": pass,
+        "pass": exit == 0,
+        "exit": exit,
         "policies": payload,
         "total": results.len(),
     }))

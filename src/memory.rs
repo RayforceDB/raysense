@@ -566,6 +566,29 @@ pub struct PolicyResult {
     pub findings: Result<Vec<RuleFinding>, MemoryError>,
 }
 
+/// CI exit code for a batch of policy results.
+///
+/// Returns 0 when every policy parsed and reported no error-severity
+/// findings, 1 when any policy failed to evaluate (parse / type / schema
+/// errors - "I cannot tell whether the rule passed"), or 2 when every
+/// policy parsed cleanly but at least one reported an error-severity
+/// finding ("the rule definitively failed"). Eval errors outrank findings
+/// because a misconfigured policy is more dangerous than a known violation.
+pub fn policy_exit_code(results: &[PolicyResult]) -> i32 {
+    if results.iter().any(|r| r.findings.is_err()) {
+        return 1;
+    }
+    if results.iter().any(|r| match &r.findings {
+        Ok(findings) => findings
+            .iter()
+            .any(|f| matches!(f.severity, RuleSeverity::Error)),
+        Err(_) => false,
+    }) {
+        return 2;
+    }
+    0
+}
+
 /// Evaluate every `.rfl` file in `policies_dir` against the saved baseline
 /// at `baseline_dir`, in alphabetical order. Each policy is evaluated
 /// independently; one bad file does not abort the rest. Missing
@@ -2259,10 +2282,31 @@ mod tests {
     use crate::{scan_path, FileFact, Language, SnapshotFact};
     use serde_json::json;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// rayforce's runtime, sym table, and env are process-global singletons.
+    /// Cargo runs tests with multiple threads by default, so any test that
+    /// touches `ray_read_splayed` (which calls `ray_sym_load` and clobbers
+    /// the global sym table) or `eval_policy_pack` (which calls
+    /// `ray_env_set` to bind 18 baseline tables under their own names) must
+    /// serialize through this mutex. Pure-Rust helpers and pure-FFI tests
+    /// that do not touch global state can skip it.
+    static RAYFORCE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn rayforce_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        match RAYFORCE_TEST_LOCK.lock() {
+            Ok(guard) => guard,
+            // A previous test panicked while holding the lock; the runtime
+            // is still healthy (it is a process singleton, not per-test
+            // state), so re-take the inner value and continue.
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 
     #[test]
     fn builds_memory_tables_from_scan_report() {
+        let _guard = rayforce_test_guard();
         let report = scan_path(env!("CARGO_MANIFEST_DIR")).unwrap();
         let memory = RayMemory::from_report(&report).unwrap();
         let summary = memory.summary();
@@ -2305,6 +2349,7 @@ mod tests {
 
     #[test]
     fn queries_saved_baseline_table_with_projection_filter_sort_and_pagination() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("query");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2343,6 +2388,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_baseline_query_columns() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("unknown-column");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2369,6 +2415,7 @@ mod tests {
 
     #[test]
     fn queries_saved_baseline_table_with_set_filters_and_multi_sort() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("set-filter-sort");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2427,6 +2474,7 @@ mod tests {
 
     #[test]
     fn queries_saved_baseline_table_with_any_filter_mode() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("any-filter");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2474,6 +2522,7 @@ mod tests {
 
     #[test]
     fn queries_saved_baseline_table_with_regex_filters() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("regex-filter");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2522,6 +2571,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_baseline_regex_filters() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("invalid-regex-filter");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2593,6 +2643,7 @@ mod tests {
 
     #[test]
     fn meta_table_stamps_schema_version_and_provenance() {
+        let _guard = rayforce_test_guard();
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
         let summary = memory.summary();
@@ -2603,6 +2654,7 @@ mod tests {
 
     #[test]
     fn policy_pack_eval_returns_findings_for_a_real_rfl_file() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("policy");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2643,6 +2695,7 @@ mod tests {
 
     #[test]
     fn policy_pack_eval_returns_typed_error_when_result_misses_columns() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("policy-bad");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2657,6 +2710,52 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn policy_exit_code_prioritizes_eval_errors_over_error_findings() {
+        let ok_only = vec![PolicyResult {
+            path: PathBuf::from("a.rfl"),
+            findings: Ok(vec![RuleFinding {
+                severity: RuleSeverity::Warning,
+                code: "x".into(),
+                path: "p".into(),
+                message: "m".into(),
+            }]),
+        }];
+        assert_eq!(policy_exit_code(&ok_only), 0);
+
+        let with_error_finding = vec![PolicyResult {
+            path: PathBuf::from("b.rfl"),
+            findings: Ok(vec![RuleFinding {
+                severity: RuleSeverity::Error,
+                code: "x".into(),
+                path: "p".into(),
+                message: "m".into(),
+            }]),
+        }];
+        assert_eq!(policy_exit_code(&with_error_finding), 2);
+
+        let with_eval_error = vec![
+            PolicyResult {
+                path: PathBuf::from("c.rfl"),
+                findings: Err(MemoryError::PolicySchema {
+                    path: PathBuf::from("c.rfl"),
+                    missing: vec!["severity"],
+                }),
+            },
+            // Even with an error-severity finding alongside, eval error wins.
+            PolicyResult {
+                path: PathBuf::from("d.rfl"),
+                findings: Ok(vec![RuleFinding {
+                    severity: RuleSeverity::Error,
+                    code: "x".into(),
+                    path: "p".into(),
+                    message: "m".into(),
+                }]),
+            },
+        ];
+        assert_eq!(policy_exit_code(&with_eval_error), 1);
     }
 
     fn eval_policy_pack_inline(
@@ -2677,6 +2776,7 @@ mod tests {
 
     #[test]
     fn rayfall_query_returns_full_table_when_evaluating_bind_name() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("rayfall-bind");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2696,6 +2796,7 @@ mod tests {
 
     #[test]
     fn rayfall_query_surfaces_parse_errors_with_a_typed_error() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("rayfall-parse-err");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2714,6 +2815,7 @@ mod tests {
 
     #[test]
     fn meta_table_round_trips_through_splay_save_and_query() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("meta-roundtrip");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2758,6 +2860,7 @@ mod tests {
 
     #[test]
     fn verify_baseline_schema_passes_for_legacy_baseline_without_meta() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("legacy");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();
@@ -2774,6 +2877,7 @@ mod tests {
 
     #[test]
     fn verify_baseline_schema_rejects_mismatched_version() {
+        let _guard = rayforce_test_guard();
         let dir = temp_tables_dir("mismatch");
         let report = sample_report();
         let memory = RayMemory::from_report(&report).unwrap();

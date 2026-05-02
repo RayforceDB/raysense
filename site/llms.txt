@@ -38,14 +38,24 @@ raysense --mcp          # stdio MCP server for agents
 
 ## Agent integration
 
-Raysense ships as a Claude Code plugin. The plugin gives the agent four phase-scoped skills:
+Raysense ships as a Claude Code plugin. The plugin gives the agent five skills covering the edit loop:
 
 1. Bootstrap. At session start: scan, save baseline, materialise scan results as splayed-table memory.
 2. Impact. Before non-trivial edits: blast radius, coupling, cycle exposure.
 3. Verify. After edits: rescan, rule check, baseline diff.
 4. Audit. On request: architecture, DSM, evolution signals, test gaps.
+5. Query. Anytime: ad-hoc Rayfall expressions over the saved baseline (filter, project, aggregate, graph algorithms, Datalog rules with transitive closure).
 
 Project state lives in `<repo>/.raysense/`, never in a global registry. Two concurrent sessions on two different repos are strictly independent.
+
+## Query and policy
+
+Every saved baseline is a queryable columnar database. Two surfaces share one substrate:
+
+- Ad-hoc query: `raysense_baseline_query` (MCP) or `raysense baseline query <table> <expr>` (CLI). Three modes - select queries for filter/project/aggregate, `.graph.*` algorithms (PageRank, Louvain, topsort, shortest-path, betweenness, closeness, k-shortest, MST, BFS/DFS expand) for centrality and reachability, Datalog rules with transitive closure for declarative reachability.
+- Pinned policy: drop a `.rfl` file in `<repo>/.raysense/policies/` and `raysense policy check` (or the `raysense_policy_check` MCP tool) walks the directory, evaluates each policy, and reports findings using the same RuleFinding envelope as built-in rules. Exit code 0 for pass, 1 if any policy failed to evaluate, 2 if any error-severity finding. Architectural rules ship as code-reviewable files alongside the codebase they govern - no vendored YAML schema, no plugin SDK to learn.
+
+A policy is just a Rayfall expression that returns a table with columns severity, code, path, message. Empty result table = policy passed.
 
 ## Capabilities beyond the score
 

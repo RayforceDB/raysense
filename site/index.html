@@ -233,7 +233,7 @@ trend             samples=2 score_delta=0 dimension_drift=stable</code></pre>
     <div class="section-eyebrow">AGENT INTEGRATION</div>
     <h2>MCP server for any AI coding agent.</h2>
     <p class="section-lead">
-      Raysense ships as a Claude Code plugin and as a stdio MCP server compatible with any client that speaks the Model Context Protocol. Install the plugin and the agent gets four phase-scoped skills it can pick up at the right moments in its edit cycle. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
+      Raysense ships as a Claude Code plugin and as a stdio MCP server compatible with any client that speaks the Model Context Protocol. Install the plugin and the agent gets five skills covering the edit loop: scan and baseline at session start, blast radius before edits, regression diff after, audits on demand, and a Rayfall query skill for any question the typed tools do not already answer. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
     </p>
 
     <div class="code-block code-block-wide">
@@ -263,11 +263,57 @@ trend             samples=2 score_delta=0 dimension_drift=stable</code></pre>
         <h3>Audit</h3>
         <p>On request. Architecture, DSM, evolution, test gaps.</p>
       </div>
+      <div class="phase-card">
+        <div class="phase-step">5</div>
+        <h3>Query</h3>
+        <p>Anytime. Custom Rayfall slices over the saved baseline.</p>
+      </div>
     </div>
   </div>
 </section>
 
-<section class="section">
+<section id="query" class="section">
+  <div class="container">
+    <div class="section-eyebrow">QUERY + POLICY</div>
+    <h2>Architectural rules as code, not config.</h2>
+    <p class="section-lead">
+      Every saved baseline is a queryable columnar database. Agents and humans run Rayfall expressions over the call graph, the import graph, ownership history, and change coupling - select queries for filters and aggregates, <code>.graph.*</code> algorithms for centrality and reachability (PageRank, Louvain, topsort, shortest-path, betweenness), Datalog rules with transitive closure for declarative reachability. Drop the same expression into a <code>.rfl</code> file under <code>.raysense/policies/</code> and it becomes a CI gate. No vendored YAML schema, no plugin SDK to learn - rules ship as code-reviewable files alongside the codebase they govern.
+    </p>
+
+    <div class="code-block code-block-wide">
+      <div class="code-block-head">.raysense/policies/no-huge-files.rfl</div>
+<pre><code><span class="hl-cmt">;; Files over 2000 lines block the merge.</span>
+<span class="hl-cmt">;; Result table columns: severity, code, path, message.</span>
+(select {severity: "error"
+         code:     "huge-file"
+         path:     path
+         message:  "file exceeds 2000 lines, split before merging"
+         from:     files
+         where:    (&gt; lines 2000)})</code></pre>
+    </div>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3>Ad-hoc Rayfall queries</h3>
+        <p>Agents call <code>raysense_baseline_query</code> with a Rayfall expression. The named baseline table is bound as <code>t</code> and the result returns as JSON. Three modes: select for filter/project/aggregate, <code>.graph.*</code> for centrality and shortest-path, Datalog for transitive reachability that mirrors blast-radius in two lines.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Pinned policies</h3>
+        <p><code>raysense policy check</code> walks <code>.raysense/policies/*.rfl</code>, evaluates each, returns findings in the same envelope as built-in rules. Exit code 0 for pass, 1 for any policy that failed to evaluate, 2 for any error-severity finding. Wire it into a pre-commit hook or a CI gate without touching raysense's release cadence.</p>
+      </div>
+      <div class="feature-card">
+        <h3>One vocabulary, two surfaces</h3>
+        <p>An <code>.rfl</code> policy and an interactive query reference the same baseline tables - <code>files</code>, <code>module_edges</code>, <code>change_coupling</code>, <code>file_ownership</code>, <code>call_edges</code> - because there is only one substrate. Promote a one-off query into a committed rule by renaming the file.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Composable across history</h3>
+        <p>The baseline already carries change-coupling, file-ages, ownership, and rule-violation tables alongside the structural ones. Cross-time queries like "files tightly coupled in the last 60 days that sit on cycles and changed without test edits" stay one Rayfall expression, not three tools.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-alt">
   <div class="container">
     <div class="section-eyebrow">CAPABILITIES</div>
     <h2>Beyond the score.</h2>

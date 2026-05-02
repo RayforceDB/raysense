@@ -1,0 +1,14 @@
+;; Policy: bus-factor risk on long-lived files.
+;;
+;; Files with bus_factor == 1 (one author owns >=50% of commits) plus
+;; non-trivial history (>=5 commits) are a maintenance liability:
+;; if that author leaves, knowledge about the file leaves with them.
+;;
+;; Demonstrates the `and` predicate over a single baseline table.
+
+(select {severity: "warning"
+         code:     "bus-factor-1"
+         path:     path
+         message:  "single owner controls a file with non-trivial history; spread reviews / pair on changes"
+         from:     file_ownership
+         where:    (and (== bus_factor 1) (>= total_commits 5))})
