@@ -67,6 +67,7 @@ unsafe extern "C" {
 
     pub fn ray_table_new(ncols: i64) -> *mut ray_t;
     pub fn ray_table_add_col(tbl: *mut ray_t, name_id: i64, col_vec: *mut ray_t) -> *mut ray_t;
+    pub fn ray_table_get_col(tbl: *mut ray_t, name_id: i64) -> *mut ray_t;
     pub fn ray_table_get_col_idx(tbl: *mut ray_t, idx: i64) -> *mut ray_t;
     pub fn ray_table_col_name(tbl: *mut ray_t, idx: i64) -> i64;
     pub fn ray_table_ncols(tbl: *mut ray_t) -> i64;
@@ -78,6 +79,17 @@ unsafe extern "C" {
         sym_path: *const c_char,
     ) -> ray_err_t;
     pub fn ray_read_splayed(dir: *const c_char, sym_path: *const c_char) -> *mut ray_t;
+
+    pub fn ray_env_set(sym_id: i64, val: *mut ray_t) -> ray_err_t;
+
+    pub fn ray_runtime_create_with_sym(sym_path: *const c_char) -> *mut ray_runtime_t;
+    pub fn ray_runtime_destroy(rt: *mut ray_runtime_t);
+    pub fn ray_eval_str(source: *const c_char) -> *mut ray_t;
+}
+
+#[repr(C)]
+pub struct ray_runtime_t {
+    _opaque: [u8; 0],
 }
 
 pub type ray_err_t = c_int;

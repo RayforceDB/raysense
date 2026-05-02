@@ -266,6 +266,14 @@ enum BaselineCommand {
         #[arg(long)]
         json: bool,
     },
+    Query {
+        table: String,
+        rayfall: String,
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -456,6 +464,27 @@ fn run_advanced(command: Command) -> Result<()> {
                 let rows = crate::memory::query_baseline_table(&tables_dir, &table, query)
                     .with_context(|| {
                         format!("failed to read baseline table {}", tables_dir.display())
+                    })?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                } else {
+                    print_baseline_rows(&rows);
+                }
+            }
+            BaselineCommand::Query {
+                table,
+                rayfall,
+                baseline,
+                json,
+            } => {
+                let baseline = baseline.unwrap_or_else(default_baseline_dir);
+                let tables_dir = baseline.join("tables");
+                let rows = crate::memory::query_with_rayfall(&tables_dir, &table, &rayfall)
+                    .with_context(|| {
+                        format!(
+                            "failed to evaluate Rayfall against {}",
+                            tables_dir.display()
+                        )
                     })?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&rows)?);

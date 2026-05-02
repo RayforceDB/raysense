@@ -24,11 +24,12 @@
 use crate::{compute_health_with_config, HealthSummary, RaysenseConfig, ScanReport};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::ptr::NonNull;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -82,6 +83,12 @@ pub enum MemoryError {
     SchemaMismatch { found: i64, expected: i64 },
     #[error("baseline meta table is malformed: {reason}")]
     MetaTableMalformed { reason: String },
+    #[error("rayforce runtime initialization failed")]
+    RuntimeInit,
+    #[error("Rayfall eval failed: {code}: {detail}")]
+    RayfallEval { code: String, detail: String },
+    #[error("Rayfall result is not a table (type {type_tag}); expected RAY_TABLE")]
+    RayfallResultNotTable { type_tag: i8 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -441,6 +448,90 @@ pub fn query_baseline_table(
     }
     let table = read_table_object(dir, name)?;
     table_rows(name, table.as_ptr(), query)
+}
+
+/// Evaluate a Rayfall expression against a saved baseline table.
+///
+/// The named baseline table is loaded from `dir`, bound to the Rayfall
+/// symbol `t`, and `expr` is evaluated against the global env. The result
+/// must itself be a `RAY_TABLE`; scalar / vector / atom returns are not
+/// supported in this slice (wrap with `select` to project columns into a
+/// table).  Schema is verified against `SCHEMA_VERSION` first; mismatches
+/// surface as `MemoryError::SchemaMismatch` before any eval runs.
+///
+/// Bind name is fixed at `t` rather than parameterized to keep the surface
+/// small; agents can rename via `(set foo t)` inside `expr` if needed.
+pub fn query_with_rayfall(
+    dir: impl AsRef<Path>,
+    name: &str,
+    expr: &str,
+) -> Result<BaselineTableRows, MemoryError> {
+    ensure_runtime()?;
+    validate_table_name(name)?;
+    let dir = dir.as_ref();
+    if name != "meta" {
+        verify_baseline_schema(dir)?;
+    }
+    if !dir.join(name).is_dir() {
+        return Err(MemoryError::TableNotFound(name.to_string()));
+    }
+
+    let table = read_table_object(dir, name)?;
+
+    let bind_name = CString::new("t")?;
+    let bind_id = unsafe { crate::sys::ray_sym_intern(bind_name.as_ptr(), 1) };
+    let set_err = unsafe { crate::sys::ray_env_set(bind_id, table.as_ptr()) };
+    if set_err != crate::sys::RAY_OK {
+        return Err(MemoryError::RayfallEval {
+            code: format!("env_set={set_err}"),
+            detail: "failed to bind baseline table to symbol `t`".to_string(),
+        });
+    }
+
+    let source = CString::new(expr)?;
+    let raw_result = unsafe { crate::sys::ray_eval_str(source.as_ptr()) };
+
+    if raw_result.is_null() {
+        // null is rayforce's void / null result -- represent as an empty rowset.
+        return Ok(BaselineTableRows {
+            name: name.to_string(),
+            columns: Vec::new(),
+            rows: Vec::new(),
+            offset: 0,
+            limit: 0,
+            total_rows: 0,
+            matched_rows: 0,
+        });
+    }
+
+    let result = RayObject::new(raw_result, "rayfall result")?;
+
+    let result_type = unsafe { (*result.as_ptr()).type_ };
+    if result_type == crate::sys::RAY_ERROR {
+        let code = unsafe {
+            let p = crate::sys::ray_err_code(result.as_ptr());
+            if p.is_null() {
+                "unknown".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        return Err(MemoryError::RayfallEval {
+            code,
+            detail: expr.to_string(),
+        });
+    }
+    if result_type != crate::sys::RAY_TABLE {
+        return Err(MemoryError::RayfallResultNotTable {
+            type_tag: result_type,
+        });
+    }
+
+    table_rows(
+        name,
+        result.as_ptr(),
+        BaselineTableQuery::page(0, usize::MAX),
+    )
 }
 
 fn validate_table_name(name: &str) -> Result<(), MemoryError> {
@@ -841,11 +932,31 @@ impl Drop for RayObject {
 }
 
 fn init_symbols() -> Result<(), MemoryError> {
-    let err = unsafe { crate::sys::ray_sym_init() };
-    if err == crate::sys::RAY_OK {
-        Ok(())
+    // ensure_runtime is a strict superset (heap + sym + lang + env + builtins).
+    // Routing through it from the existing init_symbols call sites means the
+    // Rayfall eval path inside query_with_rayfall always finds a fully-staged
+    // runtime, regardless of which entry point reached rayforce first.
+    ensure_runtime()
+}
+
+/// Process-lifetime rayforce runtime. Stored as a raw pointer cast to usize so
+/// it fits in `OnceLock`; 0 marks an init failure that must be reported on
+/// every subsequent call.  Never destroyed: a rayforce runtime is a singleton
+/// that owns global state (heap + sym + env + builtins), and tearing it down
+/// mid-process would invalidate every live `ray_t*` raysense holds.  Process
+/// exit cleans up.
+static RUNTIME: OnceLock<usize> = OnceLock::new();
+
+fn ensure_runtime() -> Result<(), MemoryError> {
+    let ptr =
+        RUNTIME.get_or_init(
+            || unsafe { crate::sys::ray_runtime_create_with_sym(std::ptr::null()) }
+                as *mut crate::sys::ray_runtime_t as usize,
+        );
+    if *ptr == 0 {
+        Err(MemoryError::RuntimeInit)
     } else {
-        Err(MemoryError::SymbolInit(err))
+        Ok(())
     }
 }
 
@@ -2266,6 +2377,43 @@ mod tests {
 
         assert_eq!(summary.meta.rows, 1);
         assert_eq!(summary.meta.columns, 7);
+    }
+
+    #[test]
+    fn rayfall_query_returns_full_table_when_evaluating_bind_name() {
+        let dir = temp_tables_dir("rayfall-bind");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        // The simplest possible Rayfall expression: just reference the bound
+        // symbol `t`.  Confirms the runtime is up, the table was bound via
+        // ray_env_set, and ray_eval_str round-trips it back unchanged.
+        let rows = query_with_rayfall(&dir, "files", "t").unwrap();
+
+        assert_eq!(rows.matched_rows, report.files.len());
+        assert!(rows.columns.contains(&"path".to_string()));
+        assert!(rows.columns.contains(&"lines".to_string()));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rayfall_query_surfaces_parse_errors_with_a_typed_error() {
+        let dir = temp_tables_dir("rayfall-parse-err");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        // Deliberately malformed Rayfall: an unterminated list literal.
+        let err = query_with_rayfall(&dir, "files", "(select").unwrap_err();
+        assert!(
+            matches!(err, MemoryError::RayfallEval { .. }),
+            "expected RayfallEval, got {:?}",
+            err,
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

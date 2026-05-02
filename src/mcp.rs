@@ -383,6 +383,11 @@ fn tools_list() -> Value {
                 "name": "raysense_baseline_table_read",
                 "description": "Read rows from a Rayforce splayed table saved in a Raysense baseline.",
                 "inputSchema": baseline_table_schema(true)
+            },
+            {
+                "name": "raysense_baseline_query",
+                "description": "Evaluate a Rayfall expression against a saved baseline table. The named table is bound to the symbol `t` and the expression must return a RAY_TABLE.",
+                "inputSchema": baseline_query_schema()
             }
         ]
     })
@@ -445,6 +450,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_baseline_diff" => baseline_diff_tool(&args),
         "raysense_baseline_tables" => baseline_tables_tool(&args),
         "raysense_baseline_table_read" => baseline_table_read_tool(&args),
+        "raysense_baseline_query" => baseline_query_tool(&args),
         _ => Err(anyhow!("unknown tool {name}")),
     }
 }
@@ -1502,6 +1508,36 @@ fn baseline_table_read_tool(args: &Value) -> Result<Value> {
     }))
 }
 
+fn baseline_query_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let baseline_dir = baseline_dir_arg(args, &root)?;
+    let tables_dir = baseline_dir.join("tables");
+    let table = args
+        .get("table")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("table must be a string"))?;
+    let rayfall = args
+        .get("rayfall")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("rayfall must be a string"))?;
+
+    let table_rows =
+        crate::memory::query_with_rayfall(&tables_dir, table, rayfall).with_context(|| {
+            format!(
+                "failed to evaluate Rayfall against {}",
+                tables_dir.display()
+            )
+        })?;
+
+    Ok(json!({
+        "baseline_path": baseline_dir,
+        "tables_path": tables_dir,
+        "bind": "t",
+        "rayfall": rayfall,
+        "table": table_rows
+    }))
+}
+
 fn health_from_args(args: &Value) -> Result<(PathBuf, crate::HealthSummary)> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
@@ -2335,6 +2371,19 @@ fn baseline_table_schema(require_table: bool) -> Value {
         schema["required"] = json!(["table"]);
     }
     schema
+}
+
+fn baseline_query_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "baseline_path": {"type": "string", "description": "Baseline directory. Defaults to <path>/.raysense/baseline."},
+            "table": {"type": "string", "description": "Baseline table to bind as the symbol `t` before evaluation."},
+            "rayfall": {"type": "string", "description": "Rayfall expression to evaluate. The named table is bound as `t`. The expression must return a RAY_TABLE; wrap with select to project columns when querying scalars."}
+        },
+        "required": ["table", "rayfall"]
+    })
 }
 
 fn limited<T: serde::Serialize>(items: &[T], limit: usize) -> Vec<Value> {
