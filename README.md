@@ -27,16 +27,14 @@
   </a>
 </p>
 
-# Raysense
-
-[![Crates.io](https://img.shields.io/crates/v/raysense.svg?logo=rust&color=orange)](https://crates.io/crates/raysense)
-[![Downloads](https://img.shields.io/crates/d/raysense.svg?color=brightgreen)](https://crates.io/crates/raysense)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/RayforceDB/raysense/actions/workflows/ci.yml/badge.svg)](https://github.com/RayforceDB/raysense/actions/workflows/ci.yml)
-[![MCP](https://img.shields.io/badge/MCP-ready-7c3aed)](#agent-integration)
-[![Languages](https://img.shields.io/badge/languages-69-1f6feb)](https://sense.rayforcedb.com/#languages)
-
-**A structural X-ray for the codebases AI agents are writing.**
+<p align="center">
+  <a href="https://crates.io/crates/raysense"><img src="https://img.shields.io/crates/v/raysense.svg?logo=rust&color=orange" alt="Crates.io"/></a>
+  <a href="https://crates.io/crates/raysense"><img src="https://img.shields.io/crates/d/raysense.svg?color=brightgreen" alt="Downloads"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
+  <a href="https://github.com/RayforceDB/raysense/actions/workflows/ci.yml"><img src="https://github.com/RayforceDB/raysense/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="#agent-integration"><img src="https://img.shields.io/badge/MCP-ready-7c3aed" alt="MCP ready"/></a>
+  <a href="https://sense.rayforcedb.com/#languages"><img src="https://img.shields.io/badge/languages-69-1f6feb" alt="69 languages"/></a>
+</p>
 
 Raysense reads your repository as a graph: who imports who, where the
 cycles are, which files are now load-bearing, what tends to change
