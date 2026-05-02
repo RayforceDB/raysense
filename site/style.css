@@ -432,11 +432,14 @@ em { font-style: normal; color: var(--accent); font-weight: 600; }
   line-height: 1.7;
   color: var(--text);
 }
-.hl-cmt { color: var(--text-dim); }
-.hl-kw  { color: var(--accent);        font-weight: 500; }
-.hl-str { color: #f0c994; }
-.hl-sym { color: var(--accent-orange); }
-.hl-num { color: var(--accent-blue);   font-weight: 500; }
+.hl-cmt  { color: var(--text-dim); }
+.hl-kw   { color: var(--accent);        font-weight: 500; }
+.hl-str  { color: #f0c994; }
+.hl-sym  { color: var(--accent-orange); }
+.hl-num  { color: var(--accent-blue);   font-weight: 500; }
+.hl-good { color: #5eead4;              font-weight: 600; }
+.hl-bad  { color: #ef6f6f;              font-weight: 600; }
+.hl-key  { color: var(--text-mute); }
 
 /* ───────── phase grid (for-agents) ───────── */
 .phase-grid {
