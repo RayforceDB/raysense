@@ -46,7 +46,12 @@ use thiserror::Error;
 /// - v2: low-cardinality columns (`language`, `module`, `kind`,
 ///   `resolution`, `severity`, `top_author`) moved to dict-encoded
 ///   `RAY_SYM` for storage and load-time wins on large repos.
-pub const SCHEMA_VERSION: i64 = 2;
+/// - v3: architecture analysis materialized as first-class baseline
+///   tables (`arch_cycles`, `arch_unstable`, `arch_foundations`,
+///   `arch_levels`, `arch_distance`, `arch_violations`) so agents
+///   query architectural detail through Rayfall instead of by
+///   jq-piping a JSON dump from the typed MCP tools.
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -149,6 +154,12 @@ pub struct MemorySummary {
     pub file_ages: TableSummary,
     pub change_coupling: TableSummary,
     pub inheritance: TableSummary,
+    pub arch_cycles: TableSummary,
+    pub arch_unstable: TableSummary,
+    pub arch_foundations: TableSummary,
+    pub arch_levels: TableSummary,
+    pub arch_distance: TableSummary,
+    pub arch_violations: TableSummary,
     pub meta: TableSummary,
 }
 
@@ -253,6 +264,12 @@ pub struct RayMemory {
     file_ages: RayObject,
     change_coupling: RayObject,
     inheritance: RayObject,
+    arch_cycles: RayObject,
+    arch_unstable: RayObject,
+    arch_foundations: RayObject,
+    arch_levels: RayObject,
+    arch_distance: RayObject,
+    arch_violations: RayObject,
     meta: RayObject,
 }
 
@@ -285,10 +302,22 @@ impl RayMemory {
         let file_ages = build_file_ages_table(&health)?;
         let change_coupling = build_change_coupling_table(&health)?;
         let inheritance = build_inheritance_table(report)?;
+        let arch_cycles = build_arch_cycles_table(&health)?;
+        let arch_unstable = build_arch_unstable_table(&health)?;
+        let arch_foundations = build_arch_foundations_table(&health)?;
+        let arch_levels = build_arch_levels_table(&health)?;
+        let arch_distance = build_arch_distance_table(&health)?;
+        let arch_violations = build_arch_violations_table(&health)?;
 
         let meta = build_meta_table(
             report,
             &[
+                ("arch_cycles", arch_cycles.as_ptr()),
+                ("arch_distance", arch_distance.as_ptr()),
+                ("arch_foundations", arch_foundations.as_ptr()),
+                ("arch_levels", arch_levels.as_ptr()),
+                ("arch_unstable", arch_unstable.as_ptr()),
+                ("arch_violations", arch_violations.as_ptr()),
                 ("call_edges", call_edges.as_ptr()),
                 ("calls", calls.as_ptr()),
                 ("change_coupling", change_coupling.as_ptr()),
@@ -327,6 +356,12 @@ impl RayMemory {
             file_ages,
             change_coupling,
             inheritance,
+            arch_cycles,
+            arch_unstable,
+            arch_foundations,
+            arch_levels,
+            arch_distance,
+            arch_violations,
             meta,
         })
     }
@@ -350,6 +385,12 @@ impl RayMemory {
             file_ages: table_summary(self.file_ages.as_ptr()),
             change_coupling: table_summary(self.change_coupling.as_ptr()),
             inheritance: table_summary(self.inheritance.as_ptr()),
+            arch_cycles: table_summary(self.arch_cycles.as_ptr()),
+            arch_unstable: table_summary(self.arch_unstable.as_ptr()),
+            arch_foundations: table_summary(self.arch_foundations.as_ptr()),
+            arch_levels: table_summary(self.arch_levels.as_ptr()),
+            arch_distance: table_summary(self.arch_distance.as_ptr()),
+            arch_violations: table_summary(self.arch_violations.as_ptr()),
             meta: table_summary(self.meta.as_ptr()),
         }
     }
@@ -394,6 +435,22 @@ impl RayMemory {
             &sym_path,
         )?;
         self.save_table("inheritance", self.inheritance.as_ptr(), dir, &sym_path)?;
+        self.save_table("arch_cycles", self.arch_cycles.as_ptr(), dir, &sym_path)?;
+        self.save_table("arch_unstable", self.arch_unstable.as_ptr(), dir, &sym_path)?;
+        self.save_table(
+            "arch_foundations",
+            self.arch_foundations.as_ptr(),
+            dir,
+            &sym_path,
+        )?;
+        self.save_table("arch_levels", self.arch_levels.as_ptr(), dir, &sym_path)?;
+        self.save_table("arch_distance", self.arch_distance.as_ptr(), dir, &sym_path)?;
+        self.save_table(
+            "arch_violations",
+            self.arch_violations.as_ptr(),
+            dir,
+            &sym_path,
+        )?;
         self.save_table("meta", self.meta.as_ptr(), dir, &sym_path)?;
         Ok(())
     }
@@ -2399,6 +2456,145 @@ fn build_changed_files_table(health: &HealthSummary) -> Result<RayObject, Memory
     )
 }
 
+/// One row per (cycle, module) pair.  `cycle_id` groups members of the
+/// same SCC; `scc_size` repeats per row so a `(select {from: t where:
+/// (> scc_size 3)})` style query can find multi-module cycles directly.
+fn build_arch_cycles_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let mut cycle_ids: Vec<i64> = Vec::new();
+    let mut modules: Vec<String> = Vec::new();
+    let mut sizes: Vec<i64> = Vec::new();
+    for (idx, scc) in health.metrics.architecture.cycles.iter().enumerate() {
+        let size = scc.len() as i64;
+        for module in scc {
+            cycle_ids.push(idx as i64);
+            modules.push(module.clone());
+            sizes.push(size);
+        }
+    }
+    let total = cycle_ids.len();
+    table(
+        3,
+        [
+            ("cycle_id", i64_vec(total, cycle_ids)?),
+            ("module", sym_vec(total, modules)?),
+            ("scc_size", i64_vec(total, sizes)?),
+        ],
+    )
+}
+
+fn build_arch_unstable_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    build_stability_table(&health.metrics.architecture.unstable_modules)
+}
+
+fn build_arch_foundations_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    build_stability_table(&health.metrics.architecture.stable_foundations)
+}
+
+fn build_stability_table(rows: &[crate::ModuleStabilityMetric]) -> Result<RayObject, MemoryError> {
+    let n = rows.len();
+    table(
+        4,
+        [
+            ("module", sym_vec(n, rows.iter().map(|m| m.module.clone()))?),
+            ("fan_in", i64_vec(n, rows.iter().map(|m| m.fan_in as i64))?),
+            (
+                "fan_out",
+                i64_vec(n, rows.iter().map(|m| m.fan_out as i64))?,
+            ),
+            (
+                "instability",
+                f64_vec(n, rows.iter().map(|m| m.instability))?,
+            ),
+        ],
+    )
+}
+
+fn build_arch_levels_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let pairs: Vec<(String, i64)> = health
+        .metrics
+        .architecture
+        .levels
+        .iter()
+        .map(|(module, level)| (module.clone(), *level as i64))
+        .collect();
+    let n = pairs.len();
+    table(
+        2,
+        [
+            ("module", sym_vec(n, pairs.iter().map(|p| p.0.clone()))?),
+            ("level", i64_vec(n, pairs.iter().map(|p| p.1))?),
+        ],
+    )
+}
+
+fn build_arch_distance_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = &health.metrics.architecture.distance_metrics;
+    let n = rows.len();
+    table(
+        8,
+        [
+            ("module", sym_vec(n, rows.iter().map(|m| m.module.clone()))?),
+            (
+                "abstractness",
+                f64_vec(n, rows.iter().map(|m| m.abstractness))?,
+            ),
+            (
+                "instability",
+                f64_vec(n, rows.iter().map(|m| m.instability))?,
+            ),
+            ("distance", f64_vec(n, rows.iter().map(|m| m.distance))?),
+            (
+                "abstract_count",
+                i64_vec(n, rows.iter().map(|m| m.abstract_count as i64))?,
+            ),
+            (
+                "total_types",
+                i64_vec(n, rows.iter().map(|m| m.total_types as i64))?,
+            ),
+            ("fan_in", i64_vec(n, rows.iter().map(|m| m.fan_in as i64))?),
+            (
+                "fan_out",
+                i64_vec(n, rows.iter().map(|m| m.fan_out as i64))?,
+            ),
+        ],
+    )
+}
+
+fn build_arch_violations_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
+    let rows = &health.metrics.architecture.upward_violations;
+    let n = rows.len();
+    table(
+        7,
+        [
+            (
+                "from_file_id",
+                i64_vec(n, rows.iter().map(|v| v.from_file_id as i64))?,
+            ),
+            (
+                "from_path",
+                str_vec(n, rows.iter().map(|v| v.from_path.clone()))?,
+            ),
+            (
+                "from_level",
+                i64_vec(n, rows.iter().map(|v| v.from_level as i64))?,
+            ),
+            (
+                "to_file_id",
+                i64_vec(n, rows.iter().map(|v| v.to_file_id as i64))?,
+            ),
+            (
+                "to_path",
+                str_vec(n, rows.iter().map(|v| v.to_path.clone()))?,
+            ),
+            (
+                "to_level",
+                i64_vec(n, rows.iter().map(|v| v.to_level as i64))?,
+            ),
+            ("reason", sym_vec(n, rows.iter().map(|v| v.reason.clone()))?),
+        ],
+    )
+}
+
 /// Build the single-row `meta` table that stamps schema version, raysense and
 /// rayforce versions, repo SHA, snapshot id, scan time, and a digest over every
 /// other table's column shape. Readers compare the digest's `schema_version`
@@ -2555,6 +2751,28 @@ fn i64_vec(
             )
         };
         vec = RayObject::new(next, "i64 vector append")?;
+    }
+
+    Ok(vec)
+}
+
+fn f64_vec(
+    capacity: usize,
+    values: impl IntoIterator<Item = f64>,
+) -> Result<RayObject, MemoryError> {
+    let mut vec = RayObject::new(
+        unsafe { crate::sys::ray_vec_new(crate::sys::RAY_F64, capacity as i64) },
+        "f64 vector",
+    )?;
+
+    for value in values {
+        let next = unsafe {
+            crate::sys::ray_vec_append(
+                vec.into_raw(),
+                (&value as *const f64).cast::<std::ffi::c_void>(),
+            )
+        };
+        vec = RayObject::new(next, "f64 vector append")?;
     }
 
     Ok(vec)

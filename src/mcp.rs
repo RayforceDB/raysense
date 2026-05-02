@@ -2282,34 +2282,41 @@ const SUMMARY_TOP_N: usize = 5;
 
 fn explore_hint_architecture() -> Value {
     json!({
-        "hint": "Pass detail: true for the full surface, or query baseline tables directly with raysense_baseline_query for arbitrary slices.",
+        "hint": "Architecture analysis is materialized as queryable tables in v0.6.0+ baselines.  Reach for raysense_baseline_query (or pass detail: true) instead of jq-piping a JSON dump.",
         "tables": [
+            "arch_cycles",
+            "arch_unstable",
+            "arch_foundations",
+            "arch_levels",
+            "arch_distance",
+            "arch_violations",
             "module_edges",
             "hotspots",
-            "rules",
-            "temporal_hotspots",
-            "files",
-            "imports"
+            "rules"
         ],
         "examples": [
-            "(select {from: t where: (> edges 5) desc: edges})",
-            "(.graph.pagerank (.graph.build t (quote caller_function) (quote callee_function)) 30 0.85)"
+            "(select {from: t where: (> scc_size 1)})            ;; multi-module cycles, against arch_cycles",
+            "(select {from: t desc: instability take: 10})       ;; against arch_unstable",
+            "(select {from: t where: (> distance 0.7)})          ;; modules off the main sequence, against arch_distance"
         ]
     })
 }
 
 fn explore_hint_dsm() -> Value {
     json!({
-        "hint": "Pass detail: true for the full DSM surface (level assignments, instability, full distance vectors), or query baseline tables directly with raysense_baseline_query.",
+        "hint": "DSM detail (per-module instability, distance, level assignments, every upward violation) is queryable as proper tables in v0.6.0+ baselines.  Reach for raysense_baseline_query for arbitrary slices.",
         "tables": [
-            "module_edges",
-            "hotspots",
-            "rules",
-            "files"
+            "arch_levels",
+            "arch_distance",
+            "arch_violations",
+            "arch_unstable",
+            "arch_foundations",
+            "module_edges"
         ],
         "examples": [
-            "(select {from: t desc: edges take: 20})",
-            "(select {from: t where: (and (> fan_in 10) (> fan_out 10))})"
+            "(select {from: t desc: level})                       ;; deepest layers first, against arch_levels",
+            "(select {from: t where: (== reason \"forbidden\")})  ;; against arch_violations",
+            "(select {from: t desc: edges take: 20})              ;; strongest module-to-module edges"
         ]
     })
 }

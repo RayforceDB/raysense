@@ -49,8 +49,8 @@ pub use health::{
     ComplexityMetrics, ConfigError, DependencyViolationMetric, DuplicateFunctionGroup,
     FileCouplingMetric, FileHotspot, FileInstabilityMetric, ForbiddenEdgeConfig,
     FunctionComplexityMetric, HealthSummary, LanguagePluginConfig, LayerConfig,
-    ModuleDistanceMetric, RaysenseConfig, Remediation, ResolutionBreakdown, RuleConfig, ScanConfig,
-    ScoreConfig, TestGapCandidate, TestGapMetrics, TrendMetrics,
+    ModuleDistanceMetric, ModuleStabilityMetric, RaysenseConfig, Remediation, ResolutionBreakdown,
+    RuleConfig, ScanConfig, ScoreConfig, TestGapCandidate, TestGapMetrics, TrendMetrics,
 };
 pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;
