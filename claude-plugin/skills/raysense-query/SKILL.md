@@ -295,6 +295,77 @@ answers.
   (count (query Db (find ?b) (where (reaches 0 ?b)))))
 ```
 
+## Importing external CSVs
+
+Bring coverage data, lint counts, runtime traces, or pre-computed
+embeddings into the same query substrate as the structural baseline.
+The imported table sits alongside the built-in ones and is reachable
+from every surface that already speaks baseline tables.
+
+```text
+$ raysense baseline import-csv coverage ./coverage.csv
+imported ./coverage.csv -> .raysense/baseline/tables/coverage
+
+$ raysense baseline query coverage \
+    '(select {from: t where: (< covered_pct 50)})'
+table coverage rows=2 ...
+```
+
+The MCP equivalent is `raysense_baseline_import_csv` with `name` and
+`csv_path` arguments.  First row of the CSV is treated as headers;
+column types are inferred.  Joins against the built-in tables work
+out of the box because the import shares the baseline's symbol
+table:
+
+```rfl
+;; Files where coverage < 50% AND that sit on temporal hotspots.
+;; coverage was imported via raysense baseline import-csv;
+;; temporal_hotspots is a built-in table.  Both reference `path`
+;; with the same interned sym, so cross-table predicates work.
+(select {from: temporal_hotspots
+         where: (in path
+                    (at (select {from: coverage where: (< covered_pct 50)})
+                        'path))
+         desc: risk_score})
+```
+
+## Vector search and similarity
+
+Rayfall ships built-in vector primitives.  Pair them with CSV import
+to bring embeddings into the baseline -- the `embeddings` table
+becomes queryable like any other.
+
+```rfl
+;; 1. Direct similarity between two vectors.
+(cos-dist [0.1 0.2 0.3 0.4]
+          [0.15 0.18 0.32 0.41])
+;; -> 0.0046 (small distance == similar)
+
+;; 2. K-nearest-neighbors over a list of candidate vectors.
+;; Returns a table with columns _rowid and _dist, sorted ascending.
+(knn (list [0.1 0.2 0.3 0.4]
+           [0.15 0.18 0.32 0.41]
+           [0.9 0.1 0.05 0.02]
+           [0.92 0.08 0.07 0.01])
+     [0.12 0.19 0.31 0.4]
+     2)
+
+;; 3. HNSW index for sub-linear ANN over large vector sets.
+;; Build once, query many.  Result columns: _rowid, _dist.
+(set Idx (hnsw-build V))
+(ann Idx [0.12 0.19 0.31 0.4] 2)
+
+;; 4. Optional explicit metric ('cosine, 'l2, 'ip).  knn defaults to
+;; cosine; pass the symbol to switch.
+(knn V query 5 (quote l2))
+```
+
+Use `cos-dist` / `l2-dist` / `inner-prod` / `norm` for direct
+arithmetic, `knn` for brute-force scans (correct, slow on large
+sets), `hnsw-build` + `ann` for sub-linear queries on >10k vectors,
+`hnsw-save` / `hnsw-load` to persist an index alongside the
+baseline.
+
 ## Result handling
 
 The query bridge promotes any non-error rayforce result into a

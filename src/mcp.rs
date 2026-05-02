@@ -393,6 +393,11 @@ fn tools_list() -> Value {
                 "name": "raysense_baseline_query",
                 "description": "Evaluate a Rayfall expression against a saved baseline table. The named table is bound to the symbol `t`; the expression must return a RAY_TABLE. Canonical form: (select {from: t where: <pred>}). Operators are prefix and arity-strict, e.g. (> lines 500), (and p q), (== language \"rust\"). For schema and worked examples, load the raysense-query skill bundled with this plugin.",
                 "inputSchema": baseline_query_schema()
+            },
+            {
+                "name": "raysense_baseline_import_csv",
+                "description": "Import an external CSV as a new baseline table.  First row is treated as headers; column types are inferred.  The new table sits alongside files / functions / call_edges / ... and is reachable from raysense_baseline_query, raysense_baseline_table_read, and policy packs.  Use this to bring coverage data, lint counts, runtime traces, or embeddings into the same query substrate as the structural baseline.",
+                "inputSchema": baseline_import_csv_schema()
             }
         ]
     })
@@ -457,6 +462,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_baseline_tables" => baseline_tables_tool(&args),
         "raysense_baseline_table_read" => baseline_table_read_tool(&args),
         "raysense_baseline_query" => baseline_query_tool(&args),
+        "raysense_baseline_import_csv" => baseline_import_csv_tool(&args),
         _ => Err(anyhow!("unknown tool {name}")),
     }
 }
@@ -1588,6 +1594,37 @@ fn baseline_query_tool(args: &Value) -> Result<Value> {
     }))
 }
 
+fn baseline_import_csv_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let baseline_dir = baseline_dir_arg(args, &root)?;
+    let tables_dir = baseline_dir.join("tables");
+    let table = args
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("name must be a string"))?;
+    let csv_path = args
+        .get("csv_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("csv_path must be a string"))?;
+
+    crate::memory::import_csv_table(&tables_dir, table, &csv_path).with_context(|| {
+        format!(
+            "failed to import {} as baseline table {}",
+            csv_path.display(),
+            table
+        )
+    })?;
+
+    Ok(json!({
+        "baseline_path": baseline_dir,
+        "tables_path": tables_dir,
+        "table": table,
+        "csv_path": csv_path,
+        "imported_into": tables_dir.join(table),
+    }))
+}
+
 fn health_from_args(args: &Value) -> Result<(PathBuf, crate::HealthSummary)> {
     let root = root_arg(args)?;
     let config = effective_config(args, &root)?;
@@ -2421,6 +2458,19 @@ fn baseline_table_schema(require_table: bool) -> Value {
         schema["required"] = json!(["table"]);
     }
     schema
+}
+
+fn baseline_import_csv_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "baseline_path": {"type": "string", "description": "Baseline directory. Defaults to <path>/.raysense/baseline."},
+            "name": {"type": "string", "description": "Name to register the imported table under (a-z0-9_, no dots)."},
+            "csv_path": {"type": "string", "description": "Absolute or working-directory-relative path to the CSV file. First row is treated as headers; column types are inferred."}
+        },
+        "required": ["name", "csv_path"]
+    })
 }
 
 fn baseline_query_schema() -> Value {

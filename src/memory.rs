@@ -117,6 +117,11 @@ pub enum MemoryError {
         "policy {path} severity {value:?} is not one of info, warning, error (case-insensitive)"
     )]
     PolicySeverity { path: PathBuf, value: String },
+    #[error(
+        "csv import path {path:?} contains characters that would break the Rayfall \
+         interpolation (embedded double-quote or backslash)"
+    )]
+    CsvImportPath { path: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -722,6 +727,94 @@ pub fn policy_exit_code(results: &[PolicyResult]) -> i32 {
         return 2;
     }
     0
+}
+
+/// Read a CSV file and save it as a splayed table alongside the rest of the
+/// baseline. The new table becomes addressable by `table_name` from every
+/// surface that already speaks baseline tables: `raysense baseline table
+/// <name>`, `raysense baseline query <name> ...`, MCP, and policies (which
+/// pre-bind every saved table into the eval env).
+///
+/// The implementation goes through Rayfall (`(.csv.read ...)` plus
+/// `(.db.splayed.set ...)`) rather than direct FFI so that header inference,
+/// type detection, and serialization stay consistent with what users get if
+/// they call those builtins from a query themselves.
+///
+/// Path interpolation: rayforce builds the eval expression by string
+/// concatenation, so paths containing a literal double-quote or backslash
+/// cannot be safely embedded.  Those return `CsvImportPath` rather than
+/// risk a malformed expression.
+pub fn import_csv_table(
+    baseline_dir: impl AsRef<Path>,
+    table_name: &str,
+    csv_path: impl AsRef<Path>,
+) -> Result<(), MemoryError> {
+    ensure_runtime()?;
+    validate_table_name(table_name)?;
+    let baseline_dir = baseline_dir.as_ref();
+    fs::create_dir_all(baseline_dir).map_err(|source| MemoryError::CreateDir {
+        path: baseline_dir.to_path_buf(),
+        source,
+    })?;
+
+    // Load the existing baseline's .sym into the global runtime BEFORE
+    // running the eval.  rayforce's runtime singleton interns column names
+    // through a process-global sym table; without this step, .csv.read would
+    // intern "path" / "lines" / ... at fresh IDs starting from whatever the
+    // runtime currently has, then .db.splayed.set would overwrite the
+    // baseline's existing .sym file with the new ID space, corrupting every
+    // already-saved table whose .d file references the old IDs.
+    // verify_baseline_schema does the right read for us when meta exists;
+    // for a baseline created before the schema-version stamp landed (or for
+    // the first table import into a fresh dir), there is nothing to merge
+    // and the call returns Ok silently.
+    verify_baseline_schema(baseline_dir)?;
+
+    // Resolve to absolute paths before interpolation: relative paths combined
+    // with the runtime's cwd-at-init snapshot can produce a "corrupt" splay
+    // save when the dest dir doesn't yet exist.  canonicalize requires the
+    // path to exist; fall back to the joined-absolute form for the dest dir
+    // (which the splay save creates itself).
+    let csv_path = csv_path.as_ref();
+    let csv_abs = csv_path
+        .canonicalize()
+        .unwrap_or_else(|_| csv_path.to_path_buf());
+    let baseline_abs = baseline_dir
+        .canonicalize()
+        .unwrap_or_else(|_| baseline_dir.to_path_buf());
+    let csv_str = csv_abs.to_string_lossy();
+    let dest_str = baseline_abs.join(table_name).to_string_lossy().into_owned();
+    let sym_str = baseline_abs.join(".sym").to_string_lossy().into_owned();
+    for path in [csv_str.as_ref(), dest_str.as_str(), sym_str.as_str()] {
+        if path.contains('"') || path.contains('\\') {
+            return Err(MemoryError::CsvImportPath {
+                path: path.to_string(),
+            });
+        }
+    }
+
+    let expr = format!(r#"(.db.splayed.set "{dest_str}" (.csv.read "{csv_str}") "{sym_str}")"#,);
+    let csource = CString::new(expr)?;
+    let raw_result = unsafe { crate::sys::ray_eval_str(csource.as_ptr()) };
+    if raw_result.is_null() {
+        return Ok(());
+    }
+    let result = RayObject::new(raw_result, "csv import")?;
+    if unsafe { (*result.as_ptr()).type_ } == crate::sys::RAY_ERROR {
+        let code = unsafe {
+            let p = crate::sys::ray_err_code(result.as_ptr());
+            if p.is_null() {
+                "unknown".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        return Err(MemoryError::RayfallEval {
+            code,
+            detail: format!("csv import {} -> {}", csv_path.display(), table_name),
+        });
+    }
+    Ok(())
 }
 
 /// Evaluate every `.rfl` file in `policies_dir` against the saved baseline
@@ -3043,6 +3136,49 @@ mod tests {
         let result = eval_policy_pack(baseline_dir, &policy_path);
         std::fs::remove_dir_all(&policies_dir).unwrap();
         result
+    }
+
+    #[test]
+    fn csv_import_round_trips_into_a_queryable_table() {
+        let _guard = rayforce_test_guard();
+        let dir = temp_tables_dir("csv-import");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let csv_path = dir.parent().unwrap().join(format!(
+            "{}-coverage.csv",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(
+            &csv_path,
+            "path,covered_pct\nsrc/a.rs,42.0\nsrc/b.rs,87.5\n",
+        )
+        .unwrap();
+
+        import_csv_table(&dir, "coverage", &csv_path).unwrap();
+
+        let rows = query_with_rayfall(
+            &dir,
+            "coverage",
+            "(select {from: t where: (< covered_pct 50)})",
+        )
+        .unwrap();
+
+        assert_eq!(rows.matched_rows, 1);
+        assert_eq!(rows.rows[0]["path"], json!("src/a.rs"));
+        assert_eq!(rows.rows[0]["covered_pct"], json!(42.0));
+
+        // Pre-existing baseline tables remain queryable -- proves the sym
+        // merge at import time did not corrupt the global sym table.
+        let files_count = query_with_rayfall(&dir, "files", "(count t)").unwrap();
+        assert_eq!(
+            files_count.rows[0]["value"],
+            json!(report.files.len() as i64)
+        );
+
+        std::fs::remove_file(csv_path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

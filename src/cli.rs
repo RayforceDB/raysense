@@ -285,6 +285,17 @@ enum BaselineCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Import an external CSV as a baseline table.  The new table joins the
+    /// built-in ones (files, functions, ...) and becomes queryable through
+    /// `baseline query`, `policy check`, and the MCP tools.
+    ImportCsv {
+        /// Name to register the imported table under (a-z0-9_, no dots).
+        name: String,
+        /// Path to the CSV file.  First row is treated as headers.
+        csv: PathBuf,
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -517,6 +528,26 @@ fn run_advanced(command: Command) -> Result<()> {
                 } else {
                     print_baseline_rows(&rows);
                 }
+            }
+            BaselineCommand::ImportCsv {
+                name,
+                csv,
+                baseline,
+            } => {
+                let baseline = baseline.unwrap_or_else(default_baseline_dir);
+                let tables_dir = baseline.join("tables");
+                crate::memory::import_csv_table(&tables_dir, &name, &csv).with_context(|| {
+                    format!(
+                        "failed to import {} as baseline table {}",
+                        csv.display(),
+                        name
+                    )
+                })?;
+                println!(
+                    "imported {} -> {}",
+                    csv.display(),
+                    tables_dir.join(&name).display()
+                );
             }
         },
     }
