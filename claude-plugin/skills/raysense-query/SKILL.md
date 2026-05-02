@@ -63,7 +63,7 @@ once with `t` (no filter) and read the column names off the result.
 
 S-expression, prefix notation, strict arity. The bound symbol is `t`.
 
-```clj
+```rfl
 t                                     ; the whole bound table
 (count t)                             ; row count, scalar -- NOT a table
 (at t 'path)                          ; column vector, NOT a table
@@ -92,14 +92,14 @@ quotes; symbols use a leading apostrophe.
 
 Files over 500 lines, sorted by size:
 
-```clj
+```rfl
 (select {path: path lines: lines from: t
          where: (> lines 500) desc: lines})
 ```
 
 Files where a single author owns more than 80% of commits:
 
-```clj
+```rfl
 ;; against table file_ownership -- div is float divide; % is modulo
 (select {from: t
          where: (> (div top_author_commits total_commits) 0.8)})
@@ -107,7 +107,7 @@ Files where a single author owns more than 80% of commits:
 
 LOC by language, descending:
 
-```clj
+```rfl
 ;; against table files
 (select {loc: (sum lines) files: (count path)
          from: t by: language desc: loc})
@@ -115,7 +115,7 @@ LOC by language, descending:
 
 Top 5 most-changed paths:
 
-```clj
+```rfl
 ;; against table changed_files
 (select {from: t desc: commits take: 5})
 ```
@@ -131,7 +131,7 @@ already integer function ids). For module-level work the columns are
 strings, so wrap with `(.sym ...)` or query `imports`/`call_edges`
 joined back to `files.module` instead.
 
-```clj
+```rfl
 ;; PageRank centrality over the call graph (30 iters, damping 0.85).
 ;; Result columns: _node, _rank.
 (select {from: (.graph.pagerank
@@ -172,7 +172,7 @@ store.  Facts are asserted with `assert-fact`, retracted with
 relations from base facts; recursive rules give you transitive
 closure for free.
 
-```clj
+```rfl
 ;; Treat call_edges as datoms: (caller :calls callee).
 (do
   (set Db (datoms))
@@ -225,7 +225,7 @@ Required result shape: a table with the four columns
 
 Empty result table = policy passed.
 
-```clj
+```rfl
 ;; .raysense/policies/no-huge-files.rfl
 (select {severity: "warning"
          code:     "huge-file"

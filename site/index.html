@@ -284,12 +284,12 @@ trend             samples=2 score_delta=0 dimension_drift=stable</code></pre>
       <div class="code-block-head">.raysense/policies/no-huge-files.rfl</div>
 <pre><code><span class="hl-cmt">;; Files over 2000 lines block the merge.</span>
 <span class="hl-cmt">;; Result table columns: severity, code, path, message.</span>
-(select {severity: "error"
-         code:     "huge-file"
+(<span class="hl-kw">select</span> {severity: <span class="hl-str">"error"</span>
+         code:     <span class="hl-str">"huge-file"</span>
          path:     path
-         message:  "file exceeds 2000 lines, split before merging"
-         from:     files
-         where:    (&gt; lines 2000)})</code></pre>
+         message:  <span class="hl-str">"file exceeds 2000 lines, split before merging"</span>
+         <span class="hl-kw">from</span>:     files
+         <span class="hl-kw">where</span>:    (&gt; lines <span class="hl-num">2000</span>)})</code></pre>
     </div>
 
     <div class="feature-grid">
