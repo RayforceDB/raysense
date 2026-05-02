@@ -114,7 +114,37 @@ unsafe extern "C" {
     pub fn ray_runtime_create_with_sym(sym_path: *const c_char) -> *mut ray_runtime_t;
     pub fn ray_runtime_destroy(rt: *mut ray_runtime_t);
     pub fn ray_eval_str(source: *const c_char) -> *mut ray_t;
+
+    pub fn ray_progress_set_callback(
+        cb: ray_progress_cb,
+        user: *mut std::ffi::c_void,
+        min_ms: u64,
+        tick_interval_ms: u64,
+    );
+    pub fn ray_request_interrupt();
+    pub fn ray_clear_interrupt();
+    pub fn ray_interrupted() -> bool;
 }
+
+/// Snapshot delivered to a progress callback.  Mirrors `ray_progress_t` in
+/// `include/rayforce.h`.  Worker threads never touch this struct; the
+/// callback fires on the main thread between ops or at pivot phase
+/// boundaries, so reading `op_name` / `phase` raw pointers is safe for
+/// the lifetime of the callback invocation.
+#[repr(C)]
+pub struct ray_progress_t {
+    pub op_name: *const c_char,
+    pub phase: *const c_char,
+    pub rows_done: u64,
+    pub rows_total: u64,
+    pub elapsed_sec: f64,
+    pub mem_used: i64,
+    pub mem_budget: i64,
+    pub final_: bool,
+}
+
+pub type ray_progress_cb =
+    Option<unsafe extern "C" fn(snapshot: *const ray_progress_t, user: *mut std::ffi::c_void)>;
 
 #[repr(C)]
 pub struct ray_runtime_t {

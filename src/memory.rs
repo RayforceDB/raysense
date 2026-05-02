@@ -1373,6 +1373,85 @@ fn ensure_runtime() -> Result<(), MemoryError> {
     }
 }
 
+/// Install a process-global progress callback that writes one line to
+/// stderr per tick, throttled by the rayforce executor so quick queries
+/// stay silent.  Idempotent; subsequent calls are no-ops.
+///
+/// CLI surfaces (`baseline query`, `policy check`) call this so users
+/// see live feedback during long Rayfall evaluations.  MCP and unit
+/// tests skip it -- progress lines on stderr would corrupt the JSON
+/// stream parsers expect, and tests are noisy enough already.
+pub fn enable_cli_progress() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        unsafe {
+            // min_ms=200 hides quick queries entirely; tick=400 throttles
+            // updates to ~2-3 lines per second on long ones.  Tuned for
+            // human readability over machine-fast firehose.
+            crate::sys::ray_progress_set_callback(
+                Some(cli_progress_writer),
+                std::ptr::null_mut(),
+                200,
+                400,
+            );
+        }
+    });
+}
+
+unsafe extern "C" fn cli_progress_writer(
+    snap: *const crate::sys::ray_progress_t,
+    _user: *mut std::ffi::c_void,
+) {
+    use std::io::Write;
+
+    if snap.is_null() {
+        return;
+    }
+    let s = unsafe { &*snap };
+
+    let op = c_str_or(s.op_name, "?");
+    let phase = c_str_or(s.phase, "");
+    let phase_segment = if phase.is_empty() {
+        String::new()
+    } else {
+        format!(" / {phase}")
+    };
+    let progress = if s.rows_total > 0 {
+        format!(
+            "{:>5.1}%  ({} / {})",
+            (s.rows_done as f64 / s.rows_total as f64) * 100.0,
+            s.rows_done,
+            s.rows_total,
+        )
+    } else if s.rows_done > 0 {
+        format!("{} rows", s.rows_done)
+    } else {
+        String::from("...")
+    };
+    let mem_mb = (s.mem_used as f64) / (1024.0 * 1024.0);
+    let suffix = if s.final_ { "\n" } else { "\r" };
+
+    // Write straight through stderr() to avoid line buffering -- progress
+    // lines need to land between rayforce ticks, not when Rust's buffer
+    // happens to flush.
+    let mut err = std::io::stderr().lock();
+    let _ = write!(
+        err,
+        "[rayfall] {op}{phase_segment}  {progress}  elapsed={:.1}s  mem={mem_mb:.1}MB{suffix}",
+        s.elapsed_sec,
+    );
+    let _ = err.flush();
+}
+
+unsafe fn c_str_or(ptr: *const std::os::raw::c_char, fallback: &str) -> String {
+    if ptr.is_null() {
+        return fallback.to_string();
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn build_files_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
     let ids = i64_vec(
         report.files.len(),

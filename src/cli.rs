@@ -498,6 +498,11 @@ fn run_advanced(command: Command) -> Result<()> {
                 baseline,
                 json,
             } => {
+                // Stderr-only progress lines so JSON callers and pipes
+                // see clean stdout.  Hidden under 200ms of eval time.
+                if !json {
+                    crate::memory::enable_cli_progress();
+                }
                 let baseline = baseline.unwrap_or_else(default_baseline_dir);
                 let tables_dir = baseline.join("tables");
                 let rows = crate::memory::query_with_rayfall(&tables_dir, &table, &rayfall)
@@ -2905,6 +2910,9 @@ fn run_policy_check(
     let tables_dir = baseline.join("tables");
     let policies_dir = policies.unwrap_or_else(default_policies_dir);
 
+    if !json {
+        crate::memory::enable_cli_progress();
+    }
     let results =
         crate::memory::eval_all_policies(&tables_dir, &policies_dir).with_context(|| {
             format!(
