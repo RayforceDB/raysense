@@ -575,6 +575,34 @@ pub struct TrendMetrics {
     pub score_delta: i16,
     pub quality_signal_delta: i32,
     pub rule_delta: isize,
+    /// Per-dimension drift, first sample to last. Keys are the
+    /// `RootCauseScores` field names (`modularity`, `acyclicity`,
+    /// `depth`, `equality`, `redundancy`, `structural_uniformity`).
+    /// Values are float deltas in `[-1, 1]`. Empty when older samples
+    /// lack `root_causes`.
+    #[serde(default)]
+    pub dimension_deltas: BTreeMap<String, f64>,
+    /// Full ordered series (oldest first). Empty in serde-default
+    /// state. Each sample now also carries its `root_causes` and a
+    /// human-readable timestamp; older samples written before this
+    /// field landed still parse via `#[serde(default)]`.
+    #[serde(default)]
+    pub series: Vec<TrendSample>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrendSample {
+    #[serde(default)]
+    pub timestamp: i64,
+    pub score: u8,
+    pub quality_signal: u32,
+    pub rules: usize,
+    #[serde(default)]
+    pub snapshot_id: String,
+    #[serde(default)]
+    pub root_causes: RootCauseScores,
+    #[serde(default)]
+    pub overall_grade: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3195,20 +3223,64 @@ fn trend_metrics(report: &ScanReport) -> TrendMetrics {
     let (Some(first), Some(last)) = (samples.first(), samples.last()) else {
         return TrendMetrics::default();
     };
+
+    // Per-dimension drift, first to last. Only emit when both
+    // endpoint samples actually carry root_causes data (older samples
+    // recorded before that field landed default to all-zero, which
+    // would synthesise a misleading delta).
+    let mut dimension_deltas = BTreeMap::new();
+    if has_root_causes(&first.root_causes) && has_root_causes(&last.root_causes) {
+        let pairs: [(&str, f64, f64); 6] = [
+            (
+                "modularity",
+                first.root_causes.modularity,
+                last.root_causes.modularity,
+            ),
+            (
+                "acyclicity",
+                first.root_causes.acyclicity,
+                last.root_causes.acyclicity,
+            ),
+            ("depth", first.root_causes.depth, last.root_causes.depth),
+            (
+                "equality",
+                first.root_causes.equality,
+                last.root_causes.equality,
+            ),
+            (
+                "redundancy",
+                first.root_causes.redundancy,
+                last.root_causes.redundancy,
+            ),
+            (
+                "structural_uniformity",
+                first.root_causes.structural_uniformity,
+                last.root_causes.structural_uniformity,
+            ),
+        ];
+        for (name, before, after) in pairs {
+            dimension_deltas.insert(name.to_string(), round3(after - before));
+        }
+    }
+
     TrendMetrics {
         available: true,
         samples: samples.len(),
         score_delta: last.score as i16 - first.score as i16,
         quality_signal_delta: last.quality_signal as i32 - first.quality_signal as i32,
         rule_delta: last.rules as isize - first.rules as isize,
+        dimension_deltas,
+        series: samples,
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TrendSample {
-    score: u8,
-    quality_signal: u32,
-    rules: usize,
+fn has_root_causes(scores: &RootCauseScores) -> bool {
+    scores.modularity != 0.0
+        || scores.acyclicity != 0.0
+        || scores.depth != 0.0
+        || scores.equality != 0.0
+        || scores.redundancy != 0.0
+        || scores.structural_uniformity != 0.0
 }
 
 fn scan_relative_git_path(path: &str, prefix: &str) -> Option<String> {
@@ -4534,6 +4606,17 @@ mod tests {
         assert!(!is_bug_fix_subject("fixtures: regenerate snapshots")); // "fixtures"
         assert!(!is_bug_fix_subject("docs: typo in README"));
         assert!(!is_bug_fix_subject(""));
+    }
+
+    #[test]
+    fn has_root_causes_distinguishes_zeroed_from_real_data() {
+        // All-zero RootCauseScores (e.g. from old samples that pre-date the
+        // root_causes field) is treated as "no data".
+        assert!(!has_root_causes(&RootCauseScores::default()));
+        // Any non-zero dimension flips it to "has data".
+        let mut with_one = RootCauseScores::default();
+        with_one.modularity = 0.5;
+        assert!(has_root_causes(&with_one));
     }
 
     #[test]

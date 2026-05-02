@@ -27,7 +27,7 @@ use crate::memory::{
 };
 use crate::{
     build_baseline, compute_health_with_config, diff_baselines, scan_path_with_config,
-    BaselineDiff, ProjectBaseline, RaysenseConfig,
+    BaselineDiff, HealthSummary, ProjectBaseline, RaysenseConfig, ScanReport,
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -2611,6 +2611,16 @@ fn record_trend(root: &Path, config_path: Option<&Path>) -> Result<()> {
     let config = config_for_root(root, config_path)?;
     let report = scan_path_with_config(root, &config)?;
     let health = compute_health_with_config(&report, &config);
+    let path = append_trend_sample(&report, &health)?;
+    println!("trend {}", path.display());
+    Ok(())
+}
+
+/// Append one row to `<root>/.raysense/trends/history.json` describing
+/// the score, quality signal, rule count, and per-dimension scores at
+/// `now`. Used both by `raysense trend record` and by `raysense
+/// baseline save`. Returns the path the row was written to.
+fn append_trend_sample(report: &ScanReport, health: &HealthSummary) -> Result<PathBuf> {
     let dir = report.snapshot.root.join(".raysense/trends");
     let path = dir.join("history.json");
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
@@ -2626,12 +2636,13 @@ fn record_trend(root: &Path, config_path: Option<&Path>) -> Result<()> {
         "quality_signal": health.quality_signal,
         "rules": health.rules.len(),
         "files": report.files.len(),
-        "functions": report.functions.len()
+        "functions": report.functions.len(),
+        "root_causes": health.root_causes,
+        "overall_grade": health.grades.overall,
     }));
     fs::write(&path, serde_json::to_string_pretty(&samples)?)
         .with_context(|| format!("failed to write {}", path.display()))?;
-    println!("trend {}", path.display());
-    Ok(())
+    Ok(path)
 }
 
 fn show_trend(root: &Path, config_path: Option<&Path>, json: bool) -> Result<()> {
@@ -2640,15 +2651,37 @@ fn show_trend(root: &Path, config_path: Option<&Path>, json: bool) -> Result<()>
     let health = compute_health_with_config(&report, &config);
     if json {
         println!("{}", serde_json::to_string_pretty(&health.metrics.trend)?);
-    } else if health.metrics.trend.available {
-        println!(
-            "trend samples={} score_delta={} rule_delta={}",
-            health.metrics.trend.samples,
-            health.metrics.trend.score_delta,
-            health.metrics.trend.rule_delta
-        );
-    } else {
+        return Ok(());
+    }
+    if !health.metrics.trend.available {
         println!("trend unavailable");
+        return Ok(());
+    }
+    println!(
+        "trend samples={} score_delta={} quality_signal_delta={} rule_delta={}",
+        health.metrics.trend.samples,
+        health.metrics.trend.score_delta,
+        health.metrics.trend.quality_signal_delta,
+        health.metrics.trend.rule_delta,
+    );
+    if !health.metrics.trend.dimension_deltas.is_empty() {
+        println!("dimension_drift");
+        for (name, delta) in &health.metrics.trend.dimension_deltas {
+            println!("  {}={:+.3}", name, delta);
+        }
+    }
+    if health.metrics.trend.series.len() >= 2 {
+        println!("recent_samples");
+        for sample in health.metrics.trend.series.iter().rev().take(5).rev() {
+            println!(
+                "  ts={} score={} quality_signal={} rules={} {}",
+                sample.timestamp,
+                sample.score,
+                sample.quality_signal,
+                sample.rules,
+                sample.snapshot_id,
+            );
+        }
     }
     Ok(())
 }
@@ -2740,6 +2773,13 @@ fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Resu
     memory
         .save_splayed(&tables_dir)
         .with_context(|| format!("failed to write baseline tables {}", tables_dir.display()))?;
+
+    // Record a trend sample so the score-drift series captures every
+    // baseline save automatically. Failures here are non-fatal: the
+    // baseline itself succeeded, the trend log is best-effort.
+    if let Err(reason) = append_trend_sample(&report, &health) {
+        eprintln!("warning: failed to record trend sample: {reason}");
+    }
 
     Ok(())
 }
