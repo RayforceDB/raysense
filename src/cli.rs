@@ -3088,10 +3088,11 @@ fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
     );
     if health.metrics.evolution.available {
         println!(
-            "evolution available=true commits_sampled={} changed_files={} authors={}",
+            "evolution available=true commits_sampled={} changed_files={} authors={} bug_fix_commits={}",
             health.metrics.evolution.commits_sampled,
             health.metrics.evolution.changed_files,
-            health.metrics.evolution.author_count
+            health.metrics.evolution.author_count,
+            health.metrics.evolution.bug_fix_commits,
         );
     } else {
         println!(
@@ -3133,6 +3134,16 @@ fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
             println!(
                 "  strength={:.3} co_commits={} {} <-> {}",
                 pair.coupling_strength, pair.co_commits, pair.left, pair.right,
+            );
+        }
+    }
+
+    if !health.metrics.evolution.bug_prone_files.is_empty() {
+        println!("bug_prone_files");
+        for entry in &health.metrics.evolution.bug_prone_files {
+            println!(
+                "  fix_commits={} total={} ratio={:.3} {}",
+                entry.bug_fix_commits, entry.total_commits, entry.bug_fix_ratio, entry.path,
             );
         }
     }

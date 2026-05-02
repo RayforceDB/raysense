@@ -618,6 +618,13 @@ pub struct EvolutionMetrics {
     pub file_ages: Vec<EvolutionFileAge>,
     #[serde(default)]
     pub change_coupling: Vec<EvolutionChangeCoupling>,
+    /// Count of sampled commits whose subject matches a bug-fix pattern
+    /// (`^(fix|bugfix|hotfix|revert)(\([^)]*\))?[:!]?\s`).
+    #[serde(default)]
+    pub bug_fix_commits: usize,
+    /// Top files ranked by absolute bug-fix-commit count, then by ratio.
+    #[serde(default)]
+    pub bug_prone_files: Vec<EvolutionBugProneFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -662,6 +669,17 @@ pub struct EvolutionChangeCoupling {
     pub right: String,
     pub co_commits: usize,
     pub coupling_strength: f64,
+}
+
+/// Per-file bug-fix concentration. Files with a high `bug_fix_ratio`
+/// are unstable areas of the codebase: most of their churn is undoing
+/// previous changes rather than adding capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionBugProneFile {
+    pub path: String,
+    pub bug_fix_commits: usize,
+    pub total_commits: usize,
+    pub bug_fix_ratio: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2631,7 +2649,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
             "log",
             "-n",
             "500",
-            "--format=commit:%H|%ae|%at",
+            "--format=commit:%H|%ae|%at|%s",
             "--name-only",
         ],
     ) {
@@ -2651,13 +2669,16 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         .map(|file| file.path.to_string_lossy().replace('\\', "/"))
         .collect();
     let mut commits_sampled = 0;
+    let mut bug_fix_commits = 0usize;
     let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+    let mut file_bug_fix_commits: BTreeMap<String, usize> = BTreeMap::new();
     let mut author_commits: BTreeMap<String, usize> = BTreeMap::new();
     let mut file_author_commits: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     let mut file_age_window: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     let mut pair_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut current_author: Option<String> = None;
     let mut current_timestamp: Option<i64> = None;
+    let mut current_is_bug_fix = false;
     let mut commit_files = HashSet::new();
 
     for line in log.lines() {
@@ -2668,18 +2689,28 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         if let Some(rest) = line.strip_prefix("commit:") {
             flush_commit_files_with_author(
                 &mut file_commits,
+                &mut file_bug_fix_commits,
                 &mut file_author_commits,
                 &mut file_age_window,
                 &mut pair_counts,
                 &mut commit_files,
                 current_author.as_deref(),
                 current_timestamp,
+                current_is_bug_fix,
             );
             commits_sampled += 1;
-            let mut parts = rest.splitn(3, '|');
+            // The subject (`%s`) can contain '|' characters, so it must be
+            // the last field. Use `splitn(4, '|')` so the fourth split takes
+            // the rest of the line verbatim.
+            let mut parts = rest.splitn(4, '|');
             let _hash = parts.next();
             let author = parts.next().map(|email| email.trim().to_string());
             let timestamp = parts.next().and_then(|raw| raw.trim().parse::<i64>().ok());
+            let subject = parts.next().unwrap_or("").trim();
+            let is_bug_fix = is_bug_fix_subject(subject);
+            if is_bug_fix {
+                bug_fix_commits += 1;
+            }
             if let Some(author) = author.as_ref() {
                 if !author.is_empty() {
                     *author_commits.entry(author.clone()).or_default() += 1;
@@ -2687,6 +2718,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
             }
             current_author = author;
             current_timestamp = timestamp;
+            current_is_bug_fix = is_bug_fix;
             continue;
         }
 
@@ -2698,12 +2730,14 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
     }
     flush_commit_files_with_author(
         &mut file_commits,
+        &mut file_bug_fix_commits,
         &mut file_author_commits,
         &mut file_age_window,
         &mut pair_counts,
         &mut commit_files,
         current_author.as_deref(),
         current_timestamp,
+        current_is_bug_fix,
     );
 
     let mut top_changed_files: Vec<EvolutionFileMetric> = file_commits
@@ -2768,6 +2802,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         .unwrap_or(0);
     let file_ages = file_ages(&file_age_window, now_unix);
     let change_coupling = change_coupling(&pair_counts, &file_commits);
+    let bug_prone_files = bug_prone_files(&file_bug_fix_commits, &file_commits);
 
     EvolutionMetrics {
         available: true,
@@ -2781,7 +2816,67 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         temporal_hotspots,
         file_ages,
         change_coupling,
+        bug_fix_commits,
+        bug_prone_files,
     }
+}
+
+/// Subject-line classifier for bug-fix commits. Recognises the
+/// Conventional Commits `fix:` prefix plus the common `bugfix`,
+/// `hotfix`, and `revert` variants. Matches case-insensitively against
+/// the start of the trimmed subject; a recognised prefix must be
+/// followed by `:`, `!`, `(`, or whitespace so that words like
+/// `fixing` or `feature` do not produce false positives.
+fn is_bug_fix_subject(subject: &str) -> bool {
+    let lower = subject.trim_start().to_ascii_lowercase();
+    for prefix in ["bugfix", "hotfix", "revert", "fix"] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let next = rest.chars().next().unwrap_or(' ');
+            if next == ':' || next == '!' || next == '(' || next.is_whitespace() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Top files ranked by absolute bug-fix-commit count, then by
+/// bug-fix ratio, then by path. Files with zero bug-fix commits are
+/// dropped. Top 20 returned.
+fn bug_prone_files(
+    file_bug_fix_commits: &BTreeMap<String, usize>,
+    file_commits: &BTreeMap<String, usize>,
+) -> Vec<EvolutionBugProneFile> {
+    let mut entries: Vec<EvolutionBugProneFile> = file_bug_fix_commits
+        .iter()
+        .filter(|(_, count)| **count > 0)
+        .map(|(path, bug_fix_commits)| {
+            let total_commits = file_commits.get(path).copied().unwrap_or(*bug_fix_commits);
+            let bug_fix_ratio = if total_commits == 0 {
+                0.0
+            } else {
+                *bug_fix_commits as f64 / total_commits as f64
+            };
+            EvolutionBugProneFile {
+                path: path.clone(),
+                bug_fix_commits: *bug_fix_commits,
+                total_commits,
+                bug_fix_ratio,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        b.bug_fix_commits
+            .cmp(&a.bug_fix_commits)
+            .then_with(|| {
+                b.bug_fix_ratio
+                    .partial_cmp(&a.bug_fix_ratio)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    entries.truncate(20);
+    entries
 }
 
 /// Files with at least 3 co-commits, ranked by Jaccard similarity. Pairs that
@@ -2928,14 +3023,17 @@ fn bus_factor_for(sorted: &[(&String, &usize)], total: usize) -> usize {
 /// signal; capping keeps pair generation `O(N²)` bounded.
 const MAX_FILES_PER_COMMIT_FOR_COUPLING: usize = 50;
 
+#[allow(clippy::too_many_arguments)]
 fn flush_commit_files_with_author(
     file_commits: &mut BTreeMap<String, usize>,
+    file_bug_fix_commits: &mut BTreeMap<String, usize>,
     file_author_commits: &mut BTreeMap<String, BTreeMap<String, usize>>,
     file_age_window: &mut BTreeMap<String, (i64, i64)>,
     pair_counts: &mut BTreeMap<(String, String), usize>,
     commit_files: &mut HashSet<String>,
     author: Option<&str>,
     timestamp: Option<i64>,
+    is_bug_fix: bool,
 ) {
     if commit_files.len() <= MAX_FILES_PER_COMMIT_FOR_COUPLING {
         let sorted: Vec<&String> = {
@@ -2952,6 +3050,9 @@ fn flush_commit_files_with_author(
     }
     for path in commit_files.drain() {
         *file_commits.entry(path.clone()).or_default() += 1;
+        if is_bug_fix {
+            *file_bug_fix_commits.entry(path.clone()).or_default() += 1;
+        }
         if let Some(author) = author {
             if !author.is_empty() {
                 *file_author_commits
@@ -4300,6 +4401,68 @@ mod tests {
         assert_eq!(grade_for(0.92, &thresholds), "B");
         // Score 0.74 would be C by default, but D under stricter thresholds.
         assert_eq!(grade_for(0.74, &thresholds), "D");
+    }
+
+    #[test]
+    fn is_bug_fix_subject_recognises_conventional_and_common_prefixes() {
+        // Conventional Commits "fix" forms.
+        assert!(is_bug_fix_subject("fix: stop crash on empty input"));
+        assert!(is_bug_fix_subject(
+            "fix(parser): off-by-one in bracket match"
+        ));
+        assert!(is_bug_fix_subject("fix!: breaking signature change"));
+        assert!(is_bug_fix_subject("fix typo in error message")); // whitespace after prefix
+
+        // Common variants.
+        assert!(is_bug_fix_subject("bugfix: ratelimit underflow"));
+        assert!(is_bug_fix_subject("hotfix: production redeploy"));
+        assert!(is_bug_fix_subject("revert: bring back prior behaviour"));
+        assert!(is_bug_fix_subject("Revert \"feat: new thing\"")); // git's default revert subject
+
+        // Indented / leading whitespace still counts.
+        assert!(is_bug_fix_subject("  fix: leading spaces"));
+
+        // Negatives — words that start with `fix*` but are not fix commits.
+        assert!(!is_bug_fix_subject("feat: add validator"));
+        assert!(!is_bug_fix_subject("fixing the parser is hard")); // "fixing", not "fix"
+        assert!(!is_bug_fix_subject("fixtures: regenerate snapshots")); // "fixtures"
+        assert!(!is_bug_fix_subject("docs: typo in README"));
+        assert!(!is_bug_fix_subject(""));
+    }
+
+    #[test]
+    fn bug_prone_files_ranks_by_count_then_ratio() {
+        use std::collections::BTreeMap;
+
+        let mut bug_fixes: BTreeMap<String, usize> = BTreeMap::new();
+        let mut totals: BTreeMap<String, usize> = BTreeMap::new();
+
+        bug_fixes.insert("src/parser.rs".to_string(), 8);
+        totals.insert("src/parser.rs".to_string(), 12);
+
+        bug_fixes.insert("src/cli.rs".to_string(), 5);
+        totals.insert("src/cli.rs".to_string(), 20);
+
+        bug_fixes.insert("src/lexer.rs".to_string(), 5);
+        totals.insert("src/lexer.rs".to_string(), 8);
+
+        bug_fixes.insert("src/quiet.rs".to_string(), 0);
+        totals.insert("src/quiet.rs".to_string(), 30);
+
+        let ranked = bug_prone_files(&bug_fixes, &totals);
+
+        // Files with zero bug fixes are dropped.
+        assert!(!ranked.iter().any(|e| e.path == "src/quiet.rs"));
+
+        // First by absolute fix count, then by ratio. parser (8 fixes) leads;
+        // among the two files with 5 fixes, lexer (5/8=0.625) outranks
+        // cli (5/20=0.25).
+        let paths: Vec<&str> = ranked.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["src/parser.rs", "src/lexer.rs", "src/cli.rs"]);
+
+        // Ratio is computed against total_commits, not fix-only commits.
+        let parser = ranked.iter().find(|e| e.path == "src/parser.rs").unwrap();
+        assert!((parser.bug_fix_ratio - (8.0 / 12.0)).abs() < 1e-9);
     }
 
     #[test]
