@@ -207,7 +207,14 @@ facts             files=32 functions=620 calls=7065 imports=246
 graph             resolved=89 cycles=0 max_fan_in=53 max_fan_out=21
 test_gap          production=15 test_files=0 missing_nearby=15
 dimensions        modularity=A acyclicity=A depth=A equality=F redundancy=C uniformity=C
-overall_grade     B</code></pre>
+overall_grade     B
+
+edit_risk_files
+  risk=2100.0 commits=5 max_complexity=140 bus_factor=1 tests=no src/cli.rs
+  risk=342.0  commits=3 max_complexity=38  bus_factor=1 tests=no src/health.rs
+  risk=147.0  commits=1 max_complexity=49  bus_factor=1 tests=no src/memory.rs
+
+trend             samples=2 score_delta=0 dimension_drift=stable</code></pre>
     </div>
 
     <div class="code-block code-block-wide">
@@ -278,12 +285,24 @@ overall_grade     B</code></pre>
         <p>Scan results materialized as columnar tables. An agent's follow-up questions are instant reads, not re-scans.</p>
       </div>
       <div class="feature-card">
+        <h3>Edit-risk per file</h3>
+        <p>One number per file ranking which the next agent edit is most likely to break. Combines churn, max complexity, single-owner penalty, and missing-tests penalty into a composite score updated on every save.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Score drift per session</h3>
+        <p>Every baseline save appends a sample. The verify step diffs against the previous one and surfaces per-dimension drift (Equality went B to D after the last session) instead of just an aggregate delta.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Bug-density per file</h3>
+        <p>Files where most of the churn is fix commits surface immediately. Conventional Commits prefixes (fix, hotfix, revert) drive the classifier; absolute count and ratio against total commits both feed the ranking.</p>
+      </div>
+      <div class="feature-card">
         <h3>Test gap detection</h3>
-        <p>Files without nearby tests, ranked by structural risk.</p>
+        <p>Files without nearby tests, ranked by structural risk. Feeds directly into the edit-risk score so untested files in churn-heavy areas float to the top.</p>
       </div>
       <div class="feature-card">
         <h3>Evolution signal</h3>
-        <p>Bus factor, change-coupling pairs, temporal hotspots (churn x complexity), file age windows.</p>
+        <p>Bus factor per file, change-coupling pairs, temporal hotspots (churn x complexity), file age windows, and bug-fix concentration. Six lenses on how the codebase has actually moved over the last 500 commits.</p>
       </div>
       <div class="feature-card">
         <h3>45 languages</h3>
