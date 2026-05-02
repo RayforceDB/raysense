@@ -857,6 +857,12 @@ fn cell_value(col: *mut crate::sys::ray_t, row_idx: i64) -> serde_json::Value {
             let data = ray_data(col).cast::<i64>();
             serde_json::Value::from(unsafe { *data.add(row_idx as usize) })
         }
+        crate::sys::RAY_F32 => {
+            let data = ray_data(col).cast::<f32>();
+            serde_json::Number::from_f64(unsafe { *data.add(row_idx as usize) } as f64)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
         crate::sys::RAY_F64 => {
             let data = ray_data(col).cast::<f64>();
             serde_json::Number::from_f64(unsafe { *data.add(row_idx as usize) })

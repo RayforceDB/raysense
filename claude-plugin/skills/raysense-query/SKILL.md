@@ -1,6 +1,6 @@
 ---
 name: raysense-query
-description: Use when the agent has a structural question about the saved baseline that the typed MCP tools (health, hotspots, rules, blast radius, coupling, cycles, evolution) do not directly answer. Runs Rayfall expressions against splayed baseline tables via raysense_baseline_query, joining and projecting columns the typed tools never expose. Reach for this when the question shape is "files where X and Y," "callers of Z grouped by module," or any custom slice across the 18 baseline tables.
+description: Use when the agent has a structural question about the saved baseline that the typed MCP tools (health, hotspots, rules, blast radius, coupling, cycles, evolution) do not directly answer. Runs Rayfall expressions against splayed baseline tables via raysense_baseline_query. Three modes are available - select queries for filter/project/aggregate (most common), .graph.* algorithms (PageRank, Louvain, topsort, shortest-path, betweenness, closeness, MST, k-shortest, BFS expand) for centrality and reachability over the call graph, and Datalog rules with transitive closure for declarative reachability ("reaches", "depends-on", "tainted-by"). Reach for this when the question shape is "files where X and Y," "most-central callers," "what does X transitively reach," or any custom slice across the 18 baseline tables.
 ---
 
 # Raysense Query
@@ -119,6 +119,92 @@ Top 5 most-changed paths:
 ;; against table changed_files
 (select {from: t desc: commits take: 5})
 ```
+
+## Graph algorithms
+
+Rayfall ships a CSR-backed graph engine that runs against any edge
+table. Build a handle with `.graph.build`, then dispatch any of the
+algorithms.  The handle is auto-released when the result drops.
+
+`call_edges` is the canonical raysense graph (caller and callee are
+already integer function ids). For module-level work the columns are
+strings, so wrap with `(.sym ...)` or query `imports`/`call_edges`
+joined back to `files.module` instead.
+
+```clj
+;; PageRank centrality over the call graph (30 iters, damping 0.85).
+;; Result columns: _node, _rank.
+(select {from: (.graph.pagerank
+                 (.graph.build t 'caller_function 'callee_function)
+                 30 0.85)
+         desc: _rank take: 10})
+
+;; Total degree centrality (in + out).  Columns: _node, _in_degree,
+;; _out_degree, _degree.  Highest-degree functions are the hot ones.
+(select {from: (.graph.degree
+                 (.graph.build t 'caller_function 'callee_function))
+         desc: _degree take: 10})
+
+;; Topological sort -- only meaningful if the graph is acyclic.
+;; Columns: _node, _order.  If a cycle exists, the algorithm returns
+;; the partial order it managed to compute.
+(.graph.topsort (.graph.build t 'caller_function 'callee_function))
+
+;; Weakly-connected components.  Columns: _node, _component.
+(.graph.connected (.graph.build t 'caller_function 'callee_function))
+```
+
+Available `.graph.*` ops: `build`, `info`, `free`, `pagerank`,
+`degree`, `connected`, `topsort`, `dijkstra`, `shortest-path`,
+`k-shortest`, `expand`, `var-expand`, `dfs`, `cluster`, `betweenness`,
+`closeness`, `louvain`, `mst`, `random-walk`.
+
+`.graph.info` returns a `DICT` (not a table) -- use it for sanity
+checks on a handle (`(.graph.info G)` -> `{n_nodes: ... n_edges: ...
+has_weights: ...}`) but pull values out with `(at info-dict 'key)`
+before returning to an agent if you need a tabular result.
+
+## Datalog rules and transitive closure
+
+The store is `(datoms)` -- an EAV (entity / attribute / value) triple
+store.  Facts are asserted with `assert-fact`, retracted with
+`retract-fact`, and queried by pattern.  Rules let you derive
+relations from base facts; recursive rules give you transitive
+closure for free.
+
+```clj
+;; Treat call_edges as datoms: (caller :calls callee).
+(do
+  (set Db (datoms))
+  ;; In a real query you would loop over rows; this is the shape.
+  (set Db (assert-fact Db 0 'calls 1))
+  (set Db (assert-fact Db 1 'calls 2))
+  (set Db (assert-fact Db 2 'calls 3))
+
+  ;; Direct + transitive reachability.  The second clause closes
+  ;; over the rule recursively, so `reaches` covers any path length.
+  (rule (reaches ?a ?b) (?a :calls ?b))
+  (rule (reaches ?a ?b) (?a :calls ?c) (reaches ?c ?b))
+
+  ;; Functions reachable from caller 0 (3 in this example).
+  (count (query Db (find ?b) (where (reaches 0 ?b)))))
+```
+
+Useful query shapes for raysense baselines:
+
+- **Blast radius** -- recursive `reaches` rule, query starting from
+  the target function id; result is the set of every function it
+  transitively calls.  Equivalent to `raysense_blast_radius` but
+  computed declaratively in Rayfall.
+- **Cycle membership** -- `(reaches ?a ?a)` returns every function
+  that reaches itself (i.e. is on at least one cycle).
+- **Affected-by** -- bind the rule the other way (`(rule (affects ?a
+  ?b) (?b :calls ?a))` plus the recursive arm) to enumerate what
+  *uses* a target -- the inverse blast radius.
+
+`_` is a wildcard that matches but does not bind.
+`?name` is a logic variable.  Constants in object slots act as
+filters: `(?e :calls 42)` matches only callers of function 42.
 
 ## Result handling
 

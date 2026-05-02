@@ -26,11 +26,26 @@
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
+// Type tags. Must stay aligned with `RAY_*` macros in upstream
+// `include/rayforce.h`; the values shifted between versions (RAY_F64
+// moved from 8 to 7 once RAY_DATE was inserted) so this list is the
+// source of truth on the Rust side.
+pub const RAY_LIST: i8 = 0;
+pub const RAY_BOOL: i8 = 1;
+pub const RAY_U8: i8 = 2;
+pub const RAY_I16: i8 = 3;
 pub const RAY_I32: i8 = 4;
 pub const RAY_I64: i8 = 5;
-pub const RAY_F64: i8 = 8;
+pub const RAY_F32: i8 = 6;
+pub const RAY_F64: i8 = 7;
+pub const RAY_DATE: i8 = 8;
+pub const RAY_TIME: i8 = 9;
+pub const RAY_TIMESTAMP: i8 = 10;
+pub const RAY_GUID: i8 = 11;
+pub const RAY_SYM: i8 = 12;
 pub const RAY_STR: i8 = 13;
 pub const RAY_TABLE: i8 = 98;
+pub const RAY_DICT: i8 = 99;
 pub const RAY_ERROR: i8 = 127;
 
 #[repr(C)]
