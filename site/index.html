@@ -95,6 +95,7 @@
       <a href="#grading">Grading</a>
       <a href="#install">Install</a>
       <a href="#agents">Agents</a>
+      <a href="#languages">Languages</a>
       <a class="nav-link-strong" href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
     </div>
   </div>
@@ -305,10 +306,101 @@ trend             samples=2 score_delta=0 dimension_drift=stable</code></pre>
         <p>Bus factor per file, change-coupling pairs, temporal hotspots (churn x complexity), file age windows, and bug-fix concentration. Six lenses on how the codebase has actually moved over the last 500 commits.</p>
       </div>
       <div class="feature-card">
-        <h3>45 languages</h3>
-        <p>Rust, Python, TypeScript, C, C++ via tree-sitter. 40 more (Go, Java, Kotlin, Swift, Ruby, Elixir, Haskell, Clojure, Zig, ...) via configurable plugins.</p>
+        <h3>68 languages out of the box</h3>
+        <p>Five tree-sitter built-ins with full AST analysis, plus 63 configurable plugins covering everything from Solidity to COBOL. <a href="#languages">See the coverage map &rarr;</a></p>
       </div>
     </div>
+  </div>
+</section>
+
+<section id="languages" class="section">
+  <div class="container">
+    <div class="section-eyebrow">LANGUAGE COVERAGE</div>
+    <h2>68 languages, three tiers of analysis depth.</h2>
+    <p class="section-lead">
+      Tree-sitter built-ins get the full pipeline: function bodies parsed, cyclomatic and cognitive complexity, type inheritance (Python and TypeScript), and call graphs. The catalog plugins extract functions and imports via configurable prefix patterns, no AST. Every other metric on this page (edit-risk, score drift, bug-density, evolution, blast radius) works at every tier.
+    </p>
+
+    <div class="lang-legend">
+      <span class="lang-legend-item"><span class="lang-swatch lang-tier-3"></span>Full AST + type inheritance</span>
+      <span class="lang-legend-item"><span class="lang-swatch lang-tier-2"></span>Full AST + complexity</span>
+      <span class="lang-legend-item"><span class="lang-swatch lang-tier-1"></span>Configurable plugin</span>
+    </div>
+
+    <div class="lang-grid">
+      <div class="lang-cell lang-tier-1">Assembly</div>
+      <div class="lang-cell lang-tier-2">C</div>
+      <div class="lang-cell lang-tier-1">C#</div>
+      <div class="lang-cell lang-tier-2">C++</div>
+      <div class="lang-cell lang-tier-1">Clojure</div>
+      <div class="lang-cell lang-tier-1">CMake</div>
+      <div class="lang-cell lang-tier-1">COBOL</div>
+      <div class="lang-cell lang-tier-1">CoffeeScript</div>
+      <div class="lang-cell lang-tier-1">Crystal</div>
+      <div class="lang-cell lang-tier-1">CSS</div>
+      <div class="lang-cell lang-tier-1">D</div>
+      <div class="lang-cell lang-tier-1">Dart</div>
+      <div class="lang-cell lang-tier-1">Dockerfile</div>
+      <div class="lang-cell lang-tier-1">Elixir</div>
+      <div class="lang-cell lang-tier-1">Elm</div>
+      <div class="lang-cell lang-tier-1">Erlang</div>
+      <div class="lang-cell lang-tier-1">F#</div>
+      <div class="lang-cell lang-tier-1">Fortran</div>
+      <div class="lang-cell lang-tier-1">GDScript</div>
+      <div class="lang-cell lang-tier-1">GLSL</div>
+      <div class="lang-cell lang-tier-1">Go</div>
+      <div class="lang-cell lang-tier-1">Gradle</div>
+      <div class="lang-cell lang-tier-1">GraphQL</div>
+      <div class="lang-cell lang-tier-1">Groovy</div>
+      <div class="lang-cell lang-tier-1">Haskell</div>
+      <div class="lang-cell lang-tier-1">HCL</div>
+      <div class="lang-cell lang-tier-1">HTML</div>
+      <div class="lang-cell lang-tier-1">Java</div>
+      <div class="lang-cell lang-tier-1">JSON</div>
+      <div class="lang-cell lang-tier-1">Jsonnet</div>
+      <div class="lang-cell lang-tier-1">Julia</div>
+      <div class="lang-cell lang-tier-1">Kotlin</div>
+      <div class="lang-cell lang-tier-1">Lisp</div>
+      <div class="lang-cell lang-tier-1">Lua</div>
+      <div class="lang-cell lang-tier-1">Make</div>
+      <div class="lang-cell lang-tier-1">Markdown</div>
+      <div class="lang-cell lang-tier-1">MATLAB</div>
+      <div class="lang-cell lang-tier-1">Nim</div>
+      <div class="lang-cell lang-tier-1">Objective-C</div>
+      <div class="lang-cell lang-tier-1">OCaml</div>
+      <div class="lang-cell lang-tier-1">Pascal</div>
+      <div class="lang-cell lang-tier-1">Perl</div>
+      <div class="lang-cell lang-tier-1">PHP</div>
+      <div class="lang-cell lang-tier-1">PowerShell</div>
+      <div class="lang-cell lang-tier-1">Proto</div>
+      <div class="lang-cell lang-tier-3">Python</div>
+      <div class="lang-cell lang-tier-1">R</div>
+      <div class="lang-cell lang-tier-1">ReScript</div>
+      <div class="lang-cell lang-tier-1">Ruby</div>
+      <div class="lang-cell lang-tier-2">Rust</div>
+      <div class="lang-cell lang-tier-1">Scala</div>
+      <div class="lang-cell lang-tier-1">Scheme</div>
+      <div class="lang-cell lang-tier-1">Shell</div>
+      <div class="lang-cell lang-tier-1">Solidity</div>
+      <div class="lang-cell lang-tier-1">SQL</div>
+      <div class="lang-cell lang-tier-1">Svelte</div>
+      <div class="lang-cell lang-tier-1">Swift</div>
+      <div class="lang-cell lang-tier-1">Terraform</div>
+      <div class="lang-cell lang-tier-1">Thrift</div>
+      <div class="lang-cell lang-tier-1">TOML</div>
+      <div class="lang-cell lang-tier-3">TypeScript</div>
+      <div class="lang-cell lang-tier-1">V</div>
+      <div class="lang-cell lang-tier-1">VB</div>
+      <div class="lang-cell lang-tier-1">Vue</div>
+      <div class="lang-cell lang-tier-1">Vyper</div>
+      <div class="lang-cell lang-tier-1">XML</div>
+      <div class="lang-cell lang-tier-1">YAML</div>
+      <div class="lang-cell lang-tier-1">Zig</div>
+    </div>
+
+    <p class="lang-footnote">
+      Add your own language at any tier via <code>.raysense/plugins/&lt;name&gt;/plugin.toml</code>. Tree-sitter grammars can be loaded dynamically with the convention <code>tree_sitter_&lt;name&gt;</code>.
+    </p>
   </div>
 </section>
 

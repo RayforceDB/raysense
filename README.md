@@ -97,12 +97,27 @@ independent baselines, zero cross-project bleed.
 - **Splayed-table agent memory** - scan results materialized as
   columnar tables so an agent's follow-up questions are instant
   reads, not re-scans
-- **Test gap detection** - files without nearby tests, ranked by risk
-- **Evolution signal** - bus factor, change-coupling pairs, temporal
-  hotspots (churn x complexity)
-- **45 languages out of the box** - Rust, Python, TypeScript, C, C++
-  via tree-sitter; 40 more (Go, Java, Kotlin, Swift, Ruby, Elixir,
-  Haskell, Clojure, Zig, ...) via configurable plugins. Add your own
+- **Edit-risk per file** - one number per file ranking which the next
+  agent edit is most likely to break. Composite of churn, max
+  complexity, single-owner penalty, and missing-tests penalty,
+  refreshed on every save
+- **Score drift per session** - every baseline save appends a sample;
+  verify diffs against the previous one and surfaces per-dimension
+  drift (Equality went B to D) instead of a single aggregate delta
+- **Bug-density per file** - files where most of the churn is fix
+  commits float to the top. Conventional Commits prefixes (fix,
+  hotfix, revert) drive the classifier; absolute count and ratio
+  against total commits both feed the ranking
+- **Test gap detection** - files without nearby tests, ranked by
+  structural risk. Feeds directly into the edit-risk score so
+  untested files in churn-heavy areas surface first
+- **Evolution signal** - bus factor per file, change-coupling pairs,
+  temporal hotspots (churn x complexity), file age windows, and
+  bug-fix concentration over the last 500 commits
+- **68 language profiles out of the box** - Rust, Python, TypeScript,
+  C, C++ via tree-sitter; 63 more standard profiles (Go, Java,
+  Kotlin, Swift, Ruby, Elixir, Haskell, Clojure, Zig, GLSL,
+  Terraform, Dockerfile, ...) via configurable plugins. Add your own
   in `.raysense/plugins/`.
 
 ## Built on Rayforce
