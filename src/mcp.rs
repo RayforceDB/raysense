@@ -610,7 +610,41 @@ fn module_edges_tool(args: &Value) -> Result<Value> {
 
 fn architecture_tool(args: &Value, state: &mut McpState) -> Result<Value> {
     let (root, health) = health_from_args_cached(args, state)?;
-    let limit = limit_arg(args, 100)?;
+    let summary = summary_arg(args);
+    let limit = if summary {
+        SUMMARY_TOP_N
+    } else {
+        limit_arg(args, 100)?
+    };
+
+    if summary {
+        // Headline scalars + tiny top-N previews.  The full surface is
+        // still available with summary=false; this mode is shaped for
+        // agents that want to keep working context small.
+        return Ok(json!({
+            "root": root,
+            "score": health.score,
+            "quality_signal": health.quality_signal,
+            "root_causes": health.root_causes,
+            "summary": {
+                "module_depth": health.metrics.architecture.module_depth,
+                "max_blast_radius": health.metrics.architecture.max_blast_radius,
+                "max_blast_radius_file": health.metrics.architecture.max_blast_radius_file,
+                "attack_surface_files": health.metrics.architecture.attack_surface_files,
+                "attack_surface_ratio": health.metrics.architecture.attack_surface_ratio,
+                "total_graph_files": health.metrics.architecture.total_graph_files,
+                "average_distance_from_main_sequence": health.metrics.architecture.average_distance_from_main_sequence,
+                "cycle_total": health.metrics.architecture.cycles.len(),
+                "upward_violation_total": health.metrics.architecture.upward_violations.len(),
+                "unstable_module_total": health.metrics.architecture.unstable_modules.len(),
+                "stable_foundation_total": health.metrics.architecture.stable_foundations.len(),
+                "level_total": health.metrics.architecture.levels.len(),
+                "top_cycles": limited(&health.metrics.architecture.cycles, limit),
+                "top_unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
+                "top_upward_violations": limited(&health.metrics.architecture.upward_violations, limit),
+            }
+        }));
+    }
 
     Ok(json!({
         "root": root,
@@ -925,7 +959,34 @@ fn evolution_tool(args: &Value, state: &mut McpState) -> Result<Value> {
 
 fn dsm_tool(args: &Value, state: &mut McpState) -> Result<Value> {
     let (root, health) = health_from_args_cached(args, state)?;
-    let limit = limit_arg(args, 100)?;
+    let summary = summary_arg(args);
+    let limit = if summary {
+        SUMMARY_TOP_N
+    } else {
+        limit_arg(args, 100)?
+    };
+
+    if summary {
+        // Headline counts + the strongest module edges and worst
+        // architectural offenders.  Drops the full DSM matrix
+        // (level_assignments, instability, dependencies) because
+        // those scale with module count and are the bloat source.
+        return Ok(json!({
+            "root": root,
+            "summary": {
+                "module_count": health.metrics.dsm.module_count,
+                "level_count": health.metrics.architecture.levels.len(),
+                "upward_violation_total": health.metrics.architecture.upward_violations.len(),
+                "upward_violation_ratio": health.metrics.architecture.upward_violation_ratio,
+                "unstable_module_total": health.metrics.architecture.unstable_modules.len(),
+                "stable_foundation_total": health.metrics.architecture.stable_foundations.len(),
+                "top_module_edges": limited(&health.metrics.dsm.top_module_edges, limit),
+                "top_unstable_modules": limited(&health.metrics.architecture.unstable_modules, limit),
+                "top_upward_violations": limited(&health.metrics.architecture.upward_violations, limit),
+            }
+        }));
+    }
+
     Ok(json!({
         "root": root,
         "dsm": health.metrics.dsm,
@@ -2196,10 +2257,21 @@ fn health_limit_schema(limit_description: &str) -> Value {
             "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
             "config_path": {"type": "string", "description": "Explicit config file. Defaults to <path>/.raysense.toml when present."},
             "config": config_schema(),
-            "limit": {"type": "integer", "minimum": 1, "description": limit_description}
+            "limit": {"type": "integer", "minimum": 1, "description": limit_description},
+            "summary": {"type": "boolean", "description": "When true, return only headline scalars and small previews (top-5 lists). Cuts response size by 10-50x on real-size repos.  Defaults to false for backwards compatibility."}
         }
     })
 }
+
+fn summary_arg(args: &Value) -> bool {
+    args.get("summary")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Cap used for top-N previews in summary mode -- small enough for an
+/// agent to keep in working memory, large enough to spot the worst offenders.
+const SUMMARY_TOP_N: usize = 5;
 
 fn blast_radius_schema() -> Value {
     json!({
