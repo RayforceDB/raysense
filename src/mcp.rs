@@ -258,6 +258,11 @@ fn tools_list() -> Value {
                 "inputSchema": health_limit_schema("Maximum findings to return. Defaults to 100.")
             },
             {
+                "name": "raysense_policy_check",
+                "description": "Evaluate every .rfl policy file in <project>/.raysense/policies (or a caller-supplied directory) against the saved baseline. Each policy is a Rayfall expression that must return a RAY_TABLE with columns severity, code, path, message; severities are case-insensitive info / warning / error. Use this when teams want to ship architectural rules as code-reviewable files instead of asking raysense for a built-in flag. Pairs with raysense_baseline_save (run that first to materialize tables).",
+                "inputSchema": policy_check_schema()
+            },
+            {
                 "name": "raysense_evolution",
                 "description": "Return changed-file evolution metrics.",
                 "inputSchema": health_limit_schema("Maximum changed files to return. Defaults to 100.")
@@ -426,6 +431,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_session_end" => session_end_tool(&args, state),
         "raysense_rescan" => rescan_tool(&args, state),
         "raysense_check_rules" => check_rules_tool(&args),
+        "raysense_policy_check" => policy_check_tool(&args),
         "raysense_evolution" => evolution_tool(&args, state),
         "raysense_dsm" => dsm_tool(&args, state),
         "raysense_test_gaps" => test_gaps_tool(&args),
@@ -843,6 +849,54 @@ fn check_rules_tool(args: &Value) -> Result<Value> {
         "quality_signal": health.quality_signal,
         "rules": limited(&health.rules, limit),
         "total": health.rules.len()
+    }))
+}
+
+fn policy_check_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let baseline_dir = baseline_dir_arg(args, &root)?;
+    let tables_dir = baseline_dir.join("tables");
+    let policies_dir = args
+        .get("policies_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".raysense/policies"));
+
+    let results =
+        crate::memory::eval_all_policies(&tables_dir, &policies_dir).with_context(|| {
+            format!(
+                "failed to walk policies directory {}",
+                policies_dir.display()
+            )
+        })?;
+
+    let payload: Vec<Value> = results
+        .iter()
+        .map(|r| match &r.findings {
+            Ok(findings) => json!({
+                "policy": r.path.display().to_string(),
+                "ok": true,
+                "findings": findings,
+            }),
+            Err(err) => json!({
+                "policy": r.path.display().to_string(),
+                "ok": false,
+                "error": err.to_string(),
+            }),
+        })
+        .collect();
+    let pass = results.iter().all(|r| match &r.findings {
+        Ok(findings) => !findings
+            .iter()
+            .any(|f| matches!(f.severity, crate::RuleSeverity::Error)),
+        Err(_) => false,
+    });
+    Ok(json!({
+        "root": root,
+        "policies_path": policies_dir,
+        "pass": pass,
+        "policies": payload,
+        "total": results.len(),
     }))
 }
 
@@ -2383,6 +2437,17 @@ fn baseline_query_schema() -> Value {
             "rayfall": {"type": "string", "description": "Rayfall expression to evaluate. The named table is bound as `t`. The expression must return a RAY_TABLE; wrap with select to project columns when querying scalars."}
         },
         "required": ["table", "rayfall"]
+    })
+}
+
+fn policy_check_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "baseline_path": {"type": "string", "description": "Baseline directory. Defaults to <path>/.raysense/baseline."},
+            "policies_path": {"type": "string", "description": "Directory of .rfl policy files. Defaults to <path>/.raysense/policies."}
+        }
     })
 }
 

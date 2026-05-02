@@ -201,6 +201,17 @@ enum PolicyCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Evaluate every .rfl policy file in a directory against the saved
+    /// baseline. Each policy is a Rayfall expression that returns a
+    /// table of (severity, code, path, message) findings.
+    Check {
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long)]
+        policies: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -382,6 +393,11 @@ fn run_advanced(command: Command) -> Result<()> {
                 path,
                 config,
             } => init_policy(&path, config.as_deref(), &preset)?,
+            PolicyCommand::Check {
+                baseline,
+                policies,
+                json,
+            } => run_policy_check(baseline, policies, json)?,
         },
         Command::Trend { command } => match command {
             TrendCommand::Record { path, config } => record_trend(&path, config.as_deref())?,
@@ -2864,6 +2880,83 @@ fn diff_baseline(
 
 fn default_baseline_dir() -> PathBuf {
     PathBuf::from(".raysense/baseline")
+}
+
+fn default_policies_dir() -> PathBuf {
+    PathBuf::from(".raysense/policies")
+}
+
+fn run_policy_check(
+    baseline: Option<PathBuf>,
+    policies: Option<PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let baseline = baseline.unwrap_or_else(default_baseline_dir);
+    let tables_dir = baseline.join("tables");
+    let policies_dir = policies.unwrap_or_else(default_policies_dir);
+
+    let results =
+        crate::memory::eval_all_policies(&tables_dir, &policies_dir).with_context(|| {
+            format!(
+                "failed to walk policies directory {}",
+                policies_dir.display()
+            )
+        })?;
+
+    if json {
+        let payload: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| match &r.findings {
+                Ok(findings) => serde_json::json!({
+                    "policy": r.path.display().to_string(),
+                    "ok": true,
+                    "findings": findings,
+                }),
+                Err(err) => serde_json::json!({
+                    "policy": r.path.display().to_string(),
+                    "ok": false,
+                    "error": err.to_string(),
+                }),
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    if results.is_empty() {
+        println!(
+            "no policies found at {} (looking for *.rfl files)",
+            policies_dir.display(),
+        );
+        return Ok(());
+    }
+    let mut total = 0usize;
+    let mut errors = 0usize;
+    for result in &results {
+        match &result.findings {
+            Ok(findings) => {
+                println!("{}: {} finding(s)", result.path.display(), findings.len());
+                for finding in findings {
+                    println!(
+                        "  [{:?}] {} {} - {}",
+                        finding.severity, finding.code, finding.path, finding.message,
+                    );
+                    total += 1;
+                }
+            }
+            Err(err) => {
+                errors += 1;
+                println!("{}: ERROR {}", result.path.display(), err);
+            }
+        }
+    }
+    println!(
+        "{} policy file(s) evaluated, {} finding(s), {} eval error(s)",
+        results.len(),
+        total,
+        errors,
+    );
+    Ok(())
 }
 
 fn parse_columns(columns: Option<&str>) -> Result<Option<Vec<String>>> {

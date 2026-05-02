@@ -1,0 +1,15 @@
+;; Policy: flag files larger than 2000 lines.
+;;
+;; Every saved baseline table is pre-bound in the env when raysense
+;; evaluates a policy file, so `files` here is the same `files` table
+;; raysense_baseline_table_read would return.
+;;
+;; The policy must end in an expression that produces a RAY_TABLE with
+;; columns severity, code, path, message. Empty result == policy passes.
+
+(select {severity: "warning"
+         code:     "huge-file"
+         path:     path
+         message:  "file exceeds 2000 lines, consider splitting"
+         from:     files
+         where:    (> lines 2000)})

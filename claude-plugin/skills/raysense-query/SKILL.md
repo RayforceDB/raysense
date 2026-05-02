@@ -206,6 +206,53 @@ Useful query shapes for raysense baselines:
 `?name` is a logic variable.  Constants in object slots act as
 filters: `(?e :calls 42)` matches only callers of function 42.
 
+## Policy packs (`raysense_policy_check`)
+
+Policies are `.rfl` files in `<repo>/.raysense/policies/`. Each one is
+a Rayfall program that returns a `RAY_TABLE` of findings; raysense
+walks the directory, evaluates every file, and reports per-policy
+results. Unlike `raysense_baseline_query` (one table bound as `t`),
+policy evaluation pre-binds **every** saved baseline table under its
+own name -- the file can reference `files`, `functions`, `imports`,
+`call_edges`, `module_edges`, etc. directly.
+
+Required result shape: a table with the four columns
+
+- `severity` -- one of `"info"`, `"warning"`, `"error"` (case-insensitive)
+- `code`     -- short stable id, e.g. `"huge-file"` or `"layer-violation"`
+- `path`     -- file or module the finding is about
+- `message`  -- human-readable explanation
+
+Empty result table = policy passed.
+
+```clj
+;; .raysense/policies/no-huge-files.rfl
+(select {severity: "warning"
+         code:     "huge-file"
+         path:     path
+         message:  "file exceeds 2000 lines, consider splitting"
+         from:     files
+         where:    (> lines 2000)})
+
+;; .raysense/policies/no-domain-imports-from-infra.rfl
+;; Domain modules must not import from infra modules; infra is allowed
+;; to depend on domain. Pure architectural rule, not an invariant of
+;; the language. Evaluated against module_edges.
+(select {severity: "error"
+         code:     "layer-violation"
+         path:     from_module
+         message:  "domain layer imports from infra layer"
+         from:     module_edges
+         where:    (and (.starts-with from_module "domain.")
+                        (.starts-with to_module   "infra."))})
+```
+
+When to use this vs `raysense_baseline_query`:
+- One-off question? Use the query tool.
+- Persistent rule the team wants to commit alongside the code? Drop
+  it as an `.rfl` file under `.raysense/policies/` and run
+  `raysense_policy_check` in CI.
+
 ## Result handling
 
 - `RAY_TABLE` returns: rows are returned as JSON; the agent reports

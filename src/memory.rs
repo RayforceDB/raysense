@@ -21,12 +21,15 @@
  *   SOFTWARE.
  */
 
-use crate::{compute_health_with_config, HealthSummary, RaysenseConfig, ScanReport};
+use crate::{
+    compute_health_with_config, HealthSummary, RaysenseConfig, RuleFinding, RuleSeverity,
+    ScanReport,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
@@ -89,6 +92,24 @@ pub enum MemoryError {
     RayfallEval { code: String, detail: String },
     #[error("Rayfall result is not a table (type {type_tag}); expected RAY_TABLE")]
     RayfallResultNotTable { type_tag: i8 },
+    #[error("policy file {path}: {source}")]
+    PolicyFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "policy {path} returned a table without the required columns: missing {missing:?}; \
+         expected severity, code, path, message"
+    )]
+    PolicySchema {
+        path: PathBuf,
+        missing: Vec<&'static str>,
+    },
+    #[error(
+        "policy {path} severity {value:?} is not one of info, warning, error (case-insensitive)"
+    )]
+    PolicySeverity { path: PathBuf, value: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -532,6 +553,201 @@ pub fn query_with_rayfall(
         result.as_ptr(),
         BaselineTableQuery::page(0, usize::MAX),
     )
+}
+
+/// Result of evaluating a single policy `.rfl` file.
+///
+/// `findings` is `Err` when the policy itself failed to parse, evaluate, or
+/// returned a malformed result; the file path is preserved in the error so
+/// callers can report which policy went bad without aborting the whole run.
+#[derive(Debug)]
+pub struct PolicyResult {
+    pub path: PathBuf,
+    pub findings: Result<Vec<RuleFinding>, MemoryError>,
+}
+
+/// Evaluate every `.rfl` file in `policies_dir` against the saved baseline
+/// at `baseline_dir`, in alphabetical order. Each policy is evaluated
+/// independently; one bad file does not abort the rest. Missing
+/// `policies_dir` is treated as zero policies (empty Vec).
+pub fn eval_all_policies(
+    baseline_dir: impl AsRef<Path>,
+    policies_dir: impl AsRef<Path>,
+) -> Result<Vec<PolicyResult>, MemoryError> {
+    let policies_dir = policies_dir.as_ref();
+    if !policies_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut paths: Vec<PathBuf> = fs::read_dir(policies_dir)
+        .map_err(|source| MemoryError::PolicyFile {
+            path: policies_dir.to_path_buf(),
+            source,
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "rfl"))
+        .collect();
+    paths.sort();
+
+    let baseline_dir = baseline_dir.as_ref();
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let findings = eval_policy_pack(baseline_dir, &path);
+        out.push(PolicyResult { path, findings });
+    }
+    Ok(out)
+}
+
+/// Evaluate a single `.rfl` policy file against the saved baseline.
+///
+/// The contract: every saved baseline table is bound into the global env
+/// under its own name (`files`, `functions`, `call_edges`, ...) so the
+/// policy can reference them directly. The policy must return a `RAY_TABLE`
+/// with the four columns `severity`, `code`, `path`, `message` (any extras
+/// are ignored). Severities are case-insensitively matched against
+/// `info`, `warning`, `error`. An empty result is a passing policy.
+pub fn eval_policy_pack(
+    baseline_dir: impl AsRef<Path>,
+    policy_path: impl AsRef<Path>,
+) -> Result<Vec<RuleFinding>, MemoryError> {
+    ensure_runtime()?;
+    let baseline_dir = baseline_dir.as_ref();
+    verify_baseline_schema(baseline_dir)?;
+
+    // Pin every saved table into the global env under its own name. The
+    // RayObjects must outlive the eval so refcounts stay >= 1; ray_env_set
+    // also retains internally, but holding our owned reference is the
+    // simpler discipline.
+    let mut bound: Vec<RayObject> = Vec::new();
+    for info in list_baseline_tables(baseline_dir)? {
+        let table = read_table_object(baseline_dir, &info.name)?;
+        let cname = CString::new(info.name.as_str())?;
+        let sym_id = unsafe { crate::sys::ray_sym_intern(cname.as_ptr(), cname.as_bytes().len()) };
+        let err = unsafe { crate::sys::ray_env_set(sym_id, table.as_ptr()) };
+        if err != crate::sys::RAY_OK {
+            return Err(MemoryError::RayfallEval {
+                code: format!("env_set={err}"),
+                detail: format!("failed to bind baseline table `{}`", info.name),
+            });
+        }
+        bound.push(table);
+    }
+
+    let policy_path = policy_path.as_ref();
+    let source = fs::read_to_string(policy_path).map_err(|source| MemoryError::PolicyFile {
+        path: policy_path.to_path_buf(),
+        source,
+    })?;
+    let csource = CString::new(source)?;
+    let raw_result = unsafe { crate::sys::ray_eval_str(csource.as_ptr()) };
+
+    if raw_result.is_null() {
+        return Ok(Vec::new());
+    }
+    let result = RayObject::new(raw_result, "policy result")?;
+    let result_type = unsafe { (*result.as_ptr()).type_ };
+    if result_type == crate::sys::RAY_ERROR {
+        let code = unsafe {
+            let p = crate::sys::ray_err_code(result.as_ptr());
+            if p.is_null() {
+                "unknown".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        return Err(MemoryError::RayfallEval {
+            code,
+            detail: policy_path.display().to_string(),
+        });
+    }
+    if result_type != crate::sys::RAY_TABLE {
+        return Err(MemoryError::RayfallResultNotTable {
+            type_tag: result_type,
+        });
+    }
+
+    extract_findings(policy_path, result.as_ptr())
+}
+
+fn extract_findings(
+    policy_path: &Path,
+    table: *mut crate::sys::ray_t,
+) -> Result<Vec<RuleFinding>, MemoryError> {
+    let nrows = unsafe { crate::sys::ray_table_nrows(table) };
+    let ncols = unsafe { crate::sys::ray_table_ncols(table) };
+
+    let mut idx_severity: Option<i64> = None;
+    let mut idx_code: Option<i64> = None;
+    let mut idx_path: Option<i64> = None;
+    let mut idx_message: Option<i64> = None;
+    for idx in 0..ncols {
+        let name_id = unsafe { crate::sys::ray_table_col_name(table, idx) };
+        match symbol_text(name_id).as_str() {
+            "severity" => idx_severity = Some(idx),
+            "code" => idx_code = Some(idx),
+            "path" => idx_path = Some(idx),
+            "message" => idx_message = Some(idx),
+            _ => {}
+        }
+    }
+
+    let mut missing = Vec::new();
+    if idx_severity.is_none() {
+        missing.push("severity");
+    }
+    if idx_code.is_none() {
+        missing.push("code");
+    }
+    if idx_path.is_none() {
+        missing.push("path");
+    }
+    if idx_message.is_none() {
+        missing.push("message");
+    }
+    if !missing.is_empty() {
+        return Err(MemoryError::PolicySchema {
+            path: policy_path.to_path_buf(),
+            missing,
+        });
+    }
+    let (sev, code, path, msg) = (
+        idx_severity.unwrap(),
+        idx_code.unwrap(),
+        idx_path.unwrap(),
+        idx_message.unwrap(),
+    );
+
+    let cols =
+        [sev, code, path, msg].map(|idx| unsafe { crate::sys::ray_table_get_col_idx(table, idx) });
+
+    let mut findings = Vec::with_capacity(nrows.max(0) as usize);
+    for row in 0..nrows {
+        let cell_str = |col: *mut crate::sys::ray_t| -> String {
+            cell_value(col, row)
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_default()
+        };
+        let severity_raw = cell_str(cols[0]);
+        let severity = match severity_raw.to_ascii_lowercase().as_str() {
+            "info" => RuleSeverity::Info,
+            "warning" | "warn" => RuleSeverity::Warning,
+            "error" | "err" => RuleSeverity::Error,
+            _ => {
+                return Err(MemoryError::PolicySeverity {
+                    path: policy_path.to_path_buf(),
+                    value: severity_raw,
+                })
+            }
+        };
+        findings.push(RuleFinding {
+            severity,
+            code: cell_str(cols[1]),
+            path: cell_str(cols[2]),
+            message: cell_str(cols[3]),
+        });
+    }
+    Ok(findings)
 }
 
 fn validate_table_name(name: &str) -> Result<(), MemoryError> {
@@ -2383,6 +2599,80 @@ mod tests {
 
         assert_eq!(summary.meta.rows, 1);
         assert_eq!(summary.meta.columns, 7);
+    }
+
+    #[test]
+    fn policy_pack_eval_returns_findings_for_a_real_rfl_file() {
+        let dir = temp_tables_dir("policy");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let policies_dir = dir.parent().unwrap().join(format!(
+            "{}-policies",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&policies_dir).unwrap();
+        let policy_path = policies_dir.join("size.rfl");
+        std::fs::write(
+            &policy_path,
+            // Flags every file in the sample with > 15 lines.
+            r#"(select {severity: "warning"
+                       code:     "test-rule"
+                       path:     path
+                       message:  "exceeds threshold"
+                       from:     files
+                       where:    (> lines 15)})"#,
+        )
+        .unwrap();
+
+        let results = eval_all_policies(&dir, &policies_dir).unwrap();
+        assert_eq!(results.len(), 1);
+        let findings = results[0].findings.as_ref().expect("policy should run");
+        // sample_report has 4 files with lines [10, 20, 30, 40]; three exceed 15.
+        assert_eq!(findings.len(), 3);
+        assert!(findings
+            .iter()
+            .all(|f| matches!(f.severity, RuleSeverity::Warning)
+                && f.code == "test-rule"
+                && f.message == "exceeds threshold"));
+
+        std::fs::remove_dir_all(&policies_dir).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn policy_pack_eval_returns_typed_error_when_result_misses_columns() {
+        let dir = temp_tables_dir("policy-bad");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        // Result table only has `path` -- missing severity / code / message.
+        let err = eval_policy_pack_inline(&dir, "(select {path: path from: files})").unwrap_err();
+        assert!(
+            matches!(err, MemoryError::PolicySchema { ref missing, .. } if missing.len() == 3),
+            "expected PolicySchema with 3 missing columns, got {:?}",
+            err,
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn eval_policy_pack_inline(
+        baseline_dir: &PathBuf,
+        rayfall: &str,
+    ) -> Result<Vec<RuleFinding>, MemoryError> {
+        let policies_dir = baseline_dir.parent().unwrap().join(format!(
+            "{}-inline-policies",
+            baseline_dir.file_name().unwrap().to_string_lossy(),
+        ));
+        std::fs::create_dir_all(&policies_dir).unwrap();
+        let policy_path = policies_dir.join("inline.rfl");
+        std::fs::write(&policy_path, rayfall).unwrap();
+        let result = eval_policy_pack(baseline_dir, &policy_path);
+        std::fs::remove_dir_all(&policies_dir).unwrap();
+        result
     }
 
     #[test]
