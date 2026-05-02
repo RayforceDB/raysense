@@ -3461,6 +3461,29 @@ fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
             );
         }
     }
+
+    print_baseline_save_hint(&report.snapshot.root);
+}
+
+/// Print a single-line nudge pointing the user at `baseline save` when no
+/// baseline exists yet.  Skipped when stdout is not a TTY (so JSON / pipe /
+/// MCP consumers stay byte-clean) and when a baseline already lives at the
+/// default location (the user has clearly already discovered the command).
+fn print_baseline_save_hint(root: &Path) {
+    use std::io::IsTerminal;
+
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    let baseline = root.join(".raysense").join("baseline").join("tables");
+    if baseline.is_dir() {
+        return;
+    }
+    println!();
+    println!("[hint] run `raysense baseline save .` to materialize 24 queryable tables");
+    println!("       (call graph, hotspots, ownership, arch_cycles, ...) for follow-up");
+    println!("       Rayfall queries.  Agents pick this up automatically via the");
+    println!("       raysense-bootstrap skill.");
 }
 
 #[cfg(test)]
