@@ -542,17 +542,145 @@ pub fn query_with_rayfall(
             detail: expr.to_string(),
         });
     }
-    if result_type != crate::sys::RAY_TABLE {
+    promote_result_to_rows(name, result.as_ptr())
+}
+
+/// Lift any non-error Rayfall result into a `BaselineTableRows`. Tables go
+/// through the existing `table_rows` decoder; atoms become a 1x1 "value"
+/// table; vectors become a 1-column N-row "value" table; dicts become a
+/// 2-column key/value table. Anything else (lists with mixed types,
+/// lambdas, GUID atoms) still surfaces as `RayfallResultNotTable` so the
+/// caller can wrap with `select`.
+fn promote_result_to_rows(
+    name: &str,
+    ptr: *mut crate::sys::ray_t,
+) -> Result<BaselineTableRows, MemoryError> {
+    let type_tag = unsafe { (*ptr).type_ };
+    if type_tag == crate::sys::RAY_TABLE {
+        return table_rows(name, ptr, BaselineTableQuery::page(0, usize::MAX));
+    }
+    if type_tag == crate::sys::RAY_DICT {
+        return dict_to_rows(name, ptr);
+    }
+    if type_tag < 0 {
+        // Negative tags are atoms; |tag| names the underlying type.
+        return Ok(atom_to_rows(name, ptr));
+    }
+    if (crate::sys::RAY_BOOL..=crate::sys::RAY_STR).contains(&type_tag) {
+        // Positive tags between BOOL and STR are typed vectors.
+        return Ok(vector_to_rows(name, ptr));
+    }
+    Err(MemoryError::RayfallResultNotTable { type_tag })
+}
+
+fn atom_to_rows(name: &str, ptr: *mut crate::sys::ray_t) -> BaselineTableRows {
+    let value = atom_to_json(ptr);
+    let mut row = serde_json::Map::new();
+    row.insert("value".to_string(), value);
+    BaselineTableRows {
+        name: name.to_string(),
+        columns: vec!["value".to_string()],
+        rows: vec![serde_json::Value::Object(row)],
+        offset: 0,
+        limit: 1,
+        total_rows: 1,
+        matched_rows: 1,
+    }
+}
+
+fn atom_to_json(ptr: *mut crate::sys::ray_t) -> serde_json::Value {
+    // Atom layout: header at 0..16, mmod/order/type/attrs/rc at 16..24,
+    // 8-byte payload at 24..32. We read the payload as i64 raw bits and
+    // reinterpret per type.
+    let neg = unsafe { (*ptr).type_ };
+    let base = -neg;
+    let bits = unsafe { (*ptr).len };
+    match base {
+        crate::sys::RAY_BOOL => serde_json::Value::Bool((bits & 1) != 0),
+        crate::sys::RAY_U8 => serde_json::Value::from(bits as u8),
+        crate::sys::RAY_I16 => serde_json::Value::from(bits as i16),
+        crate::sys::RAY_I32 => serde_json::Value::from(bits as i32),
+        crate::sys::RAY_I64
+        | crate::sys::RAY_DATE
+        | crate::sys::RAY_TIME
+        | crate::sys::RAY_TIMESTAMP => serde_json::Value::from(bits),
+        crate::sys::RAY_F32 => {
+            let v = f32::from_bits(bits as u32);
+            serde_json::Number::from_f64(v as f64)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
+        crate::sys::RAY_F64 => {
+            let v = f64::from_bits(bits as u64);
+            serde_json::Number::from_f64(v)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
+        crate::sys::RAY_STR => string_atom(ptr)
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null),
+        crate::sys::RAY_SYM => {
+            let atom = unsafe { crate::sys::ray_sym_str(bits) };
+            if atom.is_null() {
+                serde_json::Value::String(format!("#{bits}"))
+            } else {
+                string_atom(atom)
+                    .map(serde_json::Value::String)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+        }
+        _ => serde_json::Value::String(format!("<unsupported atom type {base}>")),
+    }
+}
+
+fn vector_to_rows(name: &str, ptr: *mut crate::sys::ray_t) -> BaselineTableRows {
+    let len = unsafe { (*ptr).len };
+    let total = len.max(0) as usize;
+    let rows: Vec<serde_json::Value> = (0..len)
+        .map(|idx| {
+            let mut row = serde_json::Map::new();
+            row.insert("value".to_string(), cell_value(ptr, idx));
+            serde_json::Value::Object(row)
+        })
+        .collect();
+    BaselineTableRows {
+        name: name.to_string(),
+        columns: vec!["value".to_string()],
+        rows,
+        offset: 0,
+        limit: total,
+        total_rows: len,
+        matched_rows: total,
+    }
+}
+
+fn dict_to_rows(name: &str, ptr: *mut crate::sys::ray_t) -> Result<BaselineTableRows, MemoryError> {
+    let keys = unsafe { crate::sys::ray_dict_keys(ptr) };
+    let vals = unsafe { crate::sys::ray_dict_vals(ptr) };
+    if keys.is_null() || vals.is_null() {
         return Err(MemoryError::RayfallResultNotTable {
-            type_tag: result_type,
+            type_tag: crate::sys::RAY_DICT,
         });
     }
-
-    table_rows(
-        name,
-        result.as_ptr(),
-        BaselineTableQuery::page(0, usize::MAX),
-    )
+    let len = unsafe { crate::sys::ray_dict_len(ptr) };
+    let total = len.max(0) as usize;
+    let rows: Vec<serde_json::Value> = (0..len)
+        .map(|idx| {
+            let mut row = serde_json::Map::new();
+            row.insert("key".to_string(), cell_value(keys, idx));
+            row.insert("value".to_string(), cell_value(vals, idx));
+            serde_json::Value::Object(row)
+        })
+        .collect();
+    Ok(BaselineTableRows {
+        name: name.to_string(),
+        columns: vec!["key".to_string(), "value".to_string()],
+        rows,
+        offset: 0,
+        limit: total,
+        total_rows: len,
+        matched_rows: total,
+    })
 }
 
 /// Result of evaluating a single policy `.rfl` file.
@@ -1088,6 +1216,10 @@ fn cell_value(col: *mut crate::sys::ray_t, row_idx: i64) -> serde_json::Value {
     }
 
     match unsafe { (*col).type_ } {
+        crate::sys::RAY_BOOL => {
+            let data = ray_data(col);
+            serde_json::Value::Bool(unsafe { *data.add(row_idx as usize) } != 0)
+        }
         crate::sys::RAY_I32 => {
             let data = ray_data(col).cast::<i32>();
             serde_json::Value::from(unsafe { *data.add(row_idx as usize) })
@@ -1108,9 +1240,38 @@ fn cell_value(col: *mut crate::sys::ray_t, row_idx: i64) -> serde_json::Value {
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null)
         }
+        crate::sys::RAY_SYM => {
+            // Adaptive width encoded in the low 2 bits of attrs:
+            // 0=W8 (uint8), 1=W16 (uint16), 2=W32 (uint32), 3=W64 (int64).
+            // Decode the index, then resolve through the global sym table.
+            let data = ray_data(col);
+            let attrs = unsafe { (*col).attrs };
+            let id: i64 = match attrs & 0b11 {
+                0 => i64::from(unsafe { *data.add(row_idx as usize) }),
+                1 => i64::from(unsafe { *data.cast::<u16>().add(row_idx as usize) }),
+                2 => i64::from(unsafe { *data.cast::<u32>().add(row_idx as usize) }),
+                _ => unsafe { *data.cast::<i64>().add(row_idx as usize) },
+            };
+            serde_json::Value::String(symbol_text(id))
+        }
         crate::sys::RAY_STR => string_vec_value(col, row_idx)
             .map(serde_json::Value::String)
             .unwrap_or(serde_json::Value::Null),
+        crate::sys::RAY_LIST => {
+            // Heterogeneous: each slot is a ray_t* atom.  Recurse via
+            // atom_to_json so dicts and graph.info results render their
+            // mixed-type values as proper JSON.
+            let elem = unsafe { crate::sys::ray_list_get(col, row_idx) };
+            if elem.is_null() {
+                serde_json::Value::Null
+            } else if unsafe { (*elem).type_ } < 0 {
+                atom_to_json(elem)
+            } else {
+                serde_json::Value::String(format!("<unsupported list elem type {}>", unsafe {
+                    (*elem).type_
+                }))
+            }
+        }
         other => serde_json::Value::String(format!("<unsupported type {other}>")),
     }
 }
@@ -2772,6 +2933,45 @@ mod tests {
         let result = eval_policy_pack(baseline_dir, &policy_path);
         std::fs::remove_dir_all(&policies_dir).unwrap();
         result
+    }
+
+    #[test]
+    fn rayfall_query_auto_promotes_atom_result_to_one_by_one_table() {
+        let _guard = rayforce_test_guard();
+        let dir = temp_tables_dir("rayfall-atom");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let rows = query_with_rayfall(&dir, "files", "(count t)").unwrap();
+        assert_eq!(rows.columns, vec!["value"]);
+        assert_eq!(rows.matched_rows, 1);
+        assert_eq!(rows.rows.len(), 1);
+        assert_eq!(rows.rows[0]["value"], json!(report.files.len() as i64));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rayfall_query_auto_promotes_vector_result_to_single_value_column() {
+        let _guard = rayforce_test_guard();
+        let dir = temp_tables_dir("rayfall-vec");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let rows = query_with_rayfall(&dir, "files", "(at t (quote lines))").unwrap();
+        assert_eq!(rows.columns, vec!["value"]);
+        assert_eq!(rows.matched_rows, report.files.len());
+        // sample_report files have lines [10, 20, 30, 40] in id order.
+        let extracted: Vec<i64> = rows
+            .rows
+            .iter()
+            .map(|r| r["value"].as_i64().unwrap())
+            .collect();
+        assert_eq!(extracted, vec![10, 20, 30, 40]);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -97,6 +97,11 @@ unsafe extern "C" {
 
     pub fn ray_env_set(sym_id: i64, val: *mut ray_t) -> ray_err_t;
 
+    pub fn ray_dict_keys(d: *mut ray_t) -> *mut ray_t;
+    pub fn ray_dict_vals(d: *mut ray_t) -> *mut ray_t;
+    pub fn ray_dict_len(d: *mut ray_t) -> i64;
+    pub fn ray_list_get(list: *mut ray_t, idx: i64) -> *mut ray_t;
+
     pub fn ray_runtime_create_with_sym(sym_path: *const c_char) -> *mut ray_runtime_t;
     pub fn ray_runtime_destroy(rt: *mut ray_runtime_t);
     pub fn ray_eval_str(source: *const c_char) -> *mut ray_t;

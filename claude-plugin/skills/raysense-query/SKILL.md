@@ -253,16 +253,67 @@ When to use this vs `raysense_baseline_query`:
   it as an `.rfl` file under `.raysense/policies/` and run
   `raysense_policy_check` in CI.
 
+## Cross-time queries
+
+The baseline carries temporal data (`change_coupling`, `file_ages`,
+`temporal_hotspots`, `file_ownership`) right next to the structural
+tables. Rayfall can combine them into questions no single typed tool
+answers.
+
+```rfl
+;; Files where one author owns every commit (bus_factor == 1).
+;; Combine with `count` to get a scalar, or pipe to other lenses.
+(select {from: file_ownership where: (== bus_factor 1)})
+
+;; Tight architectural coupling: pairs that co-changed > 60% of
+;; the time, sorted by strength.  No alias syntax inside `select`
+;; -- bind columns under their own names, the result table will
+;; carry every base column plus any added in the dict.
+(select {from: change_coupling
+         where: (> coupling_strength_milli 600)
+         desc: coupling_strength_milli})
+
+;; Bus-factor x churn cross-section.  Two queries, intersect
+;; client-side: agents pull both result sets and compute the
+;; overlap; this is cheaper than Rayfall sub-select syntax in the
+;; current language version and works the same.
+(select {from: temporal_hotspots where: (> risk_score 200)
+         desc: risk_score})
+
+;; Functions reachable from a target via the call graph.  Two-line
+;; Datalog that mirrors raysense_blast_radius declaratively; swap
+;; `:calls` for any other relation in the saved baseline.  The
+;; assert-fact loop is shape-only -- in real use, build the datoms
+;; from a baseline table once and reuse the rule.
+(do
+  (set Db (datoms))
+  (set Db (assert-fact Db 0 (quote calls) 1))
+  (set Db (assert-fact Db 1 (quote calls) 2))
+  (set Db (assert-fact Db 2 (quote calls) 3))
+  (rule (reaches ?a ?b) (?a :calls ?b))
+  (rule (reaches ?a ?b) (?a :calls ?c) (reaches ?c ?b))
+  (count (query Db (find ?b) (where (reaches 0 ?b)))))
+```
+
 ## Result handling
 
-- `RAY_TABLE` returns: rows are returned as JSON; the agent reports
-  what it found and stops. Don't paginate Rayfall results -- if the
-  result is too wide, narrow `where` or add `take`.
-- Non-table return: surfaces as `RayfallResultNotTable` with the type
-  tag. Wrap with `(select {from: t})` or project explicit columns.
-- Parse / type / runtime errors: surfaces as `RayfallEval { code }`.
-  Common codes: `parse` (bad syntax), `type` (wrong column type for
-  the operator), `name` (unknown column or symbol).
+The query bridge promotes any non-error rayforce result into a
+`BaselineTableRows` shape.  Agents always get rows, never type
+errors.
+
+| Rayfall returns | Shape on the wire |
+|---|---|
+| `RAY_TABLE` | rows as-is, all columns preserved |
+| Atom (int / float / bool / str / sym) | one row, one column `value` |
+| Vector (typed) | N rows, one column `value` |
+| `RAY_DICT` | N rows, two columns `key`, `value` |
+| Anything else (LIST, LAMBDA, GUID) | `RayfallResultNotTable` with the type tag |
+
+Common error shapes:
+
+- Parse / type / runtime errors: `RayfallEval { code }`.  Codes:
+  `parse` (bad syntax), `type` (wrong column type for the operator),
+  `name` (unknown column or symbol), `domain` (out-of-range arg).
 
 ## When to skip
 
