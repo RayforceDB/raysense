@@ -625,6 +625,11 @@ pub struct EvolutionMetrics {
     /// Top files ranked by absolute bug-fix-commit count, then by ratio.
     #[serde(default)]
     pub bug_prone_files: Vec<EvolutionBugProneFile>,
+    /// Top files ranked by composite edit-risk score: the next agent
+    /// edit is most likely to break files that are volatile, complex,
+    /// owned by one person, and lack nearby tests.
+    #[serde(default)]
+    pub edit_risk_files: Vec<EvolutionEditRiskFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -680,6 +685,27 @@ pub struct EvolutionBugProneFile {
     pub bug_fix_commits: usize,
     pub total_commits: usize,
     pub bug_fix_ratio: f64,
+}
+
+/// Composite edit-risk score per file. Combines four signals already
+/// present elsewhere in the report:
+///
+///   risk = commits * max_complexity * bus_inverse * test_gap_factor
+///
+/// where `bus_inverse = 1.0 + 1.0 / max(bus_factor, 1)` (so a single
+/// owner doubles the score, two owners give 1.5x, five give 1.2x), and
+/// `test_gap_factor = 1.5` when the file has no nearby tests, else 1.0.
+/// Files unchanged in the sampled history naturally score 0 and are
+/// dropped, since the metric is about which files the *next* edit is
+/// most likely to break.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionEditRiskFile {
+    pub path: String,
+    pub commits: usize,
+    pub max_complexity: usize,
+    pub bus_factor: usize,
+    pub has_nearby_tests: bool,
+    pub risk_score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -875,7 +901,8 @@ fn metrics(
     config: &RaysenseConfig,
 ) -> MetricsSummary {
     let complexity = complexity_metrics(report, config);
-    let evolution = evolution_metrics(report, &complexity);
+    let test_gap = test_gap_metrics(report, config);
+    let evolution = evolution_metrics(report, &complexity, &test_gap);
     MetricsSummary {
         coupling: coupling_metrics(report, hotspots, config),
         calls: call_metrics(report),
@@ -883,7 +910,7 @@ fn metrics(
         complexity,
         size: size_metrics(report),
         entry_points: entry_point_metrics(report),
-        test_gap: test_gap_metrics(report, config),
+        test_gap,
         dsm: dsm_metrics(report, config),
         evolution,
         trend: trend_metrics(report),
@@ -2630,7 +2657,11 @@ fn dsm_metrics(report: &ScanReport, config: &RaysenseConfig) -> DsmMetrics {
     }
 }
 
-fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> EvolutionMetrics {
+fn evolution_metrics(
+    report: &ScanReport,
+    complexity: &ComplexityMetrics,
+    test_gap: &TestGapMetrics,
+) -> EvolutionMetrics {
     let root = &report.snapshot.root;
     let prefix = match git_output(root, ["rev-parse", "--show-prefix"]) {
         Ok(output) => output.trim().replace('\\', "/"),
@@ -2803,6 +2834,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
     let file_ages = file_ages(&file_age_window, now_unix);
     let change_coupling = change_coupling(&pair_counts, &file_commits);
     let bug_prone_files = bug_prone_files(&file_bug_fix_commits, &file_commits);
+    let edit_risk_files = edit_risk_files(&file_commits, complexity, &file_ownership, test_gap);
 
     EvolutionMetrics {
         available: true,
@@ -2818,6 +2850,7 @@ fn evolution_metrics(report: &ScanReport, complexity: &ComplexityMetrics) -> Evo
         change_coupling,
         bug_fix_commits,
         bug_prone_files,
+        edit_risk_files,
     }
 }
 
@@ -2838,6 +2871,79 @@ fn is_bug_fix_subject(subject: &str) -> bool {
         }
     }
     false
+}
+
+/// Compute the composite edit-risk score per file. See the
+/// `EvolutionEditRiskFile` doc comment for the formula. Returns the
+/// top 20 by `risk_score` desc, then commits desc, then path.
+fn edit_risk_files(
+    file_commits: &BTreeMap<String, usize>,
+    complexity: &ComplexityMetrics,
+    file_ownership: &[EvolutionFileOwnership],
+    test_gap: &TestGapMetrics,
+) -> Vec<EvolutionEditRiskFile> {
+    if file_commits.is_empty() || complexity.all_functions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut max_complexity_per_file: HashMap<&str, usize> = HashMap::new();
+    for func in &complexity.all_functions {
+        let entry = max_complexity_per_file
+            .entry(func.path.as_str())
+            .or_default();
+        if func.value > *entry {
+            *entry = func.value;
+        }
+    }
+
+    let bus_factor_by_path: HashMap<&str, usize> = file_ownership
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry.bus_factor))
+        .collect();
+
+    let test_gap_paths: HashSet<&str> = test_gap
+        .candidates
+        .iter()
+        .map(|candidate| candidate.path.as_str())
+        .collect();
+
+    let mut entries: Vec<EvolutionEditRiskFile> = file_commits
+        .iter()
+        .filter_map(|(path, commits)| {
+            let max_cc = max_complexity_per_file.get(path.as_str()).copied()?;
+            if *commits == 0 || max_cc == 0 {
+                return None;
+            }
+            // bus_factor missing -> default to 1 (most pessimistic = single owner).
+            let bus_factor = bus_factor_by_path
+                .get(path.as_str())
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            let bus_inverse = 1.0 + (1.0 / bus_factor as f64);
+            let has_nearby_tests = !test_gap_paths.contains(path.as_str());
+            let test_gap_factor = if has_nearby_tests { 1.0 } else { 1.5 };
+            let risk_score = (*commits as f64) * (max_cc as f64) * bus_inverse * test_gap_factor;
+            Some(EvolutionEditRiskFile {
+                path: path.clone(),
+                commits: *commits,
+                max_complexity: max_cc,
+                bus_factor,
+                has_nearby_tests,
+                risk_score,
+            })
+        })
+        .collect();
+
+    entries.sort_by(|a, b| {
+        b.risk_score
+            .partial_cmp(&a.risk_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.commits.cmp(&a.commits))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    entries.truncate(20);
+    entries
 }
 
 /// Top files ranked by absolute bug-fix-commit count, then by
@@ -4428,6 +4534,109 @@ mod tests {
         assert!(!is_bug_fix_subject("fixtures: regenerate snapshots")); // "fixtures"
         assert!(!is_bug_fix_subject("docs: typo in README"));
         assert!(!is_bug_fix_subject(""));
+    }
+
+    #[test]
+    fn edit_risk_files_combines_churn_complexity_busfactor_and_test_gap() {
+        use std::collections::BTreeMap;
+
+        // 3 candidate files. We synthesise the four input signals.
+        let mut file_commits: BTreeMap<String, usize> = BTreeMap::new();
+        file_commits.insert("src/risky.rs".to_string(), 10);
+        file_commits.insert("src/owned.rs".to_string(), 10);
+        file_commits.insert("src/safe.rs".to_string(), 10);
+
+        // Per-file max complexity, expressed via fake function records.
+        let complexity = ComplexityMetrics {
+            all_functions: vec![
+                FunctionComplexityMetric {
+                    path: "src/risky.rs".to_string(),
+                    name: String::new(),
+                    file_id: 0,
+                    function_id: 0,
+                    value: 50,
+                    cognitive_value: 0,
+                },
+                FunctionComplexityMetric {
+                    path: "src/owned.rs".to_string(),
+                    name: String::new(),
+                    file_id: 1,
+                    function_id: 1,
+                    value: 50,
+                    cognitive_value: 0,
+                },
+                FunctionComplexityMetric {
+                    path: "src/safe.rs".to_string(),
+                    name: String::new(),
+                    file_id: 2,
+                    function_id: 2,
+                    value: 50,
+                    cognitive_value: 0,
+                },
+            ],
+            ..ComplexityMetrics::default()
+        };
+
+        // bus_factor: risky owned by one author, owned by 2, safe by 5.
+        let file_ownership = vec![
+            EvolutionFileOwnership {
+                path: "src/risky.rs".to_string(),
+                top_author: "alice".to_string(),
+                top_author_commits: 10,
+                total_commits: 10,
+                author_count: 1,
+                bus_factor: 1,
+            },
+            EvolutionFileOwnership {
+                path: "src/owned.rs".to_string(),
+                top_author: "alice".to_string(),
+                top_author_commits: 6,
+                total_commits: 10,
+                author_count: 2,
+                bus_factor: 2,
+            },
+            EvolutionFileOwnership {
+                path: "src/safe.rs".to_string(),
+                top_author: "alice".to_string(),
+                top_author_commits: 3,
+                total_commits: 10,
+                author_count: 5,
+                bus_factor: 5,
+            },
+        ];
+
+        // test gap: only risky lacks nearby tests.
+        let test_gap = TestGapMetrics {
+            production_files: 3,
+            test_files: 2,
+            files_without_nearby_tests: 1,
+            candidates: vec![TestGapCandidate {
+                file_id: 0,
+                path: "src/risky.rs".to_string(),
+                framework: "rust".to_string(),
+                expected_tests: vec![],
+                matched_tests: vec![],
+            }],
+        };
+
+        let ranked = edit_risk_files(&file_commits, &complexity, &file_ownership, &test_gap);
+        assert_eq!(ranked.len(), 3);
+
+        // Expected scores:
+        //   risky:  10 * 50 * (1 + 1/1) * 1.5  = 1500.0
+        //   owned:  10 * 50 * (1 + 1/2) * 1.0  =  750.0
+        //   safe:   10 * 50 * (1 + 1/5) * 1.0  =  600.0
+        assert_eq!(ranked[0].path, "src/risky.rs");
+        assert!((ranked[0].risk_score - 1500.0).abs() < 1e-6);
+        assert!(!ranked[0].has_nearby_tests);
+        assert_eq!(ranked[0].bus_factor, 1);
+
+        assert_eq!(ranked[1].path, "src/owned.rs");
+        assert!((ranked[1].risk_score - 750.0).abs() < 1e-6);
+        assert!(ranked[1].has_nearby_tests);
+
+        assert_eq!(ranked[2].path, "src/safe.rs");
+        assert!((ranked[2].risk_score - 600.0).abs() < 1e-6);
     }
 
     #[test]

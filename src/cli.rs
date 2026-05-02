@@ -3148,6 +3148,21 @@ fn print_health(report: &crate::ScanReport, health: &crate::HealthSummary) {
         }
     }
 
+    if !health.metrics.evolution.edit_risk_files.is_empty() {
+        println!("edit_risk_files");
+        for entry in &health.metrics.evolution.edit_risk_files {
+            println!(
+                "  risk={:.1} commits={} max_complexity={} bus_factor={} tests={} {}",
+                entry.risk_score,
+                entry.commits,
+                entry.max_complexity,
+                entry.bus_factor,
+                if entry.has_nearby_tests { "yes" } else { "no" },
+                entry.path,
+            );
+        }
+    }
+
     if !health.metrics.calls.top_called_functions.is_empty() {
         println!("top_called_functions");
         for function in &health.metrics.calls.top_called_functions {
