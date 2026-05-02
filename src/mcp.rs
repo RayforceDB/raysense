@@ -386,7 +386,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "raysense_baseline_query",
-                "description": "Evaluate a Rayfall expression against a saved baseline table. The named table is bound to the symbol `t` and the expression must return a RAY_TABLE.",
+                "description": "Evaluate a Rayfall expression against a saved baseline table. The named table is bound to the symbol `t`; the expression must return a RAY_TABLE. Canonical form: (select {from: t where: <pred>}). Operators are prefix and arity-strict, e.g. (> lines 500), (and p q), (== language \"rust\"). For schema and worked examples, load the raysense-query skill bundled with this plugin.",
                 "inputSchema": baseline_query_schema()
             }
         ]

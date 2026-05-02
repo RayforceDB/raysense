@@ -1,0 +1,140 @@
+---
+name: raysense-query
+description: Use when the agent has a structural question about the saved baseline that the typed MCP tools (health, hotspots, rules, blast radius, coupling, cycles, evolution) do not directly answer. Runs Rayfall expressions against splayed baseline tables via raysense_baseline_query, joining and projecting columns the typed tools never expose. Reach for this when the question shape is "files where X and Y," "callers of Z grouped by module," or any custom slice across the 18 baseline tables.
+---
+
+# Raysense Query
+
+`raysense_baseline_query` evaluates a Rayfall expression against a
+single baseline table, which is bound to the symbol `t` before
+evaluation. The result must itself be a `RAY_TABLE`. Wrap scalar /
+column queries with `select` to keep the result tabular.
+
+Use this when the question shape isn't covered by the dedicated tools.
+For pure paginate / filter / sort, prefer `raysense_baseline_table_read`
+(no Rayfall needed). For graph-shaped questions (blast radius, cycles),
+prefer `raysense_blast_radius` / `raysense_cycles`.
+
+## Inputs
+
+```text
+raysense_baseline_query
+    path:     <absolute repo root, defaults to cwd>
+    table:    one of files | functions | imports | calls | call_edges
+              | types | hotspots | rules | module_edges | changed_files
+              | file_ownership | temporal_hotspots | file_ages
+              | change_coupling | inheritance | entry_points | health
+              | meta
+    rayfall:  Rayfall source, e.g. "(select {from: t where: (> lines 500)})"
+```
+
+Call `raysense_baseline_tables` first if you are unsure what is saved
+(empty / missing tables fail loudly rather than silently).
+
+## Schema cheat sheet
+
+The columns most agents ask about. For the full list, query the table
+once with `t` (no filter) and read the column names off the result.
+
+- **files**: `file_id i64`, `path str`, `language str`, `module str`,
+  `lines i64`, `bytes i64`, `content_hash str`
+- **functions**: `function_id i64`, `file_id i64`, `name str`,
+  `start_line i64`, `end_line i64`
+- **calls**: `call_id i64`, `file_id i64`, `caller_function i64`,
+  `target str`, `line i64`
+- **call_edges**: `edge_id i64`, `call_id i64`, `caller_function i64`,
+  `callee_function i64`
+- **imports**: `import_id i64`, `from_file i64`, `target str`,
+  `kind str`, `resolution str`, `resolved_file i64`
+- **hotspots**: `file_id i64`, `path str`, `module str`,
+  `fan_in i64`, `fan_out i64`
+- **rules**: `severity str`, `code str`, `path str`, `message str`
+- **module_edges**: `from_module str`, `to_module str`, `edges i64`
+- **change_coupling**: `left str`, `right str`, `co_commits i64`,
+  `coupling_strength_milli i64`
+- **file_ownership**: `path str`, `top_author str`,
+  `top_author_commits i64`, `total_commits i64`, `author_count i64`,
+  `bus_factor i64`
+- **meta**: `schema_version i64`, `raysense_version str`,
+  `rayforce_version str`, `repo_sha str`, `snapshot_id str`,
+  `scan_unix i64`, `column_digest str`
+
+## Rayfall in 30 seconds
+
+S-expression, prefix notation, strict arity. The bound symbol is `t`.
+
+```clj
+t                                     ; the whole bound table
+(count t)                             ; row count, scalar -- NOT a table
+(at t 'path)                          ; column vector, NOT a table
+
+(select {from: t})                    ; full table back, RAY_TABLE
+(select {from: t where: (> lines 500)})
+(select {path: path lines: lines from: t where: (> lines 500)})
+
+;; aggregation: group with `by`
+(select {n: (count path) total: (sum lines)
+         from: t by: language})
+
+;; combined predicates
+(select {from: t where: (and (== language "rust") (> lines 1000))})
+
+;; sort + take
+(select {from: t asc: lines take: 10})
+(select {from: t desc: lines take: 10})
+```
+
+Operators are **functions, not infix**: `(> a b)`, `(== a b)`,
+`(and p q)`, `(or p q)`, `(in x set)`. String literals use double
+quotes; symbols use a leading apostrophe.
+
+## Worked examples
+
+Files over 500 lines, sorted by size:
+
+```clj
+(select {path: path lines: lines from: t
+         where: (> lines 500) desc: lines})
+```
+
+Files where a single author owns more than 80% of commits:
+
+```clj
+;; against table file_ownership -- div is float divide; % is modulo
+(select {from: t
+         where: (> (div top_author_commits total_commits) 0.8)})
+```
+
+LOC by language, descending:
+
+```clj
+;; against table files
+(select {loc: (sum lines) files: (count path)
+         from: t by: language desc: loc})
+```
+
+Top 5 most-changed paths:
+
+```clj
+;; against table changed_files
+(select {from: t desc: commits take: 5})
+```
+
+## Result handling
+
+- `RAY_TABLE` returns: rows are returned as JSON; the agent reports
+  what it found and stops. Don't paginate Rayfall results -- if the
+  result is too wide, narrow `where` or add `take`.
+- Non-table return: surfaces as `RayfallResultNotTable` with the type
+  tag. Wrap with `(select {from: t})` or project explicit columns.
+- Parse / type / runtime errors: surfaces as `RayfallEval { code }`.
+  Common codes: `parse` (bad syntax), `type` (wrong column type for
+  the operator), `name` (unknown column or symbol).
+
+## When to skip
+
+- Use `raysense_baseline_table_read` for plain filter / sort / page
+  with no joins or aggregations. It does not require Rayfall and is
+  simpler for the agent to construct correctly.
+- Use the typed tools (`raysense_hotspots`, `raysense_rules`, etc.)
+  whenever they cover the question. Rayfall is for the long tail.

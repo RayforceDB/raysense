@@ -120,11 +120,13 @@ Raysense ships as a Claude Code plugin:
 /plugin install raysense
 ```
 
-Four phase-scoped skills: scan + baseline at session start, blast
-radius before edits, regression diff after, on-demand architecture
-audits. Multi-codebase isolation is cwd-driven, so per-project state
-stays in `<repo>/.raysense/`. Two sessions on two repos = two
-independent baselines, zero cross-project bleed.
+Five skills: scan + baseline at session start, blast radius before
+edits, regression diff after, on-demand architecture audits, and a
+Rayfall query skill that lets agents run free-form expressions
+against the saved baseline tables when the typed tools fall short.
+Multi-codebase isolation is cwd-driven, so per-project state stays in
+`<repo>/.raysense/`. Two sessions on two repos = two independent
+baselines, zero cross-project bleed.
 
 ## Capabilities
 
