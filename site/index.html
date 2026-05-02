@@ -306,8 +306,8 @@ trend             samples=2 score_delta=0 dimension_drift=stable</code></pre>
         <p>Bus factor per file, change-coupling pairs, temporal hotspots (churn x complexity), file age windows, and bug-fix concentration. Six lenses on how the codebase has actually moved over the last 500 commits.</p>
       </div>
       <div class="feature-card">
-        <h3>68 languages out of the box</h3>
-        <p>Five tree-sitter built-ins with full AST analysis, plus 63 configurable plugins covering everything from Solidity to COBOL. <a href="#languages">See the coverage map &rarr;</a></p>
+        <h3>69 languages out of the box</h3>
+        <p>Eleven tree-sitter built-ins with full AST analysis, Rayfall with native S-expression extraction, plus 57 configurable plugins covering everything from Solidity to COBOL. <a href="#languages">See the coverage map &rarr;</a></p>
       </div>
     </div>
   </div>
@@ -316,9 +316,9 @@ trend             samples=2 score_delta=0 dimension_drift=stable</code></pre>
 <section id="languages" class="section">
   <div class="container">
     <div class="section-eyebrow">LANGUAGE COVERAGE</div>
-    <h2>68 languages, three tiers of analysis depth.</h2>
+    <h2>69 languages, three tiers of analysis depth.</h2>
     <p class="section-lead">
-      Tree-sitter built-ins get the full pipeline: function bodies parsed, cyclomatic and cognitive complexity, type inheritance (9 languages: Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, Ruby), and call graphs. The catalog plugins extract functions and imports via configurable prefix patterns, no AST. Every other metric on this page (edit-risk, score drift, bug-density, evolution, blast radius) works at every tier.
+      Tree-sitter built-ins get the full pipeline: function bodies parsed, cyclomatic and cognitive complexity, and type inheritance (9 class-based languages: Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, Ruby). Rayfall (the RayforceDB query language) joins them at tier 3 with native S-expression extraction tuned to its LISP-like syntax: functions, imports, and table/dict types. The catalog plugins extract functions and imports via configurable prefix patterns, no AST. Every other metric on this page (edit-risk, score drift, bug-density, evolution, blast radius) works at every tier.
     </p>
 
     <div class="lang-legend">
@@ -375,6 +375,7 @@ trend             samples=2 score_delta=0 dimension_drift=stable</code></pre>
       <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/grpc/grpc-plain.svg" onerror="this.remove()"><span class="lang-name">Proto</span></div>
       <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/python/python-plain.svg" onerror="this.remove()"><span class="lang-name">Python</span></div>
       <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/r/r-plain.svg" onerror="this.remove()"><span class="lang-name">R</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="assets/img/rayforce-mark.svg" onerror="this.remove()"><span class="lang-name">Rayfall</span></div>
       <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/simple-icons/rescript.svg" onerror="this.remove()"><span class="lang-name">ReScript</span></div>
       <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/ruby/ruby-plain.svg" onerror="this.remove()"><span class="lang-name">Ruby</span></div>
       <div class="lang-cell lang-tier-2"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/rust/rust-original.svg" onerror="this.remove()"><span class="lang-name">Rust</span></div>

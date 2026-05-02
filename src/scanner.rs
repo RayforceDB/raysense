@@ -192,7 +192,11 @@ pub fn scan_path_with_config(
             calls.push(call.clone());
         }
 
-        let line_types = extract_types(file_id, &file_fact, &content, plugin.as_ref());
+        let line_types = if matches!(language, Language::Rayfall) {
+            extract_rayfall_types(file_id, &content)
+        } else {
+            extract_types(file_id, &file_fact, &content, plugin.as_ref())
+        };
         let merged_types = merge_tree_sitter_types_with_line_types(
             extract_tree_sitter_types(file_id, &content, language),
             line_types,
@@ -720,6 +724,7 @@ fn language_name(language: Language) -> &'static str {
         Language::Java => "java",
         Language::Kotlin => "kotlin",
         Language::Python => "python",
+        Language::Rayfall => "rayfall",
         Language::Ruby => "ruby",
         Language::Rust => "rust",
         Language::Scala => "scala",
@@ -890,6 +895,7 @@ fn extract_functions(file_id: usize, language: Language, content: &str) -> Vec<F
             &["method", "singleton_method"],
         )
         .unwrap_or_else(|| extract_prefixed_functions(file_id, content, "def ")),
+        Language::Rayfall => extract_rayfall_functions(file_id, content),
         Language::Unknown => Vec::new(),
     }
 }
@@ -1641,6 +1647,7 @@ fn extract_imports(file_id: usize, language: Language, content: &str) -> Vec<Imp
             extract_tree_sitter_imports(file_id, content, tree_sitter_ruby::LANGUAGE.into())
                 .unwrap_or_else(|| extract_ruby_imports(file_id, content))
         }
+        Language::Rayfall => extract_rayfall_imports(file_id, content),
         Language::Unknown => Vec::new(),
     }
 }
@@ -1902,6 +1909,7 @@ fn extract_calls(
         Language::Scala => (tree_sitter_scala::LANGUAGE.into(), &["call_expression"][..]),
         Language::Swift => (tree_sitter_swift::LANGUAGE.into(), &["call_expression"][..]),
         Language::Ruby => (tree_sitter_ruby::LANGUAGE.into(), &["call"][..]),
+        Language::Rayfall => return extract_rayfall_calls(file_id, content, functions),
         Language::Unknown => return Vec::new(),
     };
 
@@ -2851,6 +2859,7 @@ fn import_candidates(
         Language::C | Language::Cpp => {
             c_import_candidates(&from_file.path, &import.target, include_roots)
         }
+        Language::Rayfall => rayfall_import_candidates(&from_file.path, &import.target),
         Language::Java
         | Language::CSharp
         | Language::Kotlin
@@ -2859,6 +2868,26 @@ fn import_candidates(
         | Language::Ruby
         | Language::Unknown => plugin_import_candidates(from_file, import, config),
     }
+}
+
+/// Rayfall imports are bare filesystem path strings (e.g. `"./helper.rfl"`,
+/// `"/tmp/data.csv"`, `"/var/db/trades/"`). Resolve `./` and `../` against
+/// the importing file's directory; pass everything else through. Trailing
+/// slashes (splayed/parted directory mounts) survive so the resolver can
+/// match a directory entry.
+fn rayfall_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
+    let raw = target.trim();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = Vec::new();
+    if raw.starts_with("./") || raw.starts_with("../") {
+        if let Some(base) = relative_base(from_path, raw) {
+            candidates.push(normalize_path(base));
+        }
+    }
+    candidates.push(raw.trim_start_matches('/').to_string());
+    candidates
 }
 
 fn plugin_import_candidates(
@@ -3159,6 +3188,260 @@ fn is_test_path(path: &str) -> bool {
         || path.contains("/tests/")
         || path.contains("_test.")
         || path.contains("_tests.")
+}
+
+const RAYFALL_IMPORT_PREFIXES: &[&str] = &[
+    "(read ",
+    "(load ",
+    "(.csv.read ",
+    "(.csv.write ",
+    "(.db.splayed.get ",
+    "(.db.splayed.mount ",
+    "(.db.splayed.set ",
+    "(.db.parted.get ",
+    "(.db.parted.mount ",
+    "(hnsw-load ",
+    "(hnsw-save ",
+];
+
+fn is_rayfall_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(
+            c,
+            '_' | '-' | '?' | '!' | '*' | '+' | '/' | '<' | '>' | '=' | '%' | '.'
+        )
+}
+
+fn rayfall_ws(s: &str) -> &str {
+    s.trim_start_matches(|c: char| c == ' ' || c == '\t')
+}
+
+/// If `line[pos..]` looks like `(set IDENT (HEAD …` where HEAD is one of
+/// `forms`, return the identifier and the absolute column where `(HEAD`
+/// begins. Whitespace between tokens is permitted; the form's body need
+/// not be on the same line beyond `(HEAD`.
+fn parse_rayfall_set_form<'a>(
+    line: &str,
+    pos: usize,
+    forms: &'a [&str],
+) -> Option<(String, &'a str, usize)> {
+    let after_set = line.get(pos..)?.strip_prefix("(set")?;
+    if !after_set
+        .chars()
+        .next()
+        .is_some_and(|c| c == ' ' || c == '\t')
+    {
+        return None;
+    }
+    let after_ws1 = rayfall_ws(after_set);
+    let id_end = after_ws1
+        .find(|c: char| !is_rayfall_ident_char(c))
+        .unwrap_or(after_ws1.len());
+    if id_end == 0 {
+        return None;
+    }
+    let name = &after_ws1[..id_end];
+    let after_id = &after_ws1[id_end..];
+    if !after_id
+        .chars()
+        .next()
+        .is_some_and(|c| c == ' ' || c == '\t')
+    {
+        return None;
+    }
+    let after_ws2 = rayfall_ws(after_id);
+    let head_pos = pos + (line.len() - pos - after_ws2.len());
+    for form in forms {
+        let opener = format!("({form}");
+        if let Some(after_form) = after_ws2.strip_prefix(opener.as_str()) {
+            let next = after_form.chars().next();
+            if matches!(
+                next,
+                Some(' ') | Some('\t') | Some('[') | Some('(') | Some('\n')
+            ) || next.is_none()
+            {
+                return Some((name.to_string(), form, head_pos));
+            }
+        }
+    }
+    None
+}
+
+/// Walk the source from `(start, col)` and return the 1-indexed line where
+/// the opening paren at that position is closed. Honors `;` line comments
+/// and `"` string literals so embedded parens don't confuse the counter.
+fn rayfall_form_end_line(lines: &[&str], start: usize, col: usize) -> usize {
+    let mut depth: i32 = 0;
+    let mut started = false;
+    let mut in_string = false;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        let from = if i == start { col } else { 0 };
+        let mut chars = line[from..].chars();
+        while let Some(ch) = chars.next() {
+            if in_string {
+                if ch == '\\' {
+                    chars.next();
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_string = true,
+                ';' => break,
+                '(' => {
+                    depth += 1;
+                    started = true;
+                }
+                ')' => {
+                    depth -= 1;
+                    if started && depth <= 0 {
+                        return i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    lines.len().max(start + 1)
+}
+
+fn extract_rayfall_functions(file_id: usize, content: &str) -> Vec<FunctionFact> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut functions = Vec::new();
+    let mut named_lambda_positions: std::collections::HashSet<(usize, usize)> =
+        std::collections::HashSet::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let mut from = 0;
+        while let Some(rel) = line[from..].find("(set ") {
+            let pos = from + rel;
+            if let Some((name, _form, fn_pos)) = parse_rayfall_set_form(line, pos, &["fn"]) {
+                let end_line = rayfall_form_end_line(&lines, idx, pos);
+                functions.push(FunctionFact {
+                    function_id: 0,
+                    file_id,
+                    name,
+                    start_line: idx + 1,
+                    end_line,
+                });
+                named_lambda_positions.insert((idx, fn_pos));
+                from = fn_pos.max(pos + 1);
+            } else {
+                from = pos + 1;
+            }
+        }
+    }
+
+    for (idx, line) in lines.iter().enumerate() {
+        let mut from = 0;
+        while let Some(rel) = line[from..].find("(fn") {
+            let pos = from + rel;
+            let after = &line[pos + 3..];
+            let valid_terminator = after
+                .chars()
+                .next()
+                .map(|c| c == ' ' || c == '\t' || c == '[' || c == '(')
+                .unwrap_or(false);
+            if !valid_terminator {
+                from = pos + 1;
+                continue;
+            }
+            if !named_lambda_positions.contains(&(idx, pos)) {
+                let end_line = rayfall_form_end_line(&lines, idx, pos);
+                functions.push(FunctionFact {
+                    function_id: 0,
+                    file_id,
+                    name: format!("lambda@{}", idx + 1),
+                    start_line: idx + 1,
+                    end_line,
+                });
+            }
+            from = pos + 3;
+        }
+    }
+
+    functions.sort_by_key(|f| (f.start_line, f.name.clone()));
+    functions
+}
+
+fn rayfall_first_string_literal(s: &str) -> Option<String> {
+    let start = s.find('"')?;
+    let mut out = String::new();
+    let mut chars = s[start + 1..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '"' => return Some(out),
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+fn extract_rayfall_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
+    let mut imports = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        for prefix in RAYFALL_IMPORT_PREFIXES {
+            let Some(rest) = trimmed.strip_prefix(prefix) else {
+                continue;
+            };
+            let Some(target) = rayfall_first_string_literal(rest) else {
+                break;
+            };
+            let kind = prefix.trim_start_matches('(').trim().to_string();
+            imports.push(ImportFact {
+                import_id: 0,
+                from_file: file_id,
+                target,
+                kind,
+                resolution: ImportResolution::Unresolved,
+                resolved_file: None,
+            });
+            break;
+        }
+    }
+    imports
+}
+
+fn extract_rayfall_calls(
+    _file_id: usize,
+    _content: &str,
+    _functions: &[FunctionFact],
+) -> Vec<CallFact> {
+    Vec::new()
+}
+
+fn extract_rayfall_types(file_id: usize, content: &str) -> Vec<TypeFact> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut types = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let mut from = 0;
+        while let Some(rel) = line[from..].find("(set ") {
+            let pos = from + rel;
+            if let Some((name, _form, _head_pos)) =
+                parse_rayfall_set_form(line, pos, &["table", "dict"])
+            {
+                types.push(TypeFact {
+                    type_id: 0,
+                    file_id,
+                    name,
+                    is_abstract: false,
+                    line: idx + 1,
+                    bases: Vec::new(),
+                });
+                from = pos + 5;
+            } else {
+                from = pos + 1;
+            }
+        }
+    }
+    types
 }
 
 #[cfg(test)]
@@ -4291,5 +4574,93 @@ int run(void) {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("raysense-{name}-{nanos}"))
+    }
+
+    #[test]
+    fn extracts_rayfall_named_functions() {
+        let content = "(set fib (fn [x] (if (< x 2) 1 (+ (self (- x 1)) (self (- x 2))))))\n";
+        let functions = extract_functions(0, Language::Rayfall, content);
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "fib");
+        assert_eq!(functions[0].start_line, 1);
+    }
+
+    #[test]
+    fn extracts_rayfall_anonymous_lambdas() {
+        let content = "(timer 500 1000000000 (fn [x] (insert 'q (list x))))\n";
+        let functions = extract_functions(0, Language::Rayfall, content);
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "lambda@1");
+    }
+
+    #[test]
+    fn extracts_rayfall_named_and_anonymous_together() {
+        let content = "(set f (fn [x] (* x x)))\n(timer 700 1000 (fn [x] (insert 'a x)))\n";
+        let functions = extract_functions(0, Language::Rayfall, content);
+        assert_eq!(functions.len(), 2);
+        assert_eq!(functions[0].name, "f");
+        assert_eq!(functions[0].start_line, 1);
+        assert_eq!(functions[1].name, "lambda@2");
+        assert_eq!(functions[1].start_line, 2);
+    }
+
+    #[test]
+    fn extracts_rayfall_table_types() {
+        let content = "(set trades (table [Sym Ts Price] (list [] [] [])))\n";
+        let report = scan_for_rayfall(content);
+        assert_eq!(report.types.len(), 1);
+        assert_eq!(report.types[0].name, "trades");
+        assert!(!report.types[0].is_abstract);
+        assert!(report.types[0].bases.is_empty());
+    }
+
+    #[test]
+    fn extracts_rayfall_dict_types() {
+        let content = "(set D (dict [a b c] [1 2 3]))\n";
+        let report = scan_for_rayfall(content);
+        assert_eq!(report.types.len(), 1);
+        assert_eq!(report.types[0].name, "D");
+    }
+
+    #[test]
+    fn extracts_rayfall_imports() {
+        let content = "(load \"lib.rfl\")\n\
+                       (.csv.read 'I64 \"data.csv\")\n\
+                       (.db.splayed.get \"/db/trades/\")\n";
+        let imports = extract_imports(0, Language::Rayfall, content);
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[0].target, "lib.rfl");
+        assert_eq!(imports[0].kind, "load");
+        assert_eq!(imports[1].target, "data.csv");
+        assert_eq!(imports[1].kind, ".csv.read");
+        assert_eq!(imports[2].target, "/db/trades/");
+        assert_eq!(imports[2].kind, ".db.splayed.get");
+    }
+
+    #[test]
+    fn rayfall_kebab_case_function_names_are_preserved() {
+        let content = "(set my-func (fn [x] x))\n(set T-Small (table [a b] (list [1 2] [3 4])))\n";
+        let functions = extract_functions(0, Language::Rayfall, content);
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "my-func");
+        let report = scan_for_rayfall(content);
+        let table = report
+            .types
+            .iter()
+            .find(|t| t.line == 2)
+            .expect("table type on line 2");
+        assert_eq!(table.name, "T-Small");
+    }
+
+    /// Run a full scan against a single in-memory `.rfl` file so the test
+    /// covers the dispatch in `scan_path_with_config` (which is what wires
+    /// `extract_rayfall_types` into the report).
+    fn scan_for_rayfall(content: &str) -> crate::facts::ScanReport {
+        let dir = temp_scan_root("rayfall");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sample.rfl"), content).unwrap();
+        let report = scan_path(&dir).expect("scan succeeds");
+        let _ = std::fs::remove_dir_all(&dir);
+        report
     }
 }
