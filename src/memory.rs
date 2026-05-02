@@ -37,9 +37,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 /// On-disk schema version for the splayed baseline tables. Bump whenever any
-/// table builder gains, loses, or renames a column. The `meta` table stamps
-/// this value at save time; readers refuse to decode mismatched baselines.
-pub const SCHEMA_VERSION: i64 = 1;
+/// table builder gains, loses, renames a column, or changes a column's
+/// physical type. The `meta` table stamps this value at save time; readers
+/// refuse to decode mismatched baselines.
+///
+/// History:
+/// - v1: initial schema, every string column stored as `RAY_STR`.
+/// - v2: low-cardinality columns (`language`, `module`, `kind`,
+///   `resolution`, `severity`, `top_author`) moved to dict-encoded
+///   `RAY_SYM` for storage and load-time wins on large repos.
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -1378,11 +1385,11 @@ fn build_files_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
             .iter()
             .map(|file| file.path.to_string_lossy().into_owned()),
     )?;
-    let languages = str_vec(
+    let languages = sym_vec(
         report.files.len(),
         report.files.iter().map(|file| file.language_name.clone()),
     )?;
-    let modules = str_vec(
+    let modules = sym_vec(
         report.files.len(),
         report.files.iter().map(|file| file.module.clone()),
     )?;
@@ -1474,7 +1481,7 @@ fn build_entry_points_table(report: &ScanReport) -> Result<RayObject, MemoryErro
         report.entry_points.len(),
         report.entry_points.iter().map(|entry| entry.file_id as i64),
     )?;
-    let kinds = str_vec(
+    let kinds = sym_vec(
         report.entry_points.len(),
         report
             .entry_points
@@ -1510,11 +1517,11 @@ fn build_imports_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
         report.imports.len(),
         report.imports.iter().map(|import| import.target.clone()),
     )?;
-    let kinds = str_vec(
+    let kinds = sym_vec(
         report.imports.len(),
         report.imports.iter().map(|import| import.kind.clone()),
     )?;
-    let resolutions = str_vec(
+    let resolutions = sym_vec(
         report.imports.len(),
         report
             .imports
@@ -1590,7 +1597,7 @@ fn build_file_ownership_table(health: &HealthSummary) -> Result<RayObject, Memor
             .iter()
             .map(|file| file.path.clone()),
     )?;
-    let top_authors = str_vec(
+    let top_authors = sym_vec(
         rows,
         health
             .metrics
@@ -2004,7 +2011,7 @@ fn build_rules_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
         [
             (
                 "severity",
-                str_vec(
+                sym_vec(
                     rows,
                     health
                         .rules
@@ -2396,6 +2403,42 @@ fn str_vec(
             crate::sys::ray_str_vec_append(vec.into_raw(), value.as_ptr(), value.as_bytes().len())
         };
         vec = RayObject::new(next, "string vector append")?;
+    }
+
+    Ok(vec)
+}
+
+/// Dict-encoded string column. Each value is interned through the global
+/// symbol table once and stored as an i64 index in the resulting
+/// `RAY_SYM` vector; repeated values share a single interned string.
+/// Use this for low-cardinality columns (language tags, severity levels,
+/// resolution states, author emails) where the storage and load-time win
+/// over `str_vec` is meaningful.
+fn sym_vec(
+    capacity: usize,
+    values: impl IntoIterator<Item = String>,
+) -> Result<RayObject, MemoryError> {
+    // W64 is the safe-default index width: the global sym table can grow
+    // unboundedly across baselines, so picking a smaller width risks
+    // overflow on a future re-save against a larger sym space.  The
+    // adaptive-width support exists for cases where the cardinality is
+    // known to be bounded (e.g. severity); this code keeps the contract
+    // simple and uniform.
+    let mut vec = RayObject::new(
+        unsafe { crate::sys::ray_sym_vec_new(crate::sys::RAY_SYM_W64, capacity as i64) },
+        "sym vector",
+    )?;
+
+    for value in values {
+        let cstr = CString::new(value)?;
+        let id: i64 = unsafe { crate::sys::ray_sym_intern(cstr.as_ptr(), cstr.as_bytes().len()) };
+        let next = unsafe {
+            crate::sys::ray_vec_append(
+                vec.into_raw(),
+                (&id as *const i64).cast::<std::ffi::c_void>(),
+            )
+        };
+        vec = RayObject::new(next, "sym vector append")?;
     }
 
     Ok(vec)
@@ -2921,6 +2964,34 @@ mod tests {
         let result = eval_policy_pack(baseline_dir, &policy_path);
         std::fs::remove_dir_all(&policies_dir).unwrap();
         result
+    }
+
+    #[test]
+    fn sym_columns_round_trip_through_save_and_query() {
+        // Regression for the Lane C sym migration: language and module
+        // columns now ship as RAY_SYM (dict-encoded) instead of RAY_STR.
+        // The wire is invisible to agents -- string predicates like
+        // (== language "rust") must keep working, and the cell decoder
+        // must resolve sym IDs back to the original interned strings.
+        let _guard = rayforce_test_guard();
+        let dir = temp_tables_dir("sym-roundtrip");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let rows = query_with_rayfall(
+            &dir,
+            "files",
+            r#"(select {from: t where: (== language "rust")})"#,
+        )
+        .unwrap();
+
+        // sample_report has exactly one rust file (src/lib.rs).
+        assert_eq!(rows.matched_rows, 1);
+        assert_eq!(rows.rows[0]["path"], json!("src/lib.rs"));
+        assert_eq!(rows.rows[0]["language"], json!("rust"));
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -48,6 +48,14 @@ pub const RAY_TABLE: i8 = 98;
 pub const RAY_DICT: i8 = 99;
 pub const RAY_ERROR: i8 = 127;
 
+// RAY_SYM index widths (low 2 bits of vec attrs). W64 is the safe default
+// when the global symbol table can grow past the small caps; W8/W16/W32
+// are storage wins when the cardinality is bounded.
+pub const RAY_SYM_W8: u8 = 0;
+pub const RAY_SYM_W16: u8 = 1;
+pub const RAY_SYM_W32: u8 = 2;
+pub const RAY_SYM_W64: u8 = 3;
+
 #[repr(C)]
 pub struct ray_t {
     pub header: [u8; 16],
@@ -74,6 +82,7 @@ unsafe extern "C" {
     pub fn ray_sym_str(id: i64) -> *mut ray_t;
 
     pub fn ray_vec_new(type_: i8, capacity: i64) -> *mut ray_t;
+    pub fn ray_sym_vec_new(sym_width: u8, capacity: i64) -> *mut ray_t;
     pub fn ray_vec_append(vec: *mut ray_t, elem: *const std::ffi::c_void) -> *mut ray_t;
     pub fn ray_str_vec_append(vec: *mut ray_t, s: *const c_char, len: usize) -> *mut ray_t;
     pub fn ray_str_vec_get(vec: *mut ray_t, idx: i64, out_len: *mut usize) -> *const c_char;
