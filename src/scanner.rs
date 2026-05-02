@@ -2053,6 +2053,7 @@ fn extract_tree_sitter_types(
     let ts_language = match language {
         Language::Python => tree_sitter_python::LANGUAGE.into(),
         Language::TypeScript => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         _ => return None,
     };
     let mut parser = Parser::new();
@@ -2074,7 +2075,10 @@ fn collect_tree_sitter_types(
     out: &mut Vec<TypeFact>,
 ) {
     let kind = node.kind();
-    let is_class = matches!(kind, "class_definition" | "class_declaration");
+    let is_class = matches!(
+        kind,
+        "class_definition" | "class_declaration" | "class_specifier" | "struct_specifier"
+    );
     if is_class {
         let name = node
             .child_by_field_name("name")
@@ -2123,6 +2127,17 @@ fn base_classes_from_class_node(content: &str, node: Node<'_>) -> Vec<String> {
                         if let Some(text) = node_text(content, sub) {
                             bases.push(text);
                         }
+                    }
+                }
+            }
+        } else if child.kind() == "base_class_clause" {
+            // C++: `class Derived : public Base, protected IFace { ... }`.
+            // Skip access specifiers, take type_identifier and qualified_identifier.
+            let mut ccursor = child.walk();
+            for sub in child.children(&mut ccursor) {
+                if matches!(sub.kind(), "type_identifier" | "qualified_identifier") {
+                    if let Some(text) = node_text(content, sub) {
+                        bases.push(text);
                     }
                 }
             }
@@ -3773,6 +3788,25 @@ int run(void) {
         assert!(foo.bases.contains(&"Bar".to_string()));
         assert!(foo.bases.contains(&"Baz".to_string()));
         assert!(foo.bases.contains(&"Qux".to_string()));
+    }
+
+    #[test]
+    fn tree_sitter_extracts_cpp_class_inheritance() {
+        let content =
+            "class Animal {};\nclass Dog : public Animal, protected IBarker {\npublic:\n};\n";
+        let types = extract_tree_sitter_types(0, content, Language::Cpp).unwrap();
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert_eq!(dog.bases, vec!["Animal".to_string(), "IBarker".to_string()]);
+        let animal = types.iter().find(|t| t.name == "Animal").unwrap();
+        assert!(animal.bases.is_empty());
+    }
+
+    #[test]
+    fn tree_sitter_extracts_cpp_struct_inheritance() {
+        let content = "struct Base {};\nstruct Derived : Base { int x; };\n";
+        let types = extract_tree_sitter_types(0, content, Language::Cpp).unwrap();
+        let derived = types.iter().find(|t| t.name == "Derived").unwrap();
+        assert_eq!(derived.bases, vec!["Base".to_string()]);
     }
 
     #[test]
