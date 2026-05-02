@@ -28,8 +28,14 @@ use std::path::PathBuf;
 pub enum Language {
     C,
     Cpp,
+    CSharp,
+    Java,
+    Kotlin,
     Python,
+    Ruby,
     Rust,
+    Scala,
+    Swift,
     TypeScript,
     Unknown,
 }
@@ -41,8 +47,14 @@ impl Language {
             Some("cc") | Some("cpp") | Some("cxx") | Some("hh") | Some("hpp") | Some("hxx") => {
                 Self::Cpp
             }
+            Some("cs") => Self::CSharp,
+            Some("java") => Self::Java,
+            Some("kt") | Some("kts") => Self::Kotlin,
             Some("py") => Self::Python,
+            Some("rb") => Self::Ruby,
             Some("rs") => Self::Rust,
+            Some("scala") | Some("sc") => Self::Scala,
+            Some("swift") => Self::Swift,
             Some("ts") | Some("tsx") | Some("js") | Some("jsx") => Self::TypeScript,
             _ => Self::Unknown,
         }

@@ -114,11 +114,13 @@ independent baselines, zero cross-project bleed.
 - **Evolution signal** - bus factor per file, change-coupling pairs,
   temporal hotspots (churn x complexity), file age windows, and
   bug-fix concentration over the last 500 commits
-- **68 language profiles out of the box** - Rust, Python, TypeScript,
-  C, C++ via tree-sitter; 63 more standard profiles (Go, Java,
-  Kotlin, Swift, Ruby, Elixir, Haskell, Clojure, Zig, GLSL,
-  Terraform, Dockerfile, ...) via configurable plugins. Add your own
-  in `.raysense/plugins/`.
+- **68 language profiles out of the box** - 11 languages with full
+  AST analysis (Python, TypeScript, C++, Java, C#, Kotlin, Scala,
+  Swift, Ruby get type inheritance on top; Rust and C stop at
+  complexity since their type models don't fit the inheritance
+  graph). 57 more standard profiles (Go, Elixir, Haskell, Clojure,
+  Zig, GLSL, Terraform, Dockerfile, ...) via configurable plugins.
+  Add your own in `.raysense/plugins/`.
 
 ## Built on Rayforce
 

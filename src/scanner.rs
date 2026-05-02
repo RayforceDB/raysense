@@ -716,8 +716,14 @@ fn language_name(language: Language) -> &'static str {
     match language {
         Language::C => "c",
         Language::Cpp => "cpp",
+        Language::CSharp => "csharp",
+        Language::Java => "java",
+        Language::Kotlin => "kotlin",
         Language::Python => "python",
+        Language::Ruby => "ruby",
         Language::Rust => "rust",
+        Language::Scala => "scala",
+        Language::Swift => "swift",
         Language::TypeScript => "typescript",
         Language::Unknown => "unknown",
     }
@@ -838,6 +844,52 @@ fn extract_functions(file_id: usize, language: Language, content: &str) -> Vec<F
             &["function_definition"],
         )
         .unwrap_or_else(|| extract_c_like_functions(file_id, content)),
+        Language::Java => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_java::LANGUAGE.into(),
+            &["method_declaration", "constructor_declaration"],
+        )
+        .unwrap_or_else(|| extract_c_like_functions(file_id, content)),
+        Language::CSharp => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_c_sharp::LANGUAGE.into(),
+            &[
+                "method_declaration",
+                "constructor_declaration",
+                "local_function_statement",
+            ],
+        )
+        .unwrap_or_else(|| extract_c_like_functions(file_id, content)),
+        Language::Kotlin => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_kotlin_ng::LANGUAGE.into(),
+            &["function_declaration"],
+        )
+        .unwrap_or_else(|| extract_prefixed_functions(file_id, content, "fun ")),
+        Language::Scala => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_scala::LANGUAGE.into(),
+            &["function_definition", "function_declaration"],
+        )
+        .unwrap_or_else(|| extract_prefixed_functions(file_id, content, "def ")),
+        Language::Swift => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_swift::LANGUAGE.into(),
+            &["function_declaration", "init_declaration"],
+        )
+        .unwrap_or_else(|| extract_prefixed_functions(file_id, content, "func ")),
+        Language::Ruby => extract_tree_sitter_functions(
+            file_id,
+            content,
+            tree_sitter_ruby::LANGUAGE.into(),
+            &["method", "singleton_method"],
+        )
+        .unwrap_or_else(|| extract_prefixed_functions(file_id, content, "def ")),
         Language::Unknown => Vec::new(),
     }
 }
@@ -1565,6 +1617,30 @@ fn extract_imports(file_id: usize, language: Language, content: &str) -> Vec<Imp
             extract_tree_sitter_imports(file_id, content, tree_sitter_cpp::LANGUAGE.into())
                 .unwrap_or_else(|| extract_c_imports(file_id, content))
         }
+        Language::Java => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_java::LANGUAGE.into())
+                .unwrap_or_else(|| extract_jvm_style_imports(file_id, content, "import"))
+        }
+        Language::CSharp => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_c_sharp::LANGUAGE.into())
+                .unwrap_or_else(|| extract_jvm_style_imports(file_id, content, "using"))
+        }
+        Language::Kotlin => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_kotlin_ng::LANGUAGE.into())
+                .unwrap_or_else(|| extract_jvm_style_imports(file_id, content, "import"))
+        }
+        Language::Scala => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_scala::LANGUAGE.into())
+                .unwrap_or_else(|| extract_jvm_style_imports(file_id, content, "import"))
+        }
+        Language::Swift => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_swift::LANGUAGE.into())
+                .unwrap_or_else(|| extract_jvm_style_imports(file_id, content, "import"))
+        }
+        Language::Ruby => {
+            extract_tree_sitter_imports(file_id, content, tree_sitter_ruby::LANGUAGE.into())
+                .unwrap_or_else(|| extract_ruby_imports(file_id, content))
+        }
         Language::Unknown => Vec::new(),
     }
 }
@@ -1622,6 +1698,26 @@ fn collect_tree_sitter_imports(
         "import_from_statement" | "future_import_statement" => {
             if let Some(target) = python_from_import_target(content, node) {
                 imports.push(new_import(file_id, &target, "from"));
+            }
+        }
+        "import_declaration" => {
+            // Java / Scala / Swift: `import com.foo.Bar;` or `import Foundation`.
+            // C# uses `using_directive`, handled below. Python `import_statement`
+            // is matched above and never reaches this arm.
+            if let Some(target) = jvm_style_import_target(content, node, "import") {
+                imports.push(new_import(file_id, &target, "import"));
+            }
+        }
+        "using_directive" => {
+            // C#: `using System.Linq;` or `using static System.Math;`.
+            if let Some(target) = jvm_style_import_target(content, node, "using") {
+                imports.push(new_import(file_id, &target, "using"));
+            }
+        }
+        "import_header" => {
+            // Kotlin: `import com.foo.Bar` (no semicolon).
+            if let Some(target) = jvm_style_import_target(content, node, "import") {
+                imports.push(new_import(file_id, &target, "import"));
             }
         }
         _ => {}
@@ -1791,6 +1887,21 @@ fn extract_calls(
             tree_sitter_typescript::LANGUAGE_TSX.into(),
             &["call_expression"][..],
         ),
+        Language::Java => (
+            tree_sitter_java::LANGUAGE.into(),
+            &["method_invocation", "object_creation_expression"][..],
+        ),
+        Language::CSharp => (
+            tree_sitter_c_sharp::LANGUAGE.into(),
+            &["invocation_expression", "object_creation_expression"][..],
+        ),
+        Language::Kotlin => (
+            tree_sitter_kotlin_ng::LANGUAGE.into(),
+            &["call_expression"][..],
+        ),
+        Language::Scala => (tree_sitter_scala::LANGUAGE.into(), &["call_expression"][..]),
+        Language::Swift => (tree_sitter_swift::LANGUAGE.into(), &["call_expression"][..]),
+        Language::Ruby => (tree_sitter_ruby::LANGUAGE.into(), &["call"][..]),
         Language::Unknown => return Vec::new(),
     };
 
@@ -1929,6 +2040,74 @@ fn extract_typescript_imports(file_id: usize, content: &str) -> Vec<ImportFact> 
         .collect()
 }
 
+/// Generic line-based fallback for languages whose import syntax is
+/// `<keyword> some.qualified.name[;]` — Java, Kotlin, Scala, Swift,
+/// and (with `using`) C#. Used when the tree-sitter parse fails.
+fn extract_jvm_style_imports(file_id: usize, content: &str, keyword: &str) -> Vec<ImportFact> {
+    let prefix = format!("{keyword} ");
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let target = trimmed.strip_prefix(&prefix)?;
+            // Strip trailing `;`, comments, or whitespace.
+            let target = target
+                .split(&['/', ';'][..])
+                .next()
+                .unwrap_or(target)
+                .trim()
+                .trim_start_matches("static ")
+                .trim();
+            if target.is_empty() {
+                return None;
+            }
+            Some(new_import(file_id, target, keyword))
+        })
+        .collect()
+}
+
+/// Pull the qualified name out of a JVM-style import node by stripping
+/// the leading keyword and trailing punctuation. Tree-sitter grammars
+/// disagree on whether the keyword is a separate child or part of the
+/// node text, so we work from the raw node text and do a single split.
+fn jvm_style_import_target(content: &str, node: Node<'_>, keyword: &str) -> Option<String> {
+    let text = node_text(content, node)?;
+    let stripped = text.trim_start().strip_prefix(keyword)?.trim();
+    let stripped = stripped.strip_prefix("static ").unwrap_or(stripped);
+    let target = stripped
+        .split(&['/', ';', '\n'][..])
+        .next()
+        .unwrap_or(stripped)
+        .trim();
+    if target.is_empty() {
+        None
+    } else {
+        Some(target.to_string())
+    }
+}
+
+fn extract_ruby_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            for (prefix, kind) in [
+                ("require_relative ", "require_relative"),
+                ("require ", "require"),
+                ("load ", "load"),
+            ] {
+                if let Some(target) = trimmed.strip_prefix(prefix) {
+                    let target = target.trim().trim_matches(['"', '\'']).split('#').next()?;
+                    if !target.is_empty() {
+                        return Some(new_import(file_id, target.trim(), kind));
+                    }
+                }
+            }
+            None
+        })
+        .collect()
+}
+
 fn extract_c_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
     content
         .lines()
@@ -2054,6 +2233,12 @@ fn extract_tree_sitter_types(
         Language::Python => tree_sitter_python::LANGUAGE.into(),
         Language::TypeScript => tree_sitter_typescript::LANGUAGE_TSX.into(),
         Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+        Language::Java => tree_sitter_java::LANGUAGE.into(),
+        Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+        Language::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
+        Language::Scala => tree_sitter_scala::LANGUAGE.into(),
+        Language::Swift => tree_sitter_swift::LANGUAGE.into(),
+        Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
         _ => return None,
     };
     let mut parser = Parser::new();
@@ -2077,7 +2262,28 @@ fn collect_tree_sitter_types(
     let kind = node.kind();
     let is_class = matches!(
         kind,
-        "class_definition" | "class_declaration" | "class_specifier" | "struct_specifier"
+        // Python, Scala
+        "class_definition"
+            // TypeScript, Java, C#, Kotlin, Swift
+            | "class_declaration"
+            // C++
+            | "class_specifier"
+            | "struct_specifier"
+            // Java, C#
+            | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration"
+            // C#
+            | "struct_declaration"
+            // Kotlin, Scala
+            | "object_declaration"
+            | "object_definition"
+            | "trait_definition"
+            // Swift
+            | "protocol_declaration"
+            // Ruby
+            | "class"
+            | "module"
     );
     if is_class {
         let name = node
@@ -2115,37 +2321,101 @@ fn base_classes_from_class_node(content: &str, node: Node<'_>) -> Vec<String> {
             }
         }
     }
+    if let Some(superclass) = node.child_by_field_name("superclass") {
+        // Java: `class Foo extends Bar` — `superclass` field holds a single
+        // type. Ruby: `class Foo < Bar` — same shape.
+        collect_type_identifiers(content, superclass, &mut bases);
+    }
+    if let Some(supers) = node.child_by_field_name("interfaces") {
+        // Java: `class Foo implements Baz, Qux` — `interfaces` field
+        // (the rule named `super_interfaces` is bound to field `interfaces`).
+        collect_type_identifiers(content, supers, &mut bases);
+    }
+    if let Some(bases_node) = node.child_by_field_name("bases") {
+        // C#: `class Foo : Bar, IBaz` — `bases` field is a `base_list`.
+        collect_type_identifiers(content, bases_node, &mut bases);
+    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "class_heritage" {
-            // TypeScript: `class Foo extends Bar implements Baz, Qux {}`.
-            let mut hcursor = child.walk();
-            for clause in child.children(&mut hcursor) {
-                let mut ccursor = clause.walk();
-                for sub in clause.children(&mut ccursor) {
-                    if matches!(sub.kind(), "identifier" | "type_identifier") {
+        match child.kind() {
+            "class_heritage" => {
+                // TypeScript: `class Foo extends Bar implements Baz, Qux {}`.
+                let mut hcursor = child.walk();
+                for clause in child.children(&mut hcursor) {
+                    let mut ccursor = clause.walk();
+                    for sub in clause.children(&mut ccursor) {
+                        if matches!(sub.kind(), "identifier" | "type_identifier") {
+                            if let Some(text) = node_text(content, sub) {
+                                bases.push(text);
+                            }
+                        }
+                    }
+                }
+            }
+            "base_class_clause" => {
+                // C++: `class Derived : public Base, protected IFace { ... }`.
+                let mut ccursor = child.walk();
+                for sub in child.children(&mut ccursor) {
+                    if matches!(sub.kind(), "type_identifier" | "qualified_identifier") {
                         if let Some(text) = node_text(content, sub) {
                             bases.push(text);
                         }
                     }
                 }
             }
-        } else if child.kind() == "base_class_clause" {
-            // C++: `class Derived : public Base, protected IFace { ... }`.
-            // Skip access specifiers, take type_identifier and qualified_identifier.
-            let mut ccursor = child.walk();
-            for sub in child.children(&mut ccursor) {
-                if matches!(sub.kind(), "type_identifier" | "qualified_identifier") {
-                    if let Some(text) = node_text(content, sub) {
-                        bases.push(text);
-                    }
-                }
+            "base_list" => {
+                // C# fallback when `bases` field is absent on some nodes.
+                collect_type_identifiers(content, child, &mut bases);
             }
+            "delegation_specifiers" | "delegation_specifier" => {
+                // Kotlin: `class Foo : Bar(), Baz` — delegation_specifiers
+                // holds delegation_specifier children that may wrap
+                // user_type → type_identifier.
+                collect_type_identifiers(content, child, &mut bases);
+            }
+            "extends_clause" | "with_clause" => {
+                // Scala: `class Foo extends Bar with Baz with Qux` —
+                // each clause carries the type identifiers.
+                collect_type_identifiers(content, child, &mut bases);
+            }
+            "type_inheritance_clause" | "inheritance_clause" | "inheritance_specifier" => {
+                // Swift: `class Foo: Bar, BazProtocol` — each inheritance
+                // entry is a direct `inheritance_specifier` child of the
+                // class_declaration.
+                collect_type_identifiers(content, child, &mut bases);
+            }
+            _ => {}
         }
     }
     bases.sort();
     bases.dedup();
     bases
+}
+
+/// Recursively pull type identifiers out of a heritage subtree. Tree-sitter
+/// grammars wrap the actual identifier in language-specific nodes (e.g.
+/// Kotlin's `user_type` → `type_identifier`, Swift's `inheritance_specifier`
+/// → `user_type` → `type_identifier`), so a flat scan is the most portable.
+fn collect_type_identifiers(content: &str, node: Node<'_>, out: &mut Vec<String>) {
+    if matches!(
+        node.kind(),
+        "type_identifier"
+            | "identifier"
+            | "qualified_identifier"
+            | "scoped_identifier"
+            // Ruby uses `constant` for capitalized class names.
+            | "constant"
+            | "scope_resolution"
+    ) {
+        if let Some(text) = node_text(content, node) {
+            out.push(text);
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_type_identifiers(content, child, out);
+    }
 }
 
 /// When tree-sitter produces type facts, prefer them over the line-based
@@ -2581,7 +2851,13 @@ fn import_candidates(
         Language::C | Language::Cpp => {
             c_import_candidates(&from_file.path, &import.target, include_roots)
         }
-        Language::Unknown => plugin_import_candidates(from_file, import, config),
+        Language::Java
+        | Language::CSharp
+        | Language::Kotlin
+        | Language::Scala
+        | Language::Swift
+        | Language::Ruby
+        | Language::Unknown => plugin_import_candidates(from_file, import, config),
     }
 }
 
@@ -3807,6 +4083,65 @@ int run(void) {
         let types = extract_tree_sitter_types(0, content, Language::Cpp).unwrap();
         let derived = types.iter().find(|t| t.name == "Derived").unwrap();
         assert_eq!(derived.bases, vec!["Base".to_string()]);
+    }
+
+    #[test]
+    fn tree_sitter_extracts_java_extends_and_implements() {
+        let content =
+            "class Dog extends Animal implements IBarker, ITracked {\n  void bark() {}\n}\n";
+        let types = extract_tree_sitter_types(0, content, Language::Java).unwrap();
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert!(dog.bases.contains(&"Animal".to_string()));
+        assert!(dog.bases.contains(&"IBarker".to_string()));
+        assert!(dog.bases.contains(&"ITracked".to_string()));
+    }
+
+    #[test]
+    fn tree_sitter_extracts_csharp_base_list() {
+        let content =
+            "class Dog : Animal, IBarker, ITracked { public void Bark() {} }\ninterface IBarker {}\n";
+        let types = extract_tree_sitter_types(0, content, Language::CSharp).unwrap();
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert!(dog.bases.contains(&"Animal".to_string()));
+        assert!(dog.bases.contains(&"IBarker".to_string()));
+    }
+
+    #[test]
+    fn tree_sitter_extracts_kotlin_delegation_specifiers() {
+        let content = "open class Animal\nclass Dog : Animal(), IBarker {\n  fun bark() {}\n}\ninterface IBarker\n";
+        let types = extract_tree_sitter_types(0, content, Language::Kotlin).unwrap();
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert!(dog.bases.contains(&"Animal".to_string()));
+        assert!(dog.bases.contains(&"IBarker".to_string()));
+    }
+
+    #[test]
+    fn tree_sitter_extracts_scala_extends_with() {
+        let content =
+            "class Dog extends Animal with IBarker with ITracked {\n  def bark(): Unit = ()\n}\n";
+        let types = extract_tree_sitter_types(0, content, Language::Scala).unwrap();
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert!(dog.bases.contains(&"Animal".to_string()));
+        assert!(dog.bases.contains(&"IBarker".to_string()));
+        assert!(dog.bases.contains(&"ITracked".to_string()));
+    }
+
+    #[test]
+    fn tree_sitter_extracts_swift_inheritance_clause() {
+        let content =
+            "class Dog: Animal, IBarker, ITracked {\n  func bark() {}\n}\nprotocol IBarker {}\n";
+        let types = extract_tree_sitter_types(0, content, Language::Swift).unwrap();
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert!(dog.bases.contains(&"Animal".to_string()));
+        assert!(dog.bases.contains(&"IBarker".to_string()));
+    }
+
+    #[test]
+    fn tree_sitter_extracts_ruby_superclass() {
+        let content = "class Dog < Animal\n  def bark\n  end\nend\n";
+        let types = extract_tree_sitter_types(0, content, Language::Ruby).unwrap();
+        let dog = types.iter().find(|t| t.name == "Dog").unwrap();
+        assert_eq!(dog.bases, vec!["Animal".to_string()]);
     }
 
     #[test]
