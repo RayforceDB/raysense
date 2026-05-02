@@ -639,7 +639,7 @@ pub struct EvolutionAuthorMetric {
     pub commits: usize,
 }
 
-/// `risk_score = commits * max_cyclomatic_complexity` — high values flag files
+/// `risk_score = commits * max_cyclomatic_complexity` - high values flag files
 /// that are both volatile and intricate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvolutionTemporalHotspot {
@@ -4422,7 +4422,7 @@ mod tests {
         // Indented / leading whitespace still counts.
         assert!(is_bug_fix_subject("  fix: leading spaces"));
 
-        // Negatives — words that start with `fix*` but are not fix commits.
+        // Negatives - words that start with `fix*` but are not fix commits.
         assert!(!is_bug_fix_subject("feat: add validator"));
         assert!(!is_bug_fix_subject("fixing the parser is hard")); // "fixing", not "fix"
         assert!(!is_bug_fix_subject("fixtures: regenerate snapshots")); // "fixtures"
@@ -4575,7 +4575,7 @@ extensions = ["min"]
         // Two reports with different structural uniformity values. With the
         // default weight (0.0) their quality_signal must match. With a non-zero
         // weight the score must shift in the direction of the higher-uniformity
-        // report — that is the explicit opt-in behavior change.
+        // report - that is the explicit opt-in behavior change.
         let monoculture = report_with_file_lines(&[100, 100, 100, 100]);
         let diverse = report_with_file_lines(&[1, 1, 1024, 1024]);
 
@@ -5557,7 +5557,7 @@ order = 2
             },
         );
         // Need to set the language_name on the test files since `file()` factory
-        // uses Language::Rust by default — make a Python-named one.
+        // uses Language::Rust by default - make a Python-named one.
         let mut py = py_file;
         py.language_name = "python".to_string();
 
