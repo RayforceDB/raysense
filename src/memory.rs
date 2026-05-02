@@ -23,11 +23,19 @@
 
 use crate::{compute_health_with_config, HealthSummary, RaysenseConfig, ScanReport};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::ffi::CString;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::ptr::NonNull;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+
+/// On-disk schema version for the splayed baseline tables. Bump whenever any
+/// table builder gains, loses, or renames a column. The `meta` table stamps
+/// this value at save time; readers refuse to decode mismatched baselines.
+pub const SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -67,6 +75,13 @@ pub enum MemoryError {
         #[source]
         source: regex::Error,
     },
+    #[error(
+        "baseline schema version mismatch: found {found}, expected {expected}; \
+         re-run `raysense baseline save` to refresh the on-disk format"
+    )]
+    SchemaMismatch { found: i64, expected: i64 },
+    #[error("baseline meta table is malformed: {reason}")]
+    MetaTableMalformed { reason: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -94,6 +109,7 @@ pub struct MemorySummary {
     pub file_ages: TableSummary,
     pub change_coupling: TableSummary,
     pub inheritance: TableSummary,
+    pub meta: TableSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -197,6 +213,7 @@ pub struct RayMemory {
     file_ages: RayObject,
     change_coupling: RayObject,
     inheritance: RayObject,
+    meta: RayObject,
 }
 
 impl RayMemory {
@@ -211,24 +228,66 @@ impl RayMemory {
         init_symbols()?;
         let health = compute_health_with_config(report, config);
 
+        let files = build_files_table(report)?;
+        let functions = build_functions_table(report)?;
+        let entry_points = build_entry_points_table(report)?;
+        let imports = build_imports_table(report)?;
+        let calls = build_calls_table(report)?;
+        let call_edges = build_call_edges_table(report)?;
+        let types = build_types_table(report)?;
+        let health_table = build_health_table(report, &health)?;
+        let hotspots = build_hotspots_table(&health)?;
+        let rules = build_rules_table(&health)?;
+        let module_edges = build_module_edges_table(&health)?;
+        let changed_files = build_changed_files_table(&health)?;
+        let file_ownership = build_file_ownership_table(&health)?;
+        let temporal_hotspots = build_temporal_hotspots_table(&health)?;
+        let file_ages = build_file_ages_table(&health)?;
+        let change_coupling = build_change_coupling_table(&health)?;
+        let inheritance = build_inheritance_table(report)?;
+
+        let meta = build_meta_table(
+            report,
+            &[
+                ("call_edges", call_edges.as_ptr()),
+                ("calls", calls.as_ptr()),
+                ("change_coupling", change_coupling.as_ptr()),
+                ("changed_files", changed_files.as_ptr()),
+                ("entry_points", entry_points.as_ptr()),
+                ("file_ages", file_ages.as_ptr()),
+                ("file_ownership", file_ownership.as_ptr()),
+                ("files", files.as_ptr()),
+                ("functions", functions.as_ptr()),
+                ("health", health_table.as_ptr()),
+                ("hotspots", hotspots.as_ptr()),
+                ("imports", imports.as_ptr()),
+                ("inheritance", inheritance.as_ptr()),
+                ("module_edges", module_edges.as_ptr()),
+                ("rules", rules.as_ptr()),
+                ("temporal_hotspots", temporal_hotspots.as_ptr()),
+                ("types", types.as_ptr()),
+            ],
+        )?;
+
         Ok(Self {
-            files: build_files_table(report)?,
-            functions: build_functions_table(report)?,
-            entry_points: build_entry_points_table(report)?,
-            imports: build_imports_table(report)?,
-            calls: build_calls_table(report)?,
-            call_edges: build_call_edges_table(report)?,
-            types: build_types_table(report)?,
-            health: build_health_table(report, &health)?,
-            hotspots: build_hotspots_table(&health)?,
-            rules: build_rules_table(&health)?,
-            module_edges: build_module_edges_table(&health)?,
-            changed_files: build_changed_files_table(&health)?,
-            file_ownership: build_file_ownership_table(&health)?,
-            temporal_hotspots: build_temporal_hotspots_table(&health)?,
-            file_ages: build_file_ages_table(&health)?,
-            change_coupling: build_change_coupling_table(&health)?,
-            inheritance: build_inheritance_table(report)?,
+            files,
+            functions,
+            entry_points,
+            imports,
+            calls,
+            call_edges,
+            types,
+            health: health_table,
+            hotspots,
+            rules,
+            module_edges,
+            changed_files,
+            file_ownership,
+            temporal_hotspots,
+            file_ages,
+            change_coupling,
+            inheritance,
+            meta,
         })
     }
 
@@ -251,6 +310,7 @@ impl RayMemory {
             file_ages: table_summary(self.file_ages.as_ptr()),
             change_coupling: table_summary(self.change_coupling.as_ptr()),
             inheritance: table_summary(self.inheritance.as_ptr()),
+            meta: table_summary(self.meta.as_ptr()),
         }
     }
 
@@ -294,6 +354,7 @@ impl RayMemory {
             &sym_path,
         )?;
         self.save_table("inheritance", self.inheritance.as_ptr(), dir, &sym_path)?;
+        self.save_table("meta", self.meta.as_ptr(), dir, &sym_path)?;
         Ok(())
     }
 
@@ -321,6 +382,7 @@ impl RayMemory {
 pub fn list_baseline_tables(dir: impl AsRef<Path>) -> Result<Vec<BaselineTableInfo>, MemoryError> {
     init_symbols()?;
     let dir = dir.as_ref();
+    verify_baseline_schema(dir)?;
     let mut tables = Vec::new();
     let entries = fs::read_dir(dir).map_err(|source| MemoryError::ReadTables {
         path: dir.to_path_buf(),
@@ -371,6 +433,9 @@ pub fn query_baseline_table(
     init_symbols()?;
     validate_table_name(name)?;
     let dir = dir.as_ref();
+    if name != "meta" {
+        verify_baseline_schema(dir)?;
+    }
     if !dir.join(name).is_dir() {
         return Err(MemoryError::TableNotFound(name.to_string()));
     }
@@ -1638,6 +1703,154 @@ fn build_changed_files_table(health: &HealthSummary) -> Result<RayObject, Memory
     )
 }
 
+/// Build the single-row `meta` table that stamps schema version, raysense and
+/// rayforce versions, repo SHA, snapshot id, scan time, and a digest over every
+/// other table's column shape. Readers compare the digest's `schema_version`
+/// against `SCHEMA_VERSION` and refuse mismatched baselines.
+fn build_meta_table(
+    report: &ScanReport,
+    other_tables: &[(&str, *mut crate::sys::ray_t)],
+) -> Result<RayObject, MemoryError> {
+    // Workaround for rayforce v2.1.0: ray_col_mmap rejects on-disk column files
+    // smaller than 32 bytes with code "corrupt" (col_validate_mapped at
+    // store/col.c:727). The splay loader's fallback to ray_col_load only fires
+    // on "nyi", not "corrupt", so short STRV files become unreadable via
+    // ray_read_splayed. STRV file size = 22 + content_len, so a 1-row column
+    // needs content >= 10 bytes to clear 32. We label-prefix every short string
+    // value to stay safely above the threshold; longer values (snapshot_id,
+    // column_digest, real git SHAs) are already long enough on their own.
+    let raysense_version = format!("raysense {}", env!("CARGO_PKG_VERSION"));
+    let rayforce_version = format!("rayforce {}", crate::sys::version_string());
+    let repo_sha =
+        git_head_sha(&report.snapshot.root).unwrap_or_else(|| "git-unavailable".to_string());
+    let snapshot_id = report.snapshot.snapshot_id.clone();
+    let scan_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    let column_digest = compute_column_digest(other_tables);
+
+    table(
+        7,
+        [
+            (
+                "schema_version",
+                i64_vec(1, std::iter::once(SCHEMA_VERSION))?,
+            ),
+            ("raysense_version", str_vec(1, [raysense_version])?),
+            ("rayforce_version", str_vec(1, [rayforce_version])?),
+            ("repo_sha", str_vec(1, [repo_sha])?),
+            ("snapshot_id", str_vec(1, [snapshot_id])?),
+            ("scan_unix", i64_vec(1, std::iter::once(scan_unix))?),
+            ("column_digest", str_vec(1, [column_digest])?),
+        ],
+    )
+}
+
+/// Best-effort `git rev-parse HEAD` against the scan root. Returns `None` if
+/// the directory is not a git working tree, git is missing, or the call fails
+/// for any reason; `repo_sha` is provenance, not a hard requirement.
+fn git_head_sha(root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha)
+    }
+}
+
+/// Hash a stable representation of every table's column shape so that any
+/// schema drift (added / removed / renamed column) flips the digest. The
+/// `meta` table itself is excluded; it would be circular and pollutes the
+/// digest with values we control directly via `SCHEMA_VERSION`.
+fn compute_column_digest(tables: &[(&str, *mut crate::sys::ray_t)]) -> String {
+    let mut sorted: Vec<(&str, *mut crate::sys::ray_t)> = tables.to_vec();
+    sorted.sort_by_key(|(name, _)| *name);
+
+    let mut hasher = Sha256::new();
+    for (name, table) in &sorted {
+        hasher.update(name.as_bytes());
+        hasher.update(b":");
+        let ncols = unsafe { crate::sys::ray_table_ncols(*table) };
+        for idx in 0..ncols {
+            let name_id = unsafe { crate::sys::ray_table_col_name(*table, idx) };
+            let column = symbol_text(name_id);
+            hasher.update(column.as_bytes());
+            hasher.update(b",");
+        }
+        hasher.update(b";");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// Confirm a saved baseline's schema is compatible with the current build.
+///
+/// Behavior:
+/// - `meta` table absent: legacy baseline written by an older raysense; pass
+///   silently. Existing readers continue to work; the next save will stamp the
+///   current version.
+/// - `meta` table present: extract `schema_version`. Equal to `SCHEMA_VERSION`
+///   passes; any other value fails with `MemoryError::SchemaMismatch`.
+/// - `meta` table present but malformed (missing column, wrong type, no rows):
+///   fail with `MemoryError::MetaTableMalformed` so we never silently accept a
+///   broken provenance record.
+pub fn verify_baseline_schema(dir: impl AsRef<Path>) -> Result<(), MemoryError> {
+    init_symbols()?;
+    let dir = dir.as_ref();
+    if !dir.join("meta").is_dir() {
+        return Ok(());
+    }
+    let table = read_table_object(dir, "meta")?;
+
+    let ncols = unsafe { crate::sys::ray_table_ncols(table.as_ptr()) };
+    let nrows = unsafe { crate::sys::ray_table_nrows(table.as_ptr()) };
+    if nrows < 1 {
+        return Err(MemoryError::MetaTableMalformed {
+            reason: "meta table has zero rows".to_string(),
+        });
+    }
+
+    let mut found: Option<i64> = None;
+    for idx in 0..ncols {
+        let name_id = unsafe { crate::sys::ray_table_col_name(table.as_ptr(), idx) };
+        if symbol_text(name_id) != "schema_version" {
+            continue;
+        }
+        let col = unsafe { crate::sys::ray_table_get_col_idx(table.as_ptr(), idx) };
+        if col.is_null() || unsafe { (*col).type_ } != crate::sys::RAY_I64 {
+            return Err(MemoryError::MetaTableMalformed {
+                reason: "schema_version column is not RAY_I64".to_string(),
+            });
+        }
+        let data = ray_data(col).cast::<i64>();
+        found = Some(unsafe { *data });
+        break;
+    }
+
+    let Some(version) = found else {
+        return Err(MemoryError::MetaTableMalformed {
+            reason: "schema_version column is missing".to_string(),
+        });
+    };
+    if version == SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(MemoryError::SchemaMismatch {
+            found: version,
+            expected: SCHEMA_VERSION,
+        })
+    }
+}
+
 fn i64_vec(
     capacity: usize,
     values: impl IntoIterator<Item = i64>,
@@ -2024,7 +2237,10 @@ mod tests {
         ];
         ScanReport {
             snapshot: SnapshotFact {
-                snapshot_id: "sample".to_string(),
+                // 64-char hex stub mirrors what scanner::snapshot_id produces in
+                // production. Anything under 10 chars trips a rayforce-side
+                // limit on splayed STRV columns (see build_meta_table comment).
+                snapshot_id: "0".repeat(64),
                 root: PathBuf::from("/tmp/raysense-sample"),
                 file_count: files.len(),
                 function_count: 0,
@@ -2040,6 +2256,142 @@ mod tests {
             types: Vec::new(),
             graph: crate::GraphMetrics::default(),
         }
+    }
+
+    #[test]
+    fn meta_table_stamps_schema_version_and_provenance() {
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        let summary = memory.summary();
+
+        assert_eq!(summary.meta.rows, 1);
+        assert_eq!(summary.meta.columns, 7);
+    }
+
+    #[test]
+    fn meta_table_round_trips_through_splay_save_and_query() {
+        let dir = temp_tables_dir("meta-roundtrip");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        // Note: list_baseline_tables would also exercise meta, but it iterates
+        // every saved table. With sample_report's empty fact vectors several
+        // tables (module_edges, inheritance, ...) get 0-row STRV columns which
+        // hit a pre-existing rayforce v2.1.0 bug -- ray_col_mmap rejects
+        // STRV files smaller than 32 bytes with code "corrupt", and the splay
+        // loader's fallback only triggers on "nyi". That is unrelated to the
+        // schema-version feature, so this test queries meta directly.
+        let rows = query_baseline_table(&dir, "meta", BaselineTableQuery::page(0, 10)).unwrap();
+
+        assert_eq!(rows.matched_rows, 1);
+        assert_eq!(rows.rows.len(), 1);
+        let row = &rows.rows[0];
+        assert_eq!(row["schema_version"], serde_json::json!(SCHEMA_VERSION));
+        assert_eq!(
+            row["raysense_version"],
+            serde_json::json!(format!("raysense {}", env!("CARGO_PKG_VERSION"))),
+        );
+        assert!(
+            row["snapshot_id"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "snapshot_id should be a non-empty string, got {:?}",
+            row["snapshot_id"],
+        );
+        assert!(
+            row["column_digest"]
+                .as_str()
+                .map(|s| s.len() == 64)
+                .unwrap_or(false),
+            "column_digest should be a 64-char SHA-256 hex, got {:?}",
+            row["column_digest"],
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn verify_baseline_schema_passes_for_legacy_baseline_without_meta() {
+        let dir = temp_tables_dir("legacy");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        std::fs::remove_dir_all(dir.join("meta")).unwrap();
+        verify_baseline_schema(&dir).expect("legacy baselines should pass");
+
+        let rows = query_baseline_table(&dir, "files", BaselineTableQuery::page(0, 10)).unwrap();
+        assert_eq!(rows.total_rows, 4);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn verify_baseline_schema_rejects_mismatched_version() {
+        let dir = temp_tables_dir("mismatch");
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        memory.save_splayed(&dir).unwrap();
+
+        let bogus = build_meta_table_with_version(&report, 999).unwrap();
+        let bogus_dir = dir.join("meta");
+        std::fs::remove_dir_all(&bogus_dir).unwrap();
+        let path = CString::new(bogus_dir.to_string_lossy().into_owned()).unwrap();
+        let sym_path = CString::new(dir.join(".sym").to_string_lossy().into_owned()).unwrap();
+        let err =
+            unsafe { crate::sys::ray_splay_save(bogus.as_ptr(), path.as_ptr(), sym_path.as_ptr()) };
+        assert_eq!(
+            err,
+            crate::sys::RAY_OK,
+            "rewriting meta with bogus version failed"
+        );
+
+        let result = query_baseline_table(&dir, "files", BaselineTableQuery::page(0, 10));
+        assert!(
+            matches!(
+                result,
+                Err(MemoryError::SchemaMismatch { found: 999, expected }) if expected == SCHEMA_VERSION,
+            ),
+            "expected SchemaMismatch, got {:?}",
+            result,
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn build_meta_table_with_version(
+        report: &ScanReport,
+        version: i64,
+    ) -> Result<RayObject, MemoryError> {
+        init_symbols()?;
+        // All bogus strings are >= 10 bytes -- shorter values would trip the
+        // same rayforce 0-row-STRV bug noted in build_meta_table.
+        table(
+            7,
+            [
+                ("schema_version", i64_vec(1, std::iter::once(version))?),
+                (
+                    "raysense_version",
+                    str_vec(1, ["bogus-version".to_string()])?,
+                ),
+                (
+                    "rayforce_version",
+                    str_vec(1, ["bogus-version".to_string()])?,
+                ),
+                ("repo_sha", str_vec(1, ["bogus-sha-bogus".to_string()])?),
+                (
+                    "snapshot_id",
+                    str_vec(1, [report.snapshot.snapshot_id.clone()])?,
+                ),
+                ("scan_unix", i64_vec(1, std::iter::once(0))?),
+                (
+                    "column_digest",
+                    str_vec(1, ["bogus-digest-padding".to_string()])?,
+                ),
+            ],
+        )
     }
 
     fn file(file_id: usize, path: &str, language: Language, lines: usize) -> FileFact {
