@@ -1,0 +1,6 @@
+path,covered_lines,total_lines,covered_pct
+src/cli.rs,1200,3374,35.6
+src/memory.rs,2100,2566,81.8
+src/health.rs,4800,5907,81.3
+src/scanner.rs,3700,4666,79.3
+src/mcp.rs,1100,2536,43.4

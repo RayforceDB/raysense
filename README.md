@@ -111,6 +111,47 @@ diffs, and agent consumption. `--ui` brings up the same data live in
 the browser, `--watch` keeps the terminal report fresh as you edit, and
 `--mcp` exposes every fact and rule to your coding agent over MCP.
 
+## Query and policy
+
+Every saved baseline is a queryable columnar database. Run free-form
+Rayfall expressions, drop in custom rules as `.rfl` files, and bring
+external CSVs into the same query substrate.
+
+```bash
+# 1. Save a baseline with 18 splayed tables (files, functions, calls,
+#    call_edges, imports, types, hotspots, change_coupling, ...)
+raysense baseline save .
+
+# 2. Ad-hoc query in Rayfall (LISP-like, prefix, arity-strict).
+raysense baseline query files \
+    '(select {from: t where: (> lines 500) desc: lines})'
+
+# 3. Graph algorithms over the call graph (PageRank, Louvain, topsort,
+#    shortest-path, betweenness, k-shortest, BFS expand).
+raysense baseline query call_edges \
+    '(select {from: (.graph.pagerank
+                      (.graph.build t (quote caller_function)
+                                      (quote callee_function))
+                      30 0.85)
+              desc: _rank take: 10})'
+
+# 4. CI-gated architectural rules. Drop *.rfl files in
+#    .raysense/policies/; each must return a (severity, code, path,
+#    message) table. Exit code 0 pass, 1 eval error, 2 error finding.
+raysense policy check
+
+# 5. Bring your own data. Coverage, lints, runtime traces,
+#    pre-computed embeddings -- all join the baseline through the
+#    shared sym table.
+raysense baseline import-csv coverage ./coverage.csv
+raysense baseline query coverage \
+    '(select {from: t where: (< covered_pct 50)})'
+```
+
+See [`examples/`](examples/) for starter policies and sample data.
+Full Rayfall syntax (select / `.graph.*` / Datalog / vector search)
+ships as the `raysense-query` skill bundled with the plugin.
+
 ## Agent integration
 
 Raysense ships as a Claude Code plugin:
@@ -137,6 +178,20 @@ baselines, zero cross-project bleed.
 - **Splayed-table agent memory** - scan results materialized as
   columnar tables so an agent's follow-up questions are instant
   reads, not re-scans
+- **Rayfall query layer** - run select / `.graph.*` (PageRank,
+  Louvain, topsort, shortest-path, betweenness, ...) / Datalog rules
+  with transitive closure / vector primitives (cos-dist, knn,
+  hnsw-build, ann) against the saved tables. Same vocabulary in
+  agent queries, MCP tools, and committed `.rfl` policy packs
+- **Policy packs as code-reviewable files** - `.raysense/policies/*.rfl`
+  are Rayfall expressions that return a (severity, code, path,
+  message) table. `raysense policy check` walks the directory and
+  exits 0 / 1 / 2 for CI gating. Architectural rules ship in the
+  repo, not in raysense's release notes
+- **Bring your own data** - `raysense baseline import-csv` lifts any
+  CSV into a queryable baseline table. Coverage data, lint counts,
+  runtime traces, pre-computed embeddings -- all join the structural
+  baseline through the shared sym table
 - **Edit-risk per file** - one number per file ranking which the next
   agent edit is most likely to break. Composite of churn, max
   complexity, single-owner penalty, and missing-tests penalty,
