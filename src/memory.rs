@@ -2228,18 +2228,9 @@ fn build_meta_table(
     report: &ScanReport,
     other_tables: &[(&str, *mut crate::sys::ray_t)],
 ) -> Result<RayObject, MemoryError> {
-    // Workaround for rayforce v2.1.0: ray_col_mmap rejects on-disk column files
-    // smaller than 32 bytes with code "corrupt" (col_validate_mapped at
-    // store/col.c:727). The splay loader's fallback to ray_col_load only fires
-    // on "nyi", not "corrupt", so short STRV files become unreadable via
-    // ray_read_splayed. STRV file size = 22 + content_len, so a 1-row column
-    // needs content >= 10 bytes to clear 32. We label-prefix every short string
-    // value to stay safely above the threshold; longer values (snapshot_id,
-    // column_digest, real git SHAs) are already long enough on their own.
-    let raysense_version = format!("raysense {}", env!("CARGO_PKG_VERSION"));
-    let rayforce_version = format!("rayforce {}", crate::sys::version_string());
-    let repo_sha =
-        git_head_sha(&report.snapshot.root).unwrap_or_else(|| "git-unavailable".to_string());
+    let raysense_version = env!("CARGO_PKG_VERSION").to_string();
+    let rayforce_version = crate::sys::version_string();
+    let repo_sha = git_head_sha(&report.snapshot.root).unwrap_or_default();
     let snapshot_id = report.snapshot.snapshot_id.clone();
     let scan_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2781,10 +2772,7 @@ mod tests {
         ];
         ScanReport {
             snapshot: SnapshotFact {
-                // 64-char hex stub mirrors what scanner::snapshot_id produces in
-                // production. Anything under 10 chars trips a rayforce-side
-                // limit on splayed STRV columns (see build_meta_table comment).
-                snapshot_id: "0".repeat(64),
+                snapshot_id: "sample".to_string(),
                 root: PathBuf::from("/tmp/raysense-sample"),
                 file_count: files.len(),
                 function_count: 0,
@@ -3036,7 +3024,7 @@ mod tests {
         assert_eq!(row["schema_version"], serde_json::json!(SCHEMA_VERSION));
         assert_eq!(
             row["raysense_version"],
-            serde_json::json!(format!("raysense {}", env!("CARGO_PKG_VERSION"))),
+            serde_json::json!(env!("CARGO_PKG_VERSION")),
         );
         assert!(
             row["snapshot_id"]
@@ -3114,30 +3102,19 @@ mod tests {
         version: i64,
     ) -> Result<RayObject, MemoryError> {
         init_symbols()?;
-        // All bogus strings are >= 10 bytes -- shorter values would trip the
-        // same rayforce 0-row-STRV bug noted in build_meta_table.
         table(
             7,
             [
                 ("schema_version", i64_vec(1, std::iter::once(version))?),
-                (
-                    "raysense_version",
-                    str_vec(1, ["bogus-version".to_string()])?,
-                ),
-                (
-                    "rayforce_version",
-                    str_vec(1, ["bogus-version".to_string()])?,
-                ),
-                ("repo_sha", str_vec(1, ["bogus-sha-bogus".to_string()])?),
+                ("raysense_version", str_vec(1, ["bogus".to_string()])?),
+                ("rayforce_version", str_vec(1, ["bogus".to_string()])?),
+                ("repo_sha", str_vec(1, ["".to_string()])?),
                 (
                     "snapshot_id",
                     str_vec(1, [report.snapshot.snapshot_id.clone()])?,
                 ),
                 ("scan_unix", i64_vec(1, std::iter::once(0))?),
-                (
-                    "column_digest",
-                    str_vec(1, ["bogus-digest-padding".to_string()])?,
-                ),
+                ("column_digest", str_vec(1, ["bogus".to_string()])?),
             ],
         )
     }
