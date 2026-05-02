@@ -36,6 +36,7 @@ include = [
     "build.rs",
     "Cargo.toml",
     "README.md",
+    "LICENSE",
     "docs/*.svg",
     ".rayforce-version",
     # Bundled rayforce source — narrow to just what `make lib` needs.

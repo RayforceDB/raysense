@@ -23,6 +23,13 @@
 
 # Raysense
 
+[![Crates.io](https://img.shields.io/crates/v/raysense.svg?logo=rust&color=orange)](https://crates.io/crates/raysense)
+[![Downloads](https://img.shields.io/crates/d/raysense.svg?color=brightgreen)](https://crates.io/crates/raysense)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/RayforceDB/raysense/actions/workflows/ci.yml/badge.svg)](https://github.com/RayforceDB/raysense/actions/workflows/ci.yml)
+[![MCP](https://img.shields.io/badge/MCP-ready-7c3aed)](#agent-integration)
+[![Languages](https://img.shields.io/badge/languages-69-1f6feb)](https://sense.rayforcedb.com/#languages)
+
 **A structural X-ray for the codebases AI agents are writing.**
 
 Raysense reads your repository as a graph: who imports who, where the

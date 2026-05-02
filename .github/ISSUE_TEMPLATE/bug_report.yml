@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in raysense produced wrong output, crashed, or behaved unexpectedly.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please include enough detail to reproduce.
+  - type: input
+    id: version
+    attributes:
+      label: Raysense version
+      description: Output of `raysense --version`.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS + arch (e.g., `Linux x86_64`, `macOS arm64`, `Windows x86_64 (WSL)`).
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal command sequence; include the repository under scan if it is public.
+      placeholder: |
+        1. `git clone …`
+        2. `raysense .`
+        3. Observe …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the relevant output, error message, or screenshot.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Optional - related rules, plugin configs, anything that might help.

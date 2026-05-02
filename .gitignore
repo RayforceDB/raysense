@@ -1,4 +1,5 @@
 CLAUDE.md
+.claude/
 /target/
 Cargo.lock
 /local/

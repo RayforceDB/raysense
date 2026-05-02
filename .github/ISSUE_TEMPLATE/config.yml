@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation and dashboard
+    url: https://sense.rayforcedb.com/
+    about: Live demo, language coverage map, and the full feature list.
+  - name: Rayforce (the analytics runtime under the hood)
+    url: https://github.com/RayforceDB/rayforce
+    about: Questions about the columnar storage / Rayfall query language.
