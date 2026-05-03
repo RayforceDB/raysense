@@ -1,9 +1,9 @@
 ---
-name: raysense-audit
+name: audit
 description: Use when the user explicitly asks for a structural audit, architecture review, dead-code report, test-gap analysis, or evolution hotspot scan. Heavier and noisier than the other raysense skills — only run on demand, not as part of the routine edit loop.
 ---
 
-# Raysense Audit
+# Audit
 
 This skill is for deliberate "look at the whole codebase" requests.
 It calls multiple raysense MCP tools and produces a multi-section
@@ -39,7 +39,7 @@ land better.
 
 ## When to skip
 
-- The user asked a narrow question. Use `raysense-impact` or a
+- The user asked a narrow question. Use `impact` or a
   single targeted MCP call instead.
 - The repo is tiny (under ~50 files). The audit will produce mostly
   noise -- just call `raysense_health` and read out the grade.
@@ -48,7 +48,7 @@ land better.
 
 The audit's typed tools surface what raysense already knows.  When
 the user asks an audit-shaped question that doesn't fit a typed
-tool, the **raysense-query** skill exposes Rayfall directly via
+tool, the **query** skill exposes Rayfall directly via
 `raysense_baseline_query`:
 
 - Custom architectural breakdowns -- group calls by caller module,

@@ -1,9 +1,9 @@
 ---
-name: raysense-query
+name: query
 description: Use when the agent has a structural question about the saved baseline that the typed MCP tools (health, hotspots, rules, blast radius, coupling, cycles, evolution) do not directly answer. Runs Rayfall expressions against splayed baseline tables via raysense_baseline_query. Three modes are available - select queries for filter/project/aggregate (most common), .graph.* algorithms (PageRank, Louvain, topsort, shortest-path, betweenness, closeness, MST, k-shortest, BFS expand) for centrality and reachability over the call graph, and Datalog rules with transitive closure for declarative reachability ("reaches", "depends-on", "tainted-by"). Reach for this when the question shape is "files where X and Y," "most-central callers," "what does X transitively reach," or any custom slice across the 18 baseline tables.
 ---
 
-# Raysense Query
+# Query
 
 `raysense_baseline_query` evaluates a Rayfall expression against a
 single baseline table, which is bound to the symbol `t` before

@@ -1,9 +1,9 @@
 ---
-name: raysense-impact
+name: impact
 description: Use before refactoring, deleting, moving, or substantially modifying a file to compute its blast radius, coupling profile, and cycle exposure. Lets the agent edit with awareness of downstream effects rather than discovering them after the fact.
 ---
 
-# Raysense Impact
+# Impact
 
 Call this *before* a non-trivial edit (deletion, rename, signature
 change, extraction, file move). It tells the agent what depends on the
@@ -49,7 +49,7 @@ the target file path relative to that root.
 
 ## See also
 
-For cases the typed tools above don't cover, the **raysense-query**
+For cases the typed tools above don't cover, the **query**
 skill exposes Rayfall directly via `raysense_baseline_query`:
 
 - Custom reachability rules through Datalog -- declarative

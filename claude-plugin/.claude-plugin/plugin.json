@@ -1,6 +1,6 @@
 {
   "name": "raysense",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Architectural telemetry for AI coding agents. Phase-scoped skills over the raysense MCP server: scan + baseline at session start, blast-radius before edits, regression diff after, on-demand architecture audits.",
   "author": {
     "name": "Anton Kundenko",

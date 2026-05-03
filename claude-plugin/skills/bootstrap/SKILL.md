@@ -1,14 +1,14 @@
 ---
-name: raysense-bootstrap
-description: Use at the start of any coding session in a repository to scan the structure, save a baseline, and materialize splayed-table memory for fast follow-up queries. Establishes the "before" reference point that raysense-verify diffs against later.
+name: bootstrap
+description: Use at the start of any coding session in a repository to scan the structure, save a baseline, and materialize splayed-table memory for fast follow-up queries. Establishes the "before" reference point that the verify skill diffs against later.
 ---
 
-# Raysense Bootstrap
+# Bootstrap
 
 Run this once per session, before any non-trivial edits. It produces a
 persisted baseline plus live splayed-table memory that the other
-raysense skills (`raysense-impact`, `raysense-verify`,
-`raysense-audit`) read against.
+raysense skills (`impact`, `verify`,
+`audit`) read against.
 
 All tools take a `path` argument. Always pass the current working
 directory as an absolute path so per-project state stays inside the
@@ -41,7 +41,7 @@ After bootstrap, the agent should remember (briefly):
 ## When to skip
 
 - Session is read-only (the user just asked a question -- no edits
-  planned). Skip bootstrap; reach for `raysense-audit` instead if
+  planned). Skip bootstrap; reach for `audit` instead if
   structural context is needed.
 - A baseline already exists from a recent session and no commits have
   landed since (`git log -1 --since='1 hour ago'` shows nothing).
@@ -54,7 +54,7 @@ The baseline this skill produces is queryable, not just a dump.
 After bootstrap, the agent has access to:
 
 - `raysense_baseline_query` -- run any Rayfall expression against a
-  saved table.  Syntax and worked examples in the **raysense-query**
+  saved table.  Syntax and worked examples in the **query**
   skill (select / `.graph.*` / Datalog / vector search).
 - `raysense_policy_check` -- evaluate `.rfl` policy packs in
   `<repo>/.raysense/policies/`; ships its own exit-code semantics for

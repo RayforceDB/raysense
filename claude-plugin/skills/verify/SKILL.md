@@ -1,13 +1,13 @@
 ---
-name: raysense-verify
+name: verify
 description: Use after completing a logical chunk of edits to rescan the project and detect new rule violations or health regressions against the session baseline. Catches structural regressions before they reach review.
 ---
 
-# Raysense Verify
+# Verify
 
 Call this after a meaningful chunk of edits — typically before
 suggesting the user run tests or commit. It rescans the project and
-diffs the result against the baseline that `raysense-bootstrap`
+diffs the result against the baseline that `bootstrap`
 established.
 
 All tools take a `path` argument; pass the current repo root as an
@@ -56,7 +56,7 @@ For verify checks the typed tools don't cover natively:
   `raysense_check_rules` but are code-reviewable in the repo.  Exit
   code 1 = a policy itself failed to evaluate, 2 = at least one
   error-severity finding.
-- `raysense_baseline_query` -- the **raysense-query** skill covers
+- `raysense_baseline_query` -- the **query** skill covers
   the syntax.  Useful when a verify-time question is shaped like "did
   any new file land that violates X" and X needs a custom Rayfall
   expression.

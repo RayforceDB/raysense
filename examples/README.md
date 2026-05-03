@@ -70,8 +70,9 @@ raysense baseline query embeddings \
 ## Writing your own
 
 The full Rayfall reference (select syntax, `.graph.*` algorithms,
-Datalog rules, vector primitives) ships as the `raysense-query`
-skill in the bundled Claude Code plugin. Install with:
+Datalog rules, vector primitives) ships as the `query` skill in
+the bundled Claude Code plugin (invoked as `/raysense:query`).
+Install with:
 
 ```text
 /plugin marketplace add RayforceDB/raysense
@@ -79,5 +80,5 @@ skill in the bundled Claude Code plugin. Install with:
 ```
 
 The skill content lives in
-`claude-plugin/skills/raysense-query/SKILL.md` if you want to read
-it directly without installing.
+`claude-plugin/skills/query/SKILL.md` if you want to read it
+directly without installing.

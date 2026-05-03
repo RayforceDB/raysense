@@ -3483,7 +3483,7 @@ fn print_baseline_save_hint(root: &Path) {
     println!("[hint] run `raysense baseline save .` to materialize 24 queryable tables");
     println!("       (call graph, hotspots, ownership, arch_cycles, ...) for follow-up");
     println!("       Rayfall queries.  Agents pick this up automatically via the");
-    println!("       raysense-bootstrap skill.");
+    println!("       bootstrap skill (`/raysense:bootstrap`).");
 }
 
 #[cfg(test)]

@@ -150,7 +150,7 @@ raysense baseline query coverage \
 
 See [`examples/`](examples/) for starter policies and sample data.
 Full Rayfall syntax (select / `.graph.*` / Datalog / vector search)
-ships as the `raysense-query` skill bundled with the plugin.
+ships as the `query` skill bundled with the plugin (`/raysense:query`).
 
 ## Agent integration
 
