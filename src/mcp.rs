@@ -344,8 +344,13 @@ fn tools_list() -> Value {
             },
             {
                 "name": "raysense_trend",
-                "description": "Return persisted trend metrics when .raysense/trends/history.json exists.",
-                "inputSchema": health_limit_schema("Unused.")
+                "description": "Query the persisted trend history (.raysense/trends/history.json). Filter by window and dimension; choose summary/table/json output.",
+                "inputSchema": trend_schema()
+            },
+            {
+                "name": "raysense_drift",
+                "description": "Compute regressions across the trend history window: dimensions that worsened, files new to or risen on the hotspot list, rules newly tripped or with increased counts.",
+                "inputSchema": drift_schema()
             },
             {
                 "name": "raysense_policy_presets",
@@ -454,6 +459,7 @@ fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
         "raysense_what_if" => what_if_tool(&args),
         "raysense_break_cycle_recommendations" => break_cycle_recommendations_tool(&args),
         "raysense_trend" => trend_tool(&args),
+        "raysense_drift" => drift_tool(&args),
         "raysense_policy_presets" => policy_presets_tool(&args),
         "raysense_policy_init" => policy_init_tool(&args),
         "raysense_memory_summary" => memory_summary_tool(&args),
@@ -1481,11 +1487,491 @@ fn what_if_health_summary(health: &crate::HealthSummary) -> Value {
 }
 
 fn trend_tool(args: &Value) -> Result<Value> {
-    let (root, health) = health_from_args(args)?;
+    let root = root_arg(args)?;
+    let (window_label, window_secs) = window_arg(args)?;
+    let dimension = dimension_arg(args)?;
+    let format = trend_format_arg(args)?;
+    let limit = limit_arg(args, 20)?;
+
+    let samples = crate::health::read_trend_history(&root);
+    let now = unix_time_secs();
+    let cutoff = window_secs.map(|w| now - w);
+    let filtered: Vec<&crate::health::TrendSample> = samples
+        .iter()
+        .filter(|s| match cutoff {
+            Some(c) => s.timestamp >= c,
+            None => true,
+        })
+        .collect();
+
+    let data = match format.as_str() {
+        "summary" => trend_summary(&filtered, &dimension),
+        "table" => trend_table(&filtered, &dimension, limit),
+        "json" => trend_json(&filtered, &dimension, limit),
+        // Validated upstream by trend_format_arg.
+        _ => json!({}),
+    };
+
     Ok(json!({
         "root": root,
-        "trend": health.metrics.trend
+        "window": window_label,
+        "dimension": dimension,
+        "format": format,
+        "samples": filtered.len(),
+        "data": data,
     }))
+}
+
+/// Cap on history.json window choices. Adding a new entry here
+/// auto-extends the validation in `window_arg` and the schema enum.
+const TREND_WINDOWS: &[(&str, i64)] = &[
+    ("7d", 7 * 86_400),
+    ("30d", 30 * 86_400),
+    ("90d", 90 * 86_400),
+];
+
+fn unix_time_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn window_arg(args: &Value) -> Result<(String, Option<i64>)> {
+    let label = args
+        .get("window")
+        .and_then(Value::as_str)
+        .unwrap_or("30d")
+        .to_string();
+    if label == "all" {
+        return Ok((label, None));
+    }
+    if let Some((_, seconds)) = TREND_WINDOWS
+        .iter()
+        .find(|(name, _)| *name == label.as_str())
+    {
+        return Ok((label, Some(*seconds)));
+    }
+    Err(anyhow!(
+        "window must be one of 7d, 30d, 90d, all (got {label})"
+    ))
+}
+
+fn dimension_arg(args: &Value) -> Result<String> {
+    let value = args
+        .get("dimension")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    match value {
+        "health" | "hotspots" | "violations" | "all" => Ok(value.to_string()),
+        other => Err(anyhow!(
+            "dimension must be one of health, hotspots, violations, all (got {other})"
+        )),
+    }
+}
+
+fn trend_format_arg(args: &Value) -> Result<String> {
+    let value = args
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or("summary");
+    match value {
+        "summary" | "table" | "json" => Ok(value.to_string()),
+        other => Err(anyhow!(
+            "format must be one of summary, table, json (got {other})"
+        )),
+    }
+}
+
+fn trend_summary(samples: &[&crate::health::TrendSample], dimension: &str) -> Value {
+    let first = samples.first().copied();
+    let last = samples.last().copied();
+    let mut out = serde_json::Map::new();
+
+    if dimension == "health" || dimension == "all" {
+        let block = match (first, last) {
+            (Some(a), Some(b)) => json!({
+                "first_timestamp": a.timestamp,
+                "last_timestamp": b.timestamp,
+                "score_first": a.score,
+                "score_last": b.score,
+                "score_delta": b.score as i32 - a.score as i32,
+                "quality_signal_first": a.quality_signal,
+                "quality_signal_last": b.quality_signal,
+                "quality_signal_delta": b.quality_signal as i64 - a.quality_signal as i64,
+                "rules_first": a.rules,
+                "rules_last": b.rules,
+                "rules_delta": b.rules as isize - a.rules as isize,
+                "modularity_delta": round3(b.root_causes.modularity - a.root_causes.modularity),
+                "acyclicity_delta": round3(b.root_causes.acyclicity - a.root_causes.acyclicity),
+                "depth_delta": round3(b.root_causes.depth - a.root_causes.depth),
+                "equality_delta": round3(b.root_causes.equality - a.root_causes.equality),
+                "redundancy_delta": round3(b.root_causes.redundancy - a.root_causes.redundancy),
+                "structural_uniformity_delta": round3(
+                    b.root_causes.structural_uniformity - a.root_causes.structural_uniformity
+                ),
+            }),
+            _ => json!({"available": false}),
+        };
+        out.insert("health".to_string(), block);
+    }
+
+    if dimension == "hotspots" || dimension == "all" {
+        let mut top = std::collections::BTreeMap::<&str, &crate::health::TrendHotspotSample>::new();
+        for sample in samples {
+            for h in &sample.top_hotspots {
+                top.entry(h.path.as_str())
+                    .and_modify(|existing| {
+                        if h.risk_score > existing.risk_score {
+                            *existing = h;
+                        }
+                    })
+                    .or_insert(h);
+            }
+        }
+        let mut top: Vec<_> = top.into_iter().collect();
+        top.sort_by_key(|(_, h)| std::cmp::Reverse(h.risk_score));
+        let rows: Vec<Value> = top
+            .into_iter()
+            .take(SUMMARY_TOP_N)
+            .map(|(_, h)| {
+                json!({
+                    "path": h.path,
+                    "commits": h.commits,
+                    "max_complexity": h.max_complexity,
+                    "risk_score": h.risk_score,
+                })
+            })
+            .collect();
+        out.insert("hotspots".to_string(), Value::Array(rows));
+    }
+
+    if dimension == "violations" || dimension == "all" {
+        let mut totals: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for sample in samples {
+            for (rule, count) in &sample.rule_breakdown {
+                *totals.entry(rule.as_str()).or_default() += count;
+            }
+        }
+        let mut totals: Vec<_> = totals.into_iter().collect();
+        totals.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        let rows: Vec<Value> = totals
+            .into_iter()
+            .take(SUMMARY_TOP_N)
+            .map(|(rule, count)| json!({"rule_id": rule, "total_count": count}))
+            .collect();
+        out.insert("violations".to_string(), Value::Array(rows));
+    }
+
+    Value::Object(out)
+}
+
+fn trend_table(samples: &[&crate::health::TrendSample], dimension: &str, limit: usize) -> Value {
+    let mut out = serde_json::Map::new();
+
+    if dimension == "health" || dimension == "all" {
+        let rows: Vec<Value> = samples
+            .iter()
+            .rev()
+            .take(limit)
+            .map(|s| {
+                json!({
+                    "timestamp": s.timestamp,
+                    "snapshot_id": s.snapshot_id,
+                    "score": s.score,
+                    "quality_signal": s.quality_signal,
+                    "rules": s.rules,
+                    "modularity": s.root_causes.modularity,
+                    "acyclicity": s.root_causes.acyclicity,
+                    "depth": s.root_causes.depth,
+                    "equality": s.root_causes.equality,
+                    "redundancy": s.root_causes.redundancy,
+                    "structural_uniformity": s.root_causes.structural_uniformity,
+                    "overall_grade": s.overall_grade,
+                })
+            })
+            .collect();
+        out.insert("health".to_string(), Value::Array(rows));
+    }
+
+    if dimension == "hotspots" || dimension == "all" {
+        let mut rows = Vec::new();
+        for s in samples {
+            for h in &s.top_hotspots {
+                rows.push(json!({
+                    "timestamp": s.timestamp,
+                    "snapshot_id": s.snapshot_id,
+                    "path": h.path,
+                    "commits": h.commits,
+                    "max_complexity": h.max_complexity,
+                    "risk_score": h.risk_score,
+                }));
+            }
+        }
+        rows.truncate(limit);
+        out.insert("hotspots".to_string(), Value::Array(rows));
+    }
+
+    if dimension == "violations" || dimension == "all" {
+        let mut rows = Vec::new();
+        for s in samples {
+            for (rule, count) in &s.rule_breakdown {
+                rows.push(json!({
+                    "timestamp": s.timestamp,
+                    "snapshot_id": s.snapshot_id,
+                    "rule_id": rule,
+                    "count": count,
+                }));
+            }
+        }
+        rows.truncate(limit);
+        out.insert("violations".to_string(), Value::Array(rows));
+    }
+
+    Value::Object(out)
+}
+
+fn trend_json(samples: &[&crate::health::TrendSample], _dimension: &str, limit: usize) -> Value {
+    let raw: Vec<&crate::health::TrendSample> = samples.iter().rev().take(limit).copied().collect();
+    json!(raw)
+}
+
+fn round3(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
+fn drift_tool(args: &Value) -> Result<Value> {
+    let root = root_arg(args)?;
+    let (window_label, window_secs) = window_arg(args)?;
+    let limit = limit_arg(args, 5)?;
+
+    let samples = crate::health::read_trend_history(&root);
+    let now = unix_time_secs();
+    let cutoff = window_secs.map(|w| now - w);
+    let in_window: Vec<&crate::health::TrendSample> = samples
+        .iter()
+        .filter(|s| match cutoff {
+            Some(c) => s.timestamp >= c,
+            None => true,
+        })
+        .collect();
+
+    if in_window.len() < 2 {
+        return Ok(json!({
+            "root": root,
+            "window": window_label,
+            "available": false,
+            "samples": in_window.len(),
+            "reason": "need at least 2 samples in the window to compute drift",
+        }));
+    }
+
+    let first = in_window.first().unwrap();
+    let last = in_window.last().unwrap();
+
+    let worsened = worsened_dimensions(first, last);
+    let hotspots = drift_hotspots(first, last, limit);
+    let rules = drift_rule_violations(first, last, limit);
+
+    Ok(json!({
+        "root": root,
+        "window": window_label,
+        "available": true,
+        "samples": in_window.len(),
+        "first_timestamp": first.timestamp,
+        "last_timestamp": last.timestamp,
+        "first_snapshot_id": first.snapshot_id,
+        "last_snapshot_id": last.snapshot_id,
+        "worsened_dimensions": worsened,
+        "hotspots_new_or_risen": hotspots,
+        "rules_new_or_increased": rules,
+    }))
+}
+
+/// Surface dimensions that got worse from `first` to `last`. For score
+/// and root-cause floats, "worse" means lower; for rule count, "worse"
+/// means higher. Equal or improved dimensions are dropped so the agent
+/// only sees the regression list.
+fn worsened_dimensions(
+    first: &crate::health::TrendSample,
+    last: &crate::health::TrendSample,
+) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+
+    let score_delta = last.score as i32 - first.score as i32;
+    if score_delta < 0 {
+        out.push(json!({
+            "dimension": "score",
+            "before": first.score,
+            "after": last.score,
+            "delta": score_delta,
+            "direction": "down",
+        }));
+    }
+    let rules_delta = last.rules as isize - first.rules as isize;
+    if rules_delta > 0 {
+        out.push(json!({
+            "dimension": "rules",
+            "before": first.rules,
+            "after": last.rules,
+            "delta": rules_delta,
+            "direction": "up",
+        }));
+    }
+    let dims: [(&str, f64, f64); 6] = [
+        (
+            "modularity",
+            first.root_causes.modularity,
+            last.root_causes.modularity,
+        ),
+        (
+            "acyclicity",
+            first.root_causes.acyclicity,
+            last.root_causes.acyclicity,
+        ),
+        ("depth", first.root_causes.depth, last.root_causes.depth),
+        (
+            "equality",
+            first.root_causes.equality,
+            last.root_causes.equality,
+        ),
+        (
+            "redundancy",
+            first.root_causes.redundancy,
+            last.root_causes.redundancy,
+        ),
+        (
+            "structural_uniformity",
+            first.root_causes.structural_uniformity,
+            last.root_causes.structural_uniformity,
+        ),
+    ];
+    for (name, before, after) in dims {
+        // Skip endpoints that look unset (older v1 samples) so we don't
+        // synthesize a misleading drop from 0.0 to a real value.
+        if before == 0.0 && after == 0.0 {
+            continue;
+        }
+        let delta = round3(after - before);
+        if delta < 0.0 {
+            out.push(json!({
+                "dimension": name,
+                "before": round3(before),
+                "after": round3(after),
+                "delta": delta,
+                "direction": "down",
+            }));
+        }
+    }
+    out
+}
+
+/// Files that were not in `first.top_hotspots` but appear in
+/// `last.top_hotspots`, plus files whose `risk_score` increased. Sorted
+/// by descending delta.
+fn drift_hotspots(
+    first: &crate::health::TrendSample,
+    last: &crate::health::TrendSample,
+    limit: usize,
+) -> Vec<Value> {
+    let first_by_path: std::collections::BTreeMap<&str, &crate::health::TrendHotspotSample> = first
+        .top_hotspots
+        .iter()
+        .map(|h| (h.path.as_str(), h))
+        .collect();
+    let mut out: Vec<(i64, Value)> = Vec::new();
+    for current in &last.top_hotspots {
+        let before = first_by_path.get(current.path.as_str());
+        let before_score = before.map(|h| h.risk_score as i64).unwrap_or(0);
+        let delta = current.risk_score as i64 - before_score;
+        if delta <= 0 {
+            continue;
+        }
+        out.push((
+            delta,
+            json!({
+                "path": current.path,
+                "before_risk_score": before_score,
+                "after_risk_score": current.risk_score,
+                "delta": delta,
+                "is_new": before.is_none(),
+                "commits": current.commits,
+                "max_complexity": current.max_complexity,
+            }),
+        ));
+    }
+    out.sort_by_key(|(d, _)| std::cmp::Reverse(*d));
+    out.into_iter().take(limit).map(|(_, v)| v).collect()
+}
+
+/// Rule codes that gained violations, plus rules that newly tripped
+/// (absent in `first.rule_breakdown`). Sorted by descending delta.
+fn drift_rule_violations(
+    first: &crate::health::TrendSample,
+    last: &crate::health::TrendSample,
+    limit: usize,
+) -> Vec<Value> {
+    let mut out: Vec<(isize, Value)> = Vec::new();
+    for (rule, count) in &last.rule_breakdown {
+        let before = first.rule_breakdown.get(rule).copied().unwrap_or(0);
+        let delta = *count as isize - before as isize;
+        if delta <= 0 {
+            continue;
+        }
+        out.push((
+            delta,
+            json!({
+                "rule_id": rule,
+                "before_count": before,
+                "after_count": count,
+                "delta": delta,
+                "is_new": before == 0,
+            }),
+        ));
+    }
+    out.sort_by_key(|(d, _)| std::cmp::Reverse(*d));
+    out.into_iter().take(limit).map(|(_, v)| v).collect()
+}
+
+fn drift_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "window": {
+                "type": "string",
+                "enum": ["7d", "30d", "90d", "all"],
+                "description": "Time window for drift detection. Defaults to 30d. Drift compares the oldest in-window sample to the newest."
+            },
+            "limit": {"type": "integer", "minimum": 1, "description": "Max rows surfaced per category (hotspots and rule increases). Defaults to 5."}
+        }
+    })
+}
+
+fn trend_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Project root. Defaults to the current directory."},
+            "window": {
+                "type": "string",
+                "enum": ["7d", "30d", "90d", "all"],
+                "description": "Time window of trend samples to consider. Defaults to 30d."
+            },
+            "dimension": {
+                "type": "string",
+                "enum": ["health", "hotspots", "violations", "all"],
+                "description": "Which trend dimension to surface. Defaults to all."
+            },
+            "format": {
+                "type": "string",
+                "enum": ["summary", "table", "json"],
+                "description": "Output verbosity. summary: deltas + top-5; table: per-row entries; json: raw samples. Defaults to summary."
+            },
+            "limit": {"type": "integer", "minimum": 1, "description": "Cap on rows in non-summary modes. Defaults to 20."}
+        }
+    })
 }
 
 fn policy_presets_tool(_args: &Value) -> Result<Value> {
@@ -1532,6 +2018,13 @@ fn baseline_save_tool(args: &Value) -> Result<Value> {
     let report = scan_path_with_config(&root, &config)?;
     let health = compute_health_with_config(&report, &config);
     let baseline = build_baseline(&report, &health);
+
+    // Record the trend sample first so this snapshot is part of the
+    // history that the splayed `trend_*` tables read from. Failures
+    // here are silent (best-effort) - the baseline itself is what
+    // matters and stdout/stderr are reserved for JSON-RPC traffic.
+    let _ = crate::cli::append_trend_sample(&report, &health);
+
     let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
     let tables_dir = output.join("tables");
 
@@ -2691,6 +3184,7 @@ mod tests {
         assert!(names.contains(&"raysense_what_if"));
         assert!(names.contains(&"raysense_break_cycle_recommendations"));
         assert!(names.contains(&"raysense_trend"));
+        assert!(names.contains(&"raysense_drift"));
         assert!(names.contains(&"raysense_policy_presets"));
         assert!(names.contains(&"raysense_policy_init"));
         assert!(names.contains(&"raysense_memory_summary"));
@@ -2766,5 +3260,236 @@ mod tests {
             state.cached_health.is_none(),
             "invalidating tool must drop the cache",
         );
+    }
+
+    /// Write a synthetic two-sample history.json into a temp dir, then
+    /// run the new trend_tool. Confirms each format/dimension produces a
+    /// well-shaped envelope.
+    #[test]
+    fn trend_tool_filters_window_and_formats_output() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("raysense-trend-tool-{suffix}"));
+        let trends_dir = root.join(".raysense/trends");
+        std::fs::create_dir_all(&trends_dir).unwrap();
+
+        let now = unix_time_secs();
+        let recent = now - 3 * 86_400; // 3 days ago: in-window for 7d
+        let old = now - 100 * 86_400; // 100 days ago: out-of-window for 90d
+        let history = json!([
+            {
+                "schema": 2,
+                "timestamp": old,
+                "snapshot_id": "snap-old",
+                "score": 60,
+                "quality_signal": 6000,
+                "rules": 5,
+                "files": 10,
+                "functions": 100,
+                "root_causes": {
+                    "modularity": 0.5, "acyclicity": 0.5, "depth": 0.5,
+                    "equality": 0.5, "redundancy": 0.5, "structural_uniformity": 0.5,
+                },
+                "overall_grade": "D",
+                "top_hotspots": [
+                    {"path": "src/old.rs", "commits": 5, "max_complexity": 10, "risk_score": 50}
+                ],
+                "rule_breakdown": {"old_rule": 5},
+            },
+            {
+                "schema": 2,
+                "timestamp": recent,
+                "snapshot_id": "snap-recent",
+                "score": 80,
+                "quality_signal": 8000,
+                "rules": 2,
+                "files": 12,
+                "functions": 110,
+                "root_causes": {
+                    "modularity": 0.9, "acyclicity": 0.9, "depth": 0.9,
+                    "equality": 0.7, "redundancy": 0.8, "structural_uniformity": 0.7,
+                },
+                "overall_grade": "B",
+                "top_hotspots": [
+                    {"path": "src/big.rs", "commits": 12, "max_complexity": 18, "risk_score": 216}
+                ],
+                "rule_breakdown": {"max_function_complexity": 2},
+            }
+        ]);
+        std::fs::write(
+            trends_dir.join("history.json"),
+            serde_json::to_string_pretty(&history).unwrap(),
+        )
+        .unwrap();
+
+        // 7d window must drop the old sample.
+        let args = json!({
+            "path": root.to_string_lossy().to_string(),
+            "window": "7d",
+            "format": "summary",
+        });
+        let result = trend_tool(&args).unwrap();
+        assert_eq!(result["window"], json!("7d"));
+        assert_eq!(result["samples"], json!(1));
+
+        // all window keeps both.
+        let args = json!({
+            "path": root.to_string_lossy().to_string(),
+            "window": "all",
+            "format": "summary",
+        });
+        let result = trend_tool(&args).unwrap();
+        assert_eq!(result["samples"], json!(2));
+        assert_eq!(result["data"]["health"]["score_first"], json!(60));
+        assert_eq!(result["data"]["health"]["score_last"], json!(80));
+        assert_eq!(result["data"]["health"]["score_delta"], json!(20));
+
+        // table format with limit honors the cap.
+        let args = json!({
+            "path": root.to_string_lossy().to_string(),
+            "window": "all",
+            "dimension": "violations",
+            "format": "table",
+            "limit": 1,
+        });
+        let result = trend_tool(&args).unwrap();
+        assert_eq!(
+            result["data"]["violations"].as_array().map(Vec::len),
+            Some(1),
+            "limit=1 must cap rows"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn trend_tool_rejects_unknown_window() {
+        let args = json!({"window": "1y"});
+        let err = trend_tool(&args).unwrap_err();
+        assert!(err.to_string().contains("window must be one of"));
+    }
+
+    /// drift_tool needs at least 2 samples in the window to compute
+    /// deltas. A two-sample synthetic history with one rule going from
+    /// 0 to 1 should surface as `is_new: true`, modularity dropping
+    /// 0.9 -> 0.5 should appear in worsened_dimensions, and a hotspot
+    /// risk_score climbing 50 -> 200 should top the hotspots list.
+    #[test]
+    fn drift_tool_surfaces_regressions() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("raysense-drift-tool-{suffix}"));
+        let trends_dir = root.join(".raysense/trends");
+        std::fs::create_dir_all(&trends_dir).unwrap();
+
+        let now = unix_time_secs();
+        let first_ts = now - 5 * 86_400;
+        let last_ts = now - 1 * 86_400;
+        let history = json!([
+            {
+                "schema": 2, "timestamp": first_ts, "snapshot_id": "before",
+                "score": 80, "quality_signal": 8000, "rules": 0,
+                "files": 10, "functions": 100,
+                "root_causes": {
+                    "modularity": 0.9, "acyclicity": 0.9, "depth": 1.0,
+                    "equality": 0.7, "redundancy": 0.8, "structural_uniformity": 0.7
+                },
+                "overall_grade": "B",
+                "top_hotspots": [{"path": "src/big.rs", "commits": 5, "max_complexity": 10, "risk_score": 50}],
+                "rule_breakdown": {}
+            },
+            {
+                "schema": 2, "timestamp": last_ts, "snapshot_id": "after",
+                "score": 70, "quality_signal": 7000, "rules": 1,
+                "files": 11, "functions": 105,
+                "root_causes": {
+                    "modularity": 0.5, "acyclicity": 0.9, "depth": 1.0,
+                    "equality": 0.7, "redundancy": 0.8, "structural_uniformity": 0.7
+                },
+                "overall_grade": "C",
+                "top_hotspots": [
+                    {"path": "src/big.rs", "commits": 12, "max_complexity": 18, "risk_score": 200},
+                    {"path": "src/new.rs", "commits": 3, "max_complexity": 8, "risk_score": 24}
+                ],
+                "rule_breakdown": {"max_function_complexity": 1}
+            }
+        ]);
+        std::fs::write(
+            trends_dir.join("history.json"),
+            serde_json::to_string_pretty(&history).unwrap(),
+        )
+        .unwrap();
+
+        let args = json!({
+            "path": root.to_string_lossy().to_string(),
+            "window": "30d",
+        });
+        let result = drift_tool(&args).unwrap();
+        assert_eq!(result["available"], json!(true));
+        assert_eq!(result["samples"], json!(2));
+
+        // Score and modularity both regressed.
+        let worsened = result["worsened_dimensions"].as_array().unwrap();
+        let dims: Vec<&str> = worsened
+            .iter()
+            .filter_map(|d| d["dimension"].as_str())
+            .collect();
+        assert!(
+            dims.contains(&"score"),
+            "expected score in worsened: {dims:?}"
+        );
+        assert!(
+            dims.contains(&"modularity"),
+            "expected modularity in worsened: {dims:?}"
+        );
+        assert!(
+            dims.contains(&"rules"),
+            "expected rules count in worsened: {dims:?}"
+        );
+
+        // src/big.rs went 50 -> 200 (delta 150); src/new.rs is brand new.
+        let hotspots = result["hotspots_new_or_risen"].as_array().unwrap();
+        assert!(!hotspots.is_empty(), "expected at least one risen hotspot");
+        let top = &hotspots[0];
+        assert_eq!(top["path"], json!("src/big.rs"));
+        assert_eq!(top["delta"], json!(150));
+        assert_eq!(top["is_new"], json!(false));
+
+        // max_function_complexity newly tripped.
+        let rules = result["rules_new_or_increased"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["rule_id"], json!("max_function_complexity"));
+        assert_eq!(rules[0]["is_new"], json!(true));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn drift_tool_reports_unavailable_with_one_sample() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("raysense-drift-empty-{suffix}"));
+        std::fs::create_dir_all(&root.join(".raysense/trends")).unwrap();
+        std::fs::write(
+            root.join(".raysense/trends/history.json"),
+            "[{\"schema\": 2, \"timestamp\": 1, \"snapshot_id\": \"only\", \"score\": 80, \"quality_signal\": 8000, \"rules\": 0, \"root_causes\": {\"modularity\": 0.9, \"acyclicity\": 0.9, \"depth\": 1.0, \"equality\": 0.7, \"redundancy\": 0.8, \"structural_uniformity\": 0.7}, \"overall_grade\": \"B\"}]",
+        )
+        .unwrap();
+
+        let args = json!({
+            "path": root.to_string_lossy().to_string(),
+            "window": "all",
+        });
+        let result = drift_tool(&args).unwrap();
+        assert_eq!(result["available"], json!(false));
+        assert_eq!(result["samples"], json!(1));
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -603,6 +603,30 @@ pub struct TrendSample {
     pub root_causes: RootCauseScores,
     #[serde(default)]
     pub overall_grade: String,
+    /// On-disk JSON schema version. Samples written before v0.7 lack
+    /// the field and default to 0 (treated as v1: hotspots and rule
+    /// breakdown unknown). v0.7 writes `schema = 2`.
+    #[serde(default)]
+    pub schema: u32,
+    /// Top temporal hotspots at sample time, capped at 20 by
+    /// `risk_score = commits * max_complexity`. Empty for v1 samples.
+    #[serde(default)]
+    pub top_hotspots: Vec<TrendHotspotSample>,
+    /// Rule-violation counts keyed by rule code at sample time. Empty
+    /// for v1 samples.
+    #[serde(default)]
+    pub rule_breakdown: BTreeMap<String, usize>,
+}
+
+/// Per-sample temporal-hotspot row carried inside a `TrendSample`.
+/// Mirrors `EvolutionTemporalHotspot` shape so consumers can treat the
+/// historical snapshot identically to the live one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrendHotspotSample {
+    pub path: String,
+    pub commits: usize,
+    pub max_complexity: usize,
+    pub risk_score: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3212,14 +3236,21 @@ fn flush_commit_files_with_author(
     }
 }
 
-fn trend_metrics(report: &ScanReport) -> TrendMetrics {
-    let path = report.snapshot.root.join(".raysense/trends/history.json");
+/// Best-effort read of `<root>/.raysense/trends/history.json` into the
+/// typed `TrendSample` form. Missing file or unparseable content yield
+/// an empty `Vec` -- callers treat the trend log as advisory, never
+/// load-bearing. v1 samples (no `schema` field) deserialize with
+/// defaulted hotspot/rule_breakdown fields.
+pub fn read_trend_history(root: &Path) -> Vec<TrendSample> {
+    let path = root.join(".raysense/trends/history.json");
     let Ok(content) = fs::read_to_string(&path) else {
-        return TrendMetrics::default();
+        return Vec::new();
     };
-    let Ok(samples) = serde_json::from_str::<Vec<TrendSample>>(&content) else {
-        return TrendMetrics::default();
-    };
+    serde_json::from_str::<Vec<TrendSample>>(&content).unwrap_or_default()
+}
+
+fn trend_metrics(report: &ScanReport) -> TrendMetrics {
+    let samples = read_trend_history(&report.snapshot.root);
     let (Some(first), Some(last)) = (samples.first(), samples.last()) else {
         return TrendMetrics::default();
     };
@@ -5903,5 +5934,63 @@ order = 2
             hotspots.is_empty(),
             "either factor being zero means no risk score",
         );
+    }
+
+    #[test]
+    fn trend_sample_back_compat_v1_json() {
+        // v1 history.json predates v0.7. Missing fields default to 0
+        // for `schema`, empty for `top_hotspots` and `rule_breakdown`.
+        let v1 = r#"{
+            "timestamp": 1700000000,
+            "snapshot_id": "abc",
+            "score": 82,
+            "quality_signal": 8000,
+            "rules": 3,
+            "root_causes": {
+                "modularity": 1.0,
+                "acyclicity": 1.0,
+                "depth": 1.0,
+                "equality": 0.5,
+                "redundancy": 0.8,
+                "structural_uniformity": 0.7
+            },
+            "overall_grade": "B"
+        }"#;
+        let parsed: TrendSample = serde_json::from_str(v1).unwrap();
+        assert_eq!(parsed.schema, 0);
+        assert!(parsed.top_hotspots.is_empty());
+        assert!(parsed.rule_breakdown.is_empty());
+        assert_eq!(parsed.score, 82);
+        assert_eq!(parsed.snapshot_id, "abc");
+    }
+
+    #[test]
+    fn trend_sample_v2_round_trip() {
+        // v2 samples preserve the new fields through a serde round trip.
+        let mut breakdown = BTreeMap::new();
+        breakdown.insert("max_function_complexity".to_string(), 2usize);
+        let original = TrendSample {
+            timestamp: 1_700_000_000,
+            score: 75,
+            quality_signal: 7500,
+            rules: 4,
+            snapshot_id: "snap".to_string(),
+            overall_grade: "C".to_string(),
+            schema: 2,
+            top_hotspots: vec![TrendHotspotSample {
+                path: "src/big.rs".to_string(),
+                commits: 12,
+                max_complexity: 18,
+                risk_score: 216,
+            }],
+            rule_breakdown: breakdown.clone(),
+            ..TrendSample::default()
+        };
+        let encoded = serde_json::to_string(&original).unwrap();
+        let parsed: TrendSample = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(parsed.schema, 2);
+        assert_eq!(parsed.top_hotspots.len(), 1);
+        assert_eq!(parsed.top_hotspots[0].risk_score, 216);
+        assert_eq!(parsed.rule_breakdown, breakdown);
     }
 }

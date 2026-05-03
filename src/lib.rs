@@ -45,12 +45,13 @@ pub use facts::{
 };
 pub use graph::GraphMetrics;
 pub use health::{
-    compute_health, compute_health_with_config, is_foundation_file, BoundaryConfig,
-    ComplexityMetrics, ConfigError, DependencyViolationMetric, DuplicateFunctionGroup,
-    FileCouplingMetric, FileHotspot, FileInstabilityMetric, ForbiddenEdgeConfig,
-    FunctionComplexityMetric, HealthSummary, LanguagePluginConfig, LayerConfig,
-    ModuleDistanceMetric, ModuleStabilityMetric, RaysenseConfig, Remediation, ResolutionBreakdown,
-    RuleConfig, ScanConfig, ScoreConfig, TestGapCandidate, TestGapMetrics, TrendMetrics,
+    compute_health, compute_health_with_config, is_foundation_file, read_trend_history,
+    BoundaryConfig, ComplexityMetrics, ConfigError, DependencyViolationMetric,
+    DuplicateFunctionGroup, FileCouplingMetric, FileHotspot, FileInstabilityMetric,
+    ForbiddenEdgeConfig, FunctionComplexityMetric, HealthSummary, LanguagePluginConfig,
+    LayerConfig, ModuleDistanceMetric, ModuleStabilityMetric, RaysenseConfig, Remediation,
+    ResolutionBreakdown, RootCauseScores, RuleConfig, ScanConfig, ScoreConfig, TestGapCandidate,
+    TestGapMetrics, TrendHotspotSample, TrendMetrics, TrendSample,
 };
 pub use health::{RuleFinding, RuleSeverity};
 pub use profile::ProjectProfile;

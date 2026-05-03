@@ -32,7 +32,7 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -2731,11 +2731,21 @@ fn record_trend(root: &Path, config_path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// On-disk schema version for `history.json` samples. Bumped to 2 in
+/// v0.7 to add `top_hotspots` and `rule_breakdown`. Older samples
+/// without the `schema` field deserialize as `0` and are read by
+/// downstream consumers as v1.
+const TREND_SCHEMA_VERSION: u32 = 2;
+
+/// How many temporal hotspots to embed per trend sample. Capped to
+/// keep `history.json` from growing unbounded with churny repos.
+const TREND_TOP_HOTSPOTS_LIMIT: usize = 20;
+
 /// Append one row to `<root>/.raysense/trends/history.json` describing
 /// the score, quality signal, rule count, and per-dimension scores at
 /// `now`. Used both by `raysense trend record` and by `raysense
 /// baseline save`. Returns the path the row was written to.
-fn append_trend_sample(report: &ScanReport, health: &HealthSummary) -> Result<PathBuf> {
+pub(crate) fn append_trend_sample(report: &ScanReport, health: &HealthSummary) -> Result<PathBuf> {
     let dir = report.snapshot.root.join(".raysense/trends");
     let path = dir.join("history.json");
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
@@ -2744,7 +2754,27 @@ fn append_trend_sample(report: &ScanReport, health: &HealthSummary) -> Result<Pa
     } else {
         Vec::new()
     };
+    let top_hotspots: Vec<Value> = health
+        .metrics
+        .evolution
+        .temporal_hotspots
+        .iter()
+        .take(TREND_TOP_HOTSPOTS_LIMIT)
+        .map(|h| {
+            serde_json::json!({
+                "path": h.path,
+                "commits": h.commits,
+                "max_complexity": h.max_complexity,
+                "risk_score": h.risk_score,
+            })
+        })
+        .collect();
+    let mut rule_breakdown: BTreeMap<String, usize> = BTreeMap::new();
+    for finding in &health.rules {
+        *rule_breakdown.entry(finding.code.clone()).or_default() += 1;
+    }
     samples.push(serde_json::json!({
+        "schema": TREND_SCHEMA_VERSION,
         "timestamp": unix_time(),
         "snapshot_id": report.snapshot.snapshot_id,
         "score": health.score,
@@ -2754,6 +2784,8 @@ fn append_trend_sample(report: &ScanReport, health: &HealthSummary) -> Result<Pa
         "functions": report.functions.len(),
         "root_causes": health.root_causes,
         "overall_grade": health.grades.overall,
+        "top_hotspots": top_hotspots,
+        "rule_breakdown": rule_breakdown,
     }));
     fs::write(&path, serde_json::to_string_pretty(&samples)?)
         .with_context(|| format!("failed to write {}", path.display()))?;
@@ -2871,6 +2903,15 @@ fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Resu
     let report = scan_path_with_config(root, &config)?;
     let health = compute_health_with_config(&report, &config);
     let baseline = build_baseline(&report, &health);
+
+    // Record the trend sample first so this snapshot is part of the
+    // history that the splayed `trend_*` tables read from. Failures
+    // here are non-fatal: the trend log is best-effort, the baseline
+    // itself is what the user asked for.
+    if let Err(reason) = append_trend_sample(&report, &health) {
+        eprintln!("warning: failed to record trend sample: {reason}");
+    }
+
     let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
     let tables_dir = output.join("tables");
 
@@ -2888,13 +2929,6 @@ fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Resu
     memory
         .save_splayed(&tables_dir)
         .with_context(|| format!("failed to write baseline tables {}", tables_dir.display()))?;
-
-    // Record a trend sample so the score-drift series captures every
-    // baseline save automatically. Failures here are non-fatal: the
-    // baseline itself succeeded, the trend log is best-effort.
-    if let Err(reason) = append_trend_sample(&report, &health) {
-        eprintln!("warning: failed to record trend sample: {reason}");
-    }
 
     Ok(())
 }
@@ -3543,6 +3577,45 @@ mod tests {
                 .unwrap();
         assert!(summary.written.is_empty());
         assert!(summary.skipped.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn append_trend_sample_writes_v2_schema() {
+        // Run the full pipeline against this crate so we get a real
+        // ScanReport + HealthSummary. Redirect the trend file into a
+        // temp dir by overriding the snapshot root post-scan.
+        let root = temp_root("trend-v2");
+        fs::create_dir_all(&root).unwrap();
+        let mut report = crate::scan_path(env!("CARGO_MANIFEST_DIR")).unwrap();
+        // Point the writer at the temp dir, but keep the rest of the
+        // report intact so health computation has real data to chew on.
+        report.snapshot.root = root.clone();
+        let health = crate::compute_health(&report);
+
+        let path = append_trend_sample(&report, &health).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let samples: Vec<Value> = serde_json::from_str(&content).unwrap();
+        assert_eq!(samples.len(), 1);
+        let sample = &samples[0];
+        assert_eq!(sample["schema"].as_u64(), Some(TREND_SCHEMA_VERSION as u64));
+        assert!(
+            sample.get("top_hotspots").is_some(),
+            "v2 sample must carry top_hotspots field"
+        );
+        assert!(
+            sample.get("rule_breakdown").is_some(),
+            "v2 sample must carry rule_breakdown field"
+        );
+        // Cap is enforced.
+        let hotspots = sample["top_hotspots"].as_array().unwrap();
+        assert!(
+            hotspots.len() <= TREND_TOP_HOTSPOTS_LIMIT,
+            "expected <= {} hotspots, got {}",
+            TREND_TOP_HOTSPOTS_LIMIT,
+            hotspots.len()
+        );
+
         fs::remove_dir_all(&root).unwrap();
     }
 }

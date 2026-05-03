@@ -118,8 +118,9 @@ Rayfall expressions, drop in custom rules as `.rfl` files, and bring
 external CSVs into the same query substrate.
 
 ```bash
-# 1. Save a baseline with 18 splayed tables (files, functions, calls,
-#    call_edges, imports, types, hotspots, change_coupling, ...)
+# 1. Save a baseline with 21 splayed tables (files, functions, calls,
+#    call_edges, imports, types, hotspots, change_coupling,
+#    trend_health, trend_hotspots, trend_violations, ...)
 raysense baseline save .
 
 # 2. Ad-hoc query in Rayfall (LISP-like, prefix, arity-strict).
@@ -161,9 +162,10 @@ Raysense ships as a Claude Code plugin:
 /plugin install raysense
 ```
 
-Five skills: scan + baseline at session start, blast radius before
-edits, regression diff after, on-demand architecture audits, and a
-Rayfall query skill that lets agents run free-form expressions
+Six skills: scan + baseline at session start, blast radius before
+edits, regression diff after, on-demand architecture audits,
+time-window drift detection ("what got worse over the last 30 days"),
+and a Rayfall query skill that lets agents run free-form expressions
 against the saved baseline tables when the typed tools fall short.
 Multi-codebase isolation is cwd-driven, so per-project state stays in
 `<repo>/.raysense/`. Two sessions on two repos = two independent
@@ -196,9 +198,15 @@ baselines, zero cross-project bleed.
   agent edit is most likely to break. Composite of churn, max
   complexity, single-owner penalty, and missing-tests penalty,
   refreshed on every save
-- **Score drift per session** - every baseline save appends a sample;
-  verify diffs against the previous one and surfaces per-dimension
-  drift (Equality went B to D) instead of a single aggregate delta
+- **Drift over time** - every baseline save and `trend record`
+  appends a sample to `.raysense/trends/history.json`. The save
+  materializes three splayed tables (`trend_health`,
+  `trend_hotspots`, `trend_violations`) so agents query "what got
+  worse over the last 30 days" through Rayfall, the typed
+  `raysense_drift` MCP tool, or the `drift` skill, instead of
+  parsing history.json themselves. Verify still surfaces
+  per-dimension regressions against the saved baseline (Equality B
+  to D) for the no-time-window case
 - **Bug-density per file** - files where most of the churn is fix
   commits float to the top. Conventional Commits prefixes (fix,
   hotfix, revert) drive the classifier; absolute count and ratio

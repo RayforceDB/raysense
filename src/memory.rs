@@ -21,6 +21,7 @@
  *   SOFTWARE.
  */
 
+use crate::health::{read_trend_history, TrendSample};
 use crate::{
     compute_health_with_config, HealthSummary, RaysenseConfig, RuleFinding, RuleSeverity,
     ScanReport,
@@ -51,7 +52,12 @@ use thiserror::Error;
 ///   `arch_levels`, `arch_distance`, `arch_violations`) so agents
 ///   query architectural detail through Rayfall instead of by
 ///   jq-piping a JSON dump from the typed MCP tools.
-pub const SCHEMA_VERSION: i64 = 3;
+/// - v4: trend history materialized as splayed tables
+///   (`trend_health`, `trend_hotspots`, `trend_violations`) so agents
+///   query "what got worse over the last N days" against the baseline
+///   instead of parsing `.raysense/trends/history.json` themselves.
+///   Empty when no history file exists yet.
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -160,6 +166,9 @@ pub struct MemorySummary {
     pub arch_levels: TableSummary,
     pub arch_distance: TableSummary,
     pub arch_violations: TableSummary,
+    pub trend_health: TableSummary,
+    pub trend_hotspots: TableSummary,
+    pub trend_violations: TableSummary,
     pub meta: TableSummary,
 }
 
@@ -270,6 +279,9 @@ pub struct RayMemory {
     arch_levels: RayObject,
     arch_distance: RayObject,
     arch_violations: RayObject,
+    trend_health: RayObject,
+    trend_hotspots: RayObject,
+    trend_violations: RayObject,
     meta: RayObject,
 }
 
@@ -309,6 +321,11 @@ impl RayMemory {
         let arch_distance = build_arch_distance_table(&health)?;
         let arch_violations = build_arch_violations_table(&health)?;
 
+        let trend_samples = read_trend_history(&report.snapshot.root);
+        let trend_health = build_trend_health_table(&trend_samples)?;
+        let trend_hotspots = build_trend_hotspots_table(&trend_samples)?;
+        let trend_violations = build_trend_violations_table(&trend_samples)?;
+
         let meta = build_meta_table(
             report,
             &[
@@ -334,6 +351,9 @@ impl RayMemory {
                 ("module_edges", module_edges.as_ptr()),
                 ("rules", rules.as_ptr()),
                 ("temporal_hotspots", temporal_hotspots.as_ptr()),
+                ("trend_health", trend_health.as_ptr()),
+                ("trend_hotspots", trend_hotspots.as_ptr()),
+                ("trend_violations", trend_violations.as_ptr()),
                 ("types", types.as_ptr()),
             ],
         )?;
@@ -362,6 +382,9 @@ impl RayMemory {
             arch_levels,
             arch_distance,
             arch_violations,
+            trend_health,
+            trend_hotspots,
+            trend_violations,
             meta,
         })
     }
@@ -391,6 +414,9 @@ impl RayMemory {
             arch_levels: table_summary(self.arch_levels.as_ptr()),
             arch_distance: table_summary(self.arch_distance.as_ptr()),
             arch_violations: table_summary(self.arch_violations.as_ptr()),
+            trend_health: table_summary(self.trend_health.as_ptr()),
+            trend_hotspots: table_summary(self.trend_hotspots.as_ptr()),
+            trend_violations: table_summary(self.trend_violations.as_ptr()),
             meta: table_summary(self.meta.as_ptr()),
         }
     }
@@ -448,6 +474,19 @@ impl RayMemory {
         self.save_table(
             "arch_violations",
             self.arch_violations.as_ptr(),
+            dir,
+            &sym_path,
+        )?;
+        self.save_table("trend_health", self.trend_health.as_ptr(), dir, &sym_path)?;
+        self.save_table(
+            "trend_hotspots",
+            self.trend_hotspots.as_ptr(),
+            dir,
+            &sym_path,
+        )?;
+        self.save_table(
+            "trend_violations",
+            self.trend_violations.as_ptr(),
             dir,
             &sym_path,
         )?;
@@ -2595,6 +2634,128 @@ fn build_arch_violations_table(health: &HealthSummary) -> Result<RayObject, Memo
     )
 }
 
+/// Wide-format trend table: one row per persisted snapshot, one column
+/// per tracked dimension. Aggregate scalars (`score`, `quality_signal`,
+/// `rules`) sit alongside the six root-cause floats and the overall
+/// letter grade. v1 samples (no `schema` field) lack the new
+/// hotspot/rule-breakdown fields but still contribute a complete row
+/// here, since every column comes from fields that already existed.
+fn build_trend_health_table(samples: &[TrendSample]) -> Result<RayObject, MemoryError> {
+    let n = samples.len();
+    table(
+        12,
+        [
+            (
+                "timestamp",
+                i64_vec(n, samples.iter().map(|s| s.timestamp))?,
+            ),
+            (
+                "snapshot_id",
+                sym_vec(n, samples.iter().map(|s| s.snapshot_id.clone()))?,
+            ),
+            ("score", i64_vec(n, samples.iter().map(|s| s.score as i64))?),
+            (
+                "quality_signal",
+                i64_vec(n, samples.iter().map(|s| s.quality_signal as i64))?,
+            ),
+            ("rules", i64_vec(n, samples.iter().map(|s| s.rules as i64))?),
+            (
+                "modularity",
+                f64_vec(n, samples.iter().map(|s| s.root_causes.modularity))?,
+            ),
+            (
+                "acyclicity",
+                f64_vec(n, samples.iter().map(|s| s.root_causes.acyclicity))?,
+            ),
+            (
+                "depth",
+                f64_vec(n, samples.iter().map(|s| s.root_causes.depth))?,
+            ),
+            (
+                "equality",
+                f64_vec(n, samples.iter().map(|s| s.root_causes.equality))?,
+            ),
+            (
+                "redundancy",
+                f64_vec(n, samples.iter().map(|s| s.root_causes.redundancy))?,
+            ),
+            (
+                "structural_uniformity",
+                f64_vec(
+                    n,
+                    samples.iter().map(|s| s.root_causes.structural_uniformity),
+                )?,
+            ),
+            (
+                "overall_grade",
+                sym_vec(n, samples.iter().map(|s| s.overall_grade.clone()))?,
+            ),
+        ],
+    )
+}
+
+/// Long-format trend table: one row per (snapshot, hotspot) pair. v1
+/// samples carry no hotspots so they contribute zero rows. Files repeat
+/// across snapshots, so `path` is dict-encoded.
+fn build_trend_hotspots_table(samples: &[TrendSample]) -> Result<RayObject, MemoryError> {
+    let mut timestamps: Vec<i64> = Vec::new();
+    let mut snapshot_ids: Vec<String> = Vec::new();
+    let mut paths: Vec<String> = Vec::new();
+    let mut commits: Vec<i64> = Vec::new();
+    let mut max_complexities: Vec<i64> = Vec::new();
+    let mut risk_scores: Vec<i64> = Vec::new();
+    for sample in samples {
+        for hotspot in &sample.top_hotspots {
+            timestamps.push(sample.timestamp);
+            snapshot_ids.push(sample.snapshot_id.clone());
+            paths.push(hotspot.path.clone());
+            commits.push(hotspot.commits as i64);
+            max_complexities.push(hotspot.max_complexity as i64);
+            risk_scores.push(hotspot.risk_score as i64);
+        }
+    }
+    let n = timestamps.len();
+    table(
+        6,
+        [
+            ("timestamp", i64_vec(n, timestamps)?),
+            ("snapshot_id", sym_vec(n, snapshot_ids)?),
+            ("path", sym_vec(n, paths)?),
+            ("commits", i64_vec(n, commits)?),
+            ("max_complexity", i64_vec(n, max_complexities)?),
+            ("risk_score", i64_vec(n, risk_scores)?),
+        ],
+    )
+}
+
+/// Long-format trend table: one row per (snapshot, rule_id) pair. v1
+/// samples carry no rule breakdown so they contribute zero rows. Rule
+/// codes repeat across snapshots, so `rule_id` is dict-encoded.
+fn build_trend_violations_table(samples: &[TrendSample]) -> Result<RayObject, MemoryError> {
+    let mut timestamps: Vec<i64> = Vec::new();
+    let mut snapshot_ids: Vec<String> = Vec::new();
+    let mut rule_ids: Vec<String> = Vec::new();
+    let mut counts: Vec<i64> = Vec::new();
+    for sample in samples {
+        for (rule_id, count) in &sample.rule_breakdown {
+            timestamps.push(sample.timestamp);
+            snapshot_ids.push(sample.snapshot_id.clone());
+            rule_ids.push(rule_id.clone());
+            counts.push(*count as i64);
+        }
+    }
+    let n = timestamps.len();
+    table(
+        4,
+        [
+            ("timestamp", i64_vec(n, timestamps)?),
+            ("snapshot_id", sym_vec(n, snapshot_ids)?),
+            ("rule_id", sym_vec(n, rule_ids)?),
+            ("count", i64_vec(n, counts)?),
+        ],
+    )
+}
+
 /// Build the single-row `meta` table that stamps schema version, raysense and
 /// rayforce versions, repo SHA, snapshot id, scan time, and a digest over every
 /// other table's column shape. Readers compare the digest's `schema_version`
@@ -3599,6 +3760,114 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn raymemory_v4_contains_trend_tables() {
+        // Even with no history.json on disk, the three trend tables must
+        // exist and be empty. Schema v4 is incomplete without them.
+        let _guard = rayforce_test_guard();
+        let report = sample_report();
+        let memory = RayMemory::from_report(&report).unwrap();
+        let summary = memory.summary();
+
+        assert_eq!(summary.trend_health.columns, 12);
+        assert_eq!(summary.trend_health.rows, 0);
+        assert_eq!(summary.trend_hotspots.columns, 6);
+        assert_eq!(summary.trend_hotspots.rows, 0);
+        assert_eq!(summary.trend_violations.columns, 4);
+        assert_eq!(summary.trend_violations.rows, 0);
+    }
+
+    #[test]
+    fn trend_health_table_has_one_row_per_sample() {
+        let _guard = rayforce_test_guard();
+        let mut breakdown = std::collections::BTreeMap::new();
+        breakdown.insert("max_function_complexity".to_string(), 2usize);
+        let samples = vec![
+            TrendSample {
+                timestamp: 1_700_000_000,
+                snapshot_id: "snap-1".to_string(),
+                score: 70,
+                quality_signal: 7000,
+                rules: 3,
+                root_causes: crate::health::RootCauseScores {
+                    modularity: 0.9,
+                    acyclicity: 0.95,
+                    depth: 1.0,
+                    equality: 0.5,
+                    redundancy: 0.7,
+                    structural_uniformity: 0.6,
+                },
+                overall_grade: "C".to_string(),
+                schema: 2,
+                top_hotspots: vec![crate::health::TrendHotspotSample {
+                    path: "src/big.rs".to_string(),
+                    commits: 12,
+                    max_complexity: 18,
+                    risk_score: 216,
+                }],
+                rule_breakdown: breakdown.clone(),
+            },
+            TrendSample {
+                timestamp: 1_700_001_000,
+                snapshot_id: "snap-2".to_string(),
+                score: 75,
+                quality_signal: 7500,
+                rules: 2,
+                root_causes: crate::health::RootCauseScores {
+                    modularity: 0.92,
+                    acyclicity: 0.95,
+                    depth: 1.0,
+                    equality: 0.55,
+                    redundancy: 0.72,
+                    structural_uniformity: 0.62,
+                },
+                overall_grade: "B".to_string(),
+                schema: 2,
+                top_hotspots: vec![crate::health::TrendHotspotSample {
+                    path: "src/big.rs".to_string(),
+                    commits: 13,
+                    max_complexity: 18,
+                    risk_score: 234,
+                }],
+                rule_breakdown: breakdown,
+            },
+        ];
+
+        let health_table = build_trend_health_table(&samples).unwrap();
+        let hotspots_table = build_trend_hotspots_table(&samples).unwrap();
+        let violations_table = build_trend_violations_table(&samples).unwrap();
+
+        assert_eq!(table_summary(health_table.as_ptr()).rows, 2);
+        assert_eq!(table_summary(health_table.as_ptr()).columns, 12);
+        assert_eq!(table_summary(hotspots_table.as_ptr()).rows, 2);
+        assert_eq!(table_summary(hotspots_table.as_ptr()).columns, 6);
+        assert_eq!(table_summary(violations_table.as_ptr()).rows, 2);
+        assert_eq!(table_summary(violations_table.as_ptr()).columns, 4);
+    }
+
+    #[test]
+    fn trend_tables_are_empty_for_v1_samples_without_hotspots() {
+        // v1 samples (schema=0) have no top_hotspots or rule_breakdown,
+        // so they only contribute to trend_health, not the long tables.
+        let _guard = rayforce_test_guard();
+        let samples = vec![TrendSample {
+            timestamp: 1_700_000_000,
+            snapshot_id: "v1".to_string(),
+            score: 70,
+            quality_signal: 7000,
+            rules: 1,
+            ..TrendSample::default()
+        }];
+
+        let health_table = build_trend_health_table(&samples).unwrap();
+        let hotspots_table = build_trend_hotspots_table(&samples).unwrap();
+        let violations_table = build_trend_violations_table(&samples).unwrap();
+
+        assert_eq!(table_summary(health_table.as_ptr()).rows, 1);
+        assert_eq!(table_summary(hotspots_table.as_ptr()).rows, 0);
+        assert_eq!(table_summary(violations_table.as_ptr()).rows, 0);
     }
 
     fn build_meta_table_with_version(
