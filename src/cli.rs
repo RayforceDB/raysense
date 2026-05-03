@@ -32,11 +32,10 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::mcp;
 
@@ -2331,12 +2330,21 @@ struct TrendPoint {
     score: u8,
 }
 
-/// Read `.raysense/trends/history.json` if it exists. The file is only
-/// written by `--trend record`; absence is normal and silent.
+/// Read trend samples for the live HTML dashboard sparkline. v0.8
+/// pulls them straight from the splayed `trend_health` table; there
+/// is no JSON sidecar. Returns `None` when no trend history has been
+/// recorded yet.
 fn read_trend_samples(root: &Path) -> Option<Vec<TrendPoint>> {
-    let path = root.join(".raysense/trends/history.json");
-    let content = fs::read_to_string(&path).ok()?;
-    serde_json::from_str::<Vec<TrendPoint>>(&content).ok()
+    let samples = crate::memory::read_trend_history_from_splay(root)?;
+    if samples.is_empty() {
+        return None;
+    }
+    Some(
+        samples
+            .into_iter()
+            .map(|s| TrendPoint { score: s.score })
+            .collect(),
+    )
 }
 
 fn list_plugins(root: &Path, config_path: Option<&Path>) -> Result<()> {
@@ -2731,65 +2739,17 @@ fn record_trend(root: &Path, config_path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// On-disk schema version for `history.json` samples. Bumped to 2 in
-/// v0.7 to add `top_hotspots` and `rule_breakdown`. Older samples
-/// without the `schema` field deserialize as `0` and are read by
-/// downstream consumers as v1.
-const TREND_SCHEMA_VERSION: u32 = 2;
-
-/// How many temporal hotspots to embed per trend sample. Capped to
-/// keep `history.json` from growing unbounded with churny repos.
-const TREND_TOP_HOTSPOTS_LIMIT: usize = 20;
-
-/// Append one row to `<root>/.raysense/trends/history.json` describing
-/// the score, quality signal, rule count, and per-dimension scores at
-/// `now`. Used both by `raysense trend record` and by `raysense
-/// baseline save`. Returns the path the row was written to.
+/// Append a sample to the splayed trend log. v0.8 routes through
+/// `memory::append_trend_sample_splay`, which mutates the splayed
+/// `trend_*` tables under `<root>/.raysense/baseline/tables/` in
+/// place via Rayfall `concat`. There is no JSON sidecar.
+///
+/// Returns the canonical trend tables directory so callers can show
+/// the user where the sample landed.
 pub(crate) fn append_trend_sample(report: &ScanReport, health: &HealthSummary) -> Result<PathBuf> {
-    let dir = report.snapshot.root.join(".raysense/trends");
-    let path = dir.join("history.json");
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let mut samples: Vec<Value> = if path.exists() {
-        serde_json::from_str(&fs::read_to_string(&path)?).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let top_hotspots: Vec<Value> = health
-        .metrics
-        .evolution
-        .temporal_hotspots
-        .iter()
-        .take(TREND_TOP_HOTSPOTS_LIMIT)
-        .map(|h| {
-            serde_json::json!({
-                "path": h.path,
-                "commits": h.commits,
-                "max_complexity": h.max_complexity,
-                "risk_score": h.risk_score,
-            })
-        })
-        .collect();
-    let mut rule_breakdown: BTreeMap<String, usize> = BTreeMap::new();
-    for finding in &health.rules {
-        *rule_breakdown.entry(finding.code.clone()).or_default() += 1;
-    }
-    samples.push(serde_json::json!({
-        "schema": TREND_SCHEMA_VERSION,
-        "timestamp": unix_time(),
-        "snapshot_id": report.snapshot.snapshot_id,
-        "score": health.score,
-        "quality_signal": health.quality_signal,
-        "rules": health.rules.len(),
-        "files": report.files.len(),
-        "functions": report.functions.len(),
-        "root_causes": health.root_causes,
-        "overall_grade": health.grades.overall,
-        "top_hotspots": top_hotspots,
-        "rule_breakdown": rule_breakdown,
-    }));
-    fs::write(&path, serde_json::to_string_pretty(&samples)?)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(path)
+    crate::memory::append_trend_sample_splay(report, health, &report.snapshot.root)
+        .context("failed to append trend sample")?;
+    Ok(crate::memory::trend_tables_dir(&report.snapshot.root))
 }
 
 fn show_trend(root: &Path, config_path: Option<&Path>, json: bool) -> Result<()> {
@@ -2891,13 +2851,6 @@ fn print_what_if(
     Ok(())
 }
 
-fn unix_time() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Result<()> {
     let config = config_for_root(root, config_path)?;
     let report = scan_path_with_config(root, &config)?;
@@ -2909,7 +2862,7 @@ fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Resu
     // here are non-fatal: the trend log is best-effort, the baseline
     // itself is what the user asked for.
     if let Err(reason) = append_trend_sample(&report, &health) {
-        eprintln!("warning: failed to record trend sample: {reason}");
+        eprintln!("warning: failed to record trend sample: {reason:#}");
     }
 
     let memory = crate::memory::RayMemory::from_report_with_config(&report, &config)?;
@@ -2922,10 +2875,17 @@ fn save_baseline(root: &Path, output: &Path, config_path: Option<&Path>) -> Resu
         serde_json::to_string_pretty(&baseline)?,
     )
     .with_context(|| format!("failed to write baseline manifest {}", output.display()))?;
-    if tables_dir.exists() {
-        fs::remove_dir_all(&tables_dir)
-            .with_context(|| format!("failed to clear baseline tables {}", tables_dir.display()))?;
-    }
+    // v0.8: do NOT remove tables_dir wholesale. Two reasons:
+    // 1. The shared `.sym` file lives at tables_dir/.sym. ray_sym_save
+    //    short-circuits when persisted_count == str_count (sym.c:901),
+    //    so a delete + save sequence can leave the new baseline without
+    //    a `.sym` file when no new symbols were interned since the last
+    //    save. Subsequent reads then fail with "corrupt".
+    // 2. Trend tables are loaded into memory in `from_report_with_config`
+    //    via `load_or_empty_trend_tables`. Removing the directory would
+    //    discard the on-disk trend log between load and rewrite.
+    // splay_save uses `mkdir -p` and per-table column overwrites, so it
+    //  is safe to call against an existing directory.
     memory
         .save_splayed(&tables_dir)
         .with_context(|| format!("failed to write baseline tables {}", tables_dir.display()))?;
@@ -3580,40 +3540,42 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// v0.8 trend log is splay-native. After two `append_trend_sample`
+    /// calls, the splayed `trend_health` table must hold two rows and
+    /// `read_trend_history_from_splay` must round-trip them back into
+    /// typed `TrendSample` form. No JSON file is created.
     #[test]
-    fn append_trend_sample_writes_v2_schema() {
-        // Run the full pipeline against this crate so we get a real
-        // ScanReport + HealthSummary. Redirect the trend file into a
-        // temp dir by overriding the snapshot root post-scan.
-        let root = temp_root("trend-v2");
+    fn append_trend_sample_grows_splayed_trend_health() {
+        let _guard = crate::memory::rayforce_test_guard();
+        let root = temp_root("trend-splay");
         fs::create_dir_all(&root).unwrap();
         let mut report = crate::scan_path(env!("CARGO_MANIFEST_DIR")).unwrap();
-        // Point the writer at the temp dir, but keep the rest of the
-        // report intact so health computation has real data to chew on.
         report.snapshot.root = root.clone();
         let health = crate::compute_health(&report);
 
-        let path = append_trend_sample(&report, &health).unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        let samples: Vec<Value> = serde_json::from_str(&content).unwrap();
-        assert_eq!(samples.len(), 1);
-        let sample = &samples[0];
-        assert_eq!(sample["schema"].as_u64(), Some(TREND_SCHEMA_VERSION as u64));
-        assert!(
-            sample.get("top_hotspots").is_some(),
-            "v2 sample must carry top_hotspots field"
+        let dir = append_trend_sample(&report, &health).unwrap();
+        // First call: creates trend_* tables under
+        // <root>/.raysense/baseline/tables/.
+        assert!(dir.join("trend_health").is_dir());
+        assert!(dir.join("trend_hotspots").is_dir());
+        assert!(dir.join("trend_violations").is_dir());
+
+        // Second call: must concat onto the existing splay, not replace it.
+        // Different snapshot id so both rows are distinguishable.
+        report.snapshot.snapshot_id = "second".to_string();
+        let _ = append_trend_sample(&report, &health).unwrap();
+
+        let samples = crate::memory::read_trend_history_from_splay(&root)
+            .expect("trend tables must be readable");
+        assert_eq!(
+            samples.len(),
+            2,
+            "expected two trend samples after two appends"
         );
+        // No JSON file is written.
         assert!(
-            sample.get("rule_breakdown").is_some(),
-            "v2 sample must carry rule_breakdown field"
-        );
-        // Cap is enforced.
-        let hotspots = sample["top_hotspots"].as_array().unwrap();
-        assert!(
-            hotspots.len() <= TREND_TOP_HOTSPOTS_LIMIT,
-            "expected <= {} hotspots, got {}",
-            TREND_TOP_HOTSPOTS_LIMIT,
-            hotspots.len()
+            !root.join(".raysense/trends/history.json").exists(),
+            "v0.8 must not write JSON",
         );
 
         fs::remove_dir_all(&root).unwrap();

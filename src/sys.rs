@@ -103,6 +103,11 @@ unsafe extern "C" {
         sym_path: *const c_char,
     ) -> ray_err_t;
     pub fn ray_read_splayed(dir: *const c_char, sym_path: *const c_char) -> *mut ray_t;
+    /// Non-mmap splay loader. Returns a buddy-allocated copy of the table
+    /// so the caller can safely mutate or even delete the on-disk source
+    /// directory afterwards. Use this when the load-then-rewrite flow
+    /// destructively replaces the directory between read and save.
+    pub fn ray_splay_load(dir: *const c_char, sym_path: *const c_char) -> *mut ray_t;
 
     pub fn ray_env_set(sym_id: i64, val: *mut ray_t) -> ray_err_t;
 

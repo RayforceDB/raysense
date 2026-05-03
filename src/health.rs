@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -3236,17 +3237,56 @@ fn flush_commit_files_with_author(
     }
 }
 
-/// Best-effort read of `<root>/.raysense/trends/history.json` into the
-/// typed `TrendSample` form. Missing file or unparseable content yield
-/// an empty `Vec` -- callers treat the trend log as advisory, never
-/// load-bearing. v1 samples (no `schema` field) deserialize with
-/// defaulted hotspot/rule_breakdown fields.
+/// Read the persisted trend history as a typed `Vec<TrendSample>`.
+/// Reads from the splayed `trend_*` tables under
+/// `<root>/.raysense/baseline/tables/`. Returns an empty vector if
+/// none of those tables exist yet (a freshly-scanned repo has no
+/// history, which is normal). Missing optional tables (e.g.
+/// `trend_hotspots` empty while `trend_health` has rows) degrade
+/// gracefully: rows for a given snapshot_id without hotspots simply
+/// have an empty `top_hotspots` field.
 pub fn read_trend_history(root: &Path) -> Vec<TrendSample> {
-    let path = root.join(".raysense/trends/history.json");
-    let Ok(content) = fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    serde_json::from_str::<Vec<TrendSample>>(&content).unwrap_or_default()
+    crate::memory::read_trend_history_from_splay(root).unwrap_or_default()
+}
+
+/// Build the canonical per-scan `TrendSample` so writers and readers
+/// agree on what one scan contributes to the trend log: one row in
+/// `trend_health`, up to 20 rows in `trend_hotspots`, and one row per
+/// distinct rule code in `trend_violations`.
+pub fn build_current_trend_sample(report: &ScanReport, health: &HealthSummary) -> TrendSample {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    let top_hotspots: Vec<TrendHotspotSample> = health
+        .metrics
+        .evolution
+        .temporal_hotspots
+        .iter()
+        .take(20)
+        .map(|h| TrendHotspotSample {
+            path: h.path.clone(),
+            commits: h.commits,
+            max_complexity: h.max_complexity,
+            risk_score: h.risk_score,
+        })
+        .collect();
+    let mut rule_breakdown: BTreeMap<String, usize> = BTreeMap::new();
+    for finding in &health.rules {
+        *rule_breakdown.entry(finding.code.clone()).or_default() += 1;
+    }
+    TrendSample {
+        timestamp,
+        snapshot_id: report.snapshot.snapshot_id.clone(),
+        score: health.score,
+        quality_signal: health.quality_signal,
+        rules: health.rules.len(),
+        root_causes: health.root_causes.clone(),
+        overall_grade: health.grades.overall.clone(),
+        schema: 2,
+        top_hotspots,
+        rule_breakdown,
+    }
 }
 
 fn trend_metrics(report: &ScanReport) -> TrendMetrics {

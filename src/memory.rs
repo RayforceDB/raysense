@@ -21,13 +21,14 @@
  *   SOFTWARE.
  */
 
-use crate::health::{read_trend_history, TrendSample};
+use crate::health::{TrendHotspotSample, TrendSample};
 use crate::{
     compute_health_with_config, HealthSummary, RaysenseConfig, RuleFinding, RuleSeverity,
     ScanReport,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -56,8 +57,13 @@ use thiserror::Error;
 ///   (`trend_health`, `trend_hotspots`, `trend_violations`) so agents
 ///   query "what got worse over the last N days" against the baseline
 ///   instead of parsing `.raysense/trends/history.json` themselves.
-///   Empty when no history file exists yet.
-pub const SCHEMA_VERSION: i64 = 4;
+/// - v5: trend tables become the source of truth. JSON
+///   (`.raysense/trends/history.json`) is gone. `trend record`
+///   appends rows to the splayed tables in place via Rayfall
+///   `concat`; `baseline save` reads them off disk and re-emits
+///   them rather than rebuilding from JSON. Hard break: v4
+///   baselines fail the schema check and require a fresh save.
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -321,10 +327,12 @@ impl RayMemory {
         let arch_distance = build_arch_distance_table(&health)?;
         let arch_violations = build_arch_violations_table(&health)?;
 
-        let trend_samples = read_trend_history(&report.snapshot.root);
-        let trend_health = build_trend_health_table(&trend_samples)?;
-        let trend_hotspots = build_trend_hotspots_table(&trend_samples)?;
-        let trend_violations = build_trend_violations_table(&trend_samples)?;
+        // v0.8: load existing splayed trend tables from the canonical
+        // location so they survive the wholesale rewrite of the
+        // tables/ directory. Falls back to empty-with-schema when the
+        // baseline has never been saved before.
+        let (trend_health, trend_hotspots, trend_violations) =
+            load_or_empty_trend_tables(&report.snapshot.root)?;
 
         let meta = build_meta_table(
             report,
@@ -2728,6 +2736,394 @@ fn build_trend_hotspots_table(samples: &[TrendSample]) -> Result<RayObject, Memo
     )
 }
 
+/// Splay-native trend log path. All trend appends and reads anchor at
+/// `<root>/.raysense/baseline/tables/`, sharing the same `.sym`
+/// dict-encoding file as the rest of the saved baseline.
+const TREND_HEALTH_NAME: &str = "trend_health";
+const TREND_HOTSPOTS_NAME: &str = "trend_hotspots";
+const TREND_VIOLATIONS_NAME: &str = "trend_violations";
+
+/// Concatenate two tables row-wise via Rayfall `concat`. The two
+/// inputs must agree on column names and types; concat matches
+/// columns by name so column order need not match. Both inputs are
+/// bound under fresh names that won't collide with policy-pack
+/// baseline-table bindings.
+fn concat_tables(a: &RayObject, b: &RayObject) -> Result<RayObject, MemoryError> {
+    init_symbols()?;
+
+    let ka = CString::new("__rs_concat_a__")?;
+    let kb = CString::new("__rs_concat_b__")?;
+    let ida = unsafe { crate::sys::ray_sym_intern(ka.as_ptr(), ka.as_bytes().len()) };
+    let idb = unsafe { crate::sys::ray_sym_intern(kb.as_ptr(), kb.as_bytes().len()) };
+
+    let err = unsafe { crate::sys::ray_env_set(ida, a.as_ptr()) };
+    if err != crate::sys::RAY_OK {
+        return Err(MemoryError::RayfallEval {
+            code: format!("env_set={err}"),
+            detail: "concat: failed to bind first operand".to_string(),
+        });
+    }
+    let err = unsafe { crate::sys::ray_env_set(idb, b.as_ptr()) };
+    if err != crate::sys::RAY_OK {
+        return Err(MemoryError::RayfallEval {
+            code: format!("env_set={err}"),
+            detail: "concat: failed to bind second operand".to_string(),
+        });
+    }
+
+    let expr = CString::new("(concat __rs_concat_a__ __rs_concat_b__)")?;
+    let raw = unsafe { crate::sys::ray_eval_str(expr.as_ptr()) };
+    if raw.is_null() {
+        return Err(MemoryError::RayfallEval {
+            code: "null".to_string(),
+            detail: "concat returned null".to_string(),
+        });
+    }
+    let result = RayObject::new(raw, "concat result")?;
+    let result_type = unsafe { (*result.as_ptr()).type_ };
+    if result_type == crate::sys::RAY_ERROR {
+        let code = unsafe {
+            let p = crate::sys::ray_err_code(result.as_ptr());
+            if p.is_null() {
+                "unknown".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        return Err(MemoryError::RayfallEval {
+            code,
+            detail: "concat".to_string(),
+        });
+    }
+    if result_type != crate::sys::RAY_TABLE {
+        return Err(MemoryError::RayfallResultNotTable {
+            type_tag: result_type,
+        });
+    }
+    Ok(result)
+}
+
+/// Load a splayed table by directory using the non-mmap loader. The
+/// returned table is buddy-allocated and survives deletion of the
+/// source directory, which is essential for the load-then-rewrite
+/// pattern used by `append_trend_sample_splay` and by
+/// `RayMemory::from_report_with_config` (which reads existing trend
+/// tables before `save_baseline` rebuilds the tables directory).
+fn splay_load_owned(dir: &Path, sym_path: &Path) -> Result<Option<RayObject>, MemoryError> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    init_symbols()?;
+    let dir_c = CString::new(dir.to_string_lossy().into_owned())?;
+    let sym_c = if sym_path.exists() {
+        Some(CString::new(sym_path.to_string_lossy().into_owned())?)
+    } else {
+        None
+    };
+    let raw = unsafe {
+        crate::sys::ray_splay_load(
+            dir_c.as_ptr(),
+            sym_c
+                .as_ref()
+                .map(|p| p.as_ptr())
+                .unwrap_or(std::ptr::null()),
+        )
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    if unsafe { (*raw).type_ } == crate::sys::RAY_ERROR {
+        let code = unsafe {
+            let p = crate::sys::ray_err_code(raw);
+            if p.is_null() {
+                "unknown".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        unsafe { crate::sys::ray_release(raw) };
+        return Err(MemoryError::SplayRead {
+            table: dir.display().to_string(),
+            code,
+        });
+    }
+    Ok(Some(RayObject::new(raw, "splay_load_owned")?))
+}
+
+/// Resolve the canonical trend tables directory for a project root.
+/// Trend tables always live alongside the rest of the saved baseline
+/// at `<root>/.raysense/baseline/tables/`, regardless of whether
+/// `baseline save` was last run with a custom output path. The
+/// `.sym` file at that location is the shared dict-encoding store.
+pub fn trend_tables_dir(root: &Path) -> PathBuf {
+    root.join(".raysense/baseline/tables")
+}
+
+/// Load the three splayed trend tables for a project root. Each
+/// table that's absent on disk is replaced with an empty splay table
+/// of the right schema, so the caller always gets a valid in-memory
+/// triple. The owned (non-mmap) loader is used so the returned
+/// objects survive deletion of the source directory, which is what
+/// `baseline save` does between read and rewrite.
+fn load_or_empty_trend_tables(
+    root: &Path,
+) -> Result<(RayObject, RayObject, RayObject), MemoryError> {
+    init_symbols()?;
+    let tables_dir = trend_tables_dir(root);
+    let sym_path = tables_dir.join(".sym");
+
+    let load_or_empty = |name: &str,
+                         build_empty: fn() -> Result<RayObject, MemoryError>|
+     -> Result<RayObject, MemoryError> {
+        let dir = tables_dir.join(name);
+        // Tolerate corrupt or incompatible splay (e.g. a v0.7 baseline
+        // left over after upgrade to v0.8): treat as missing and start
+        // fresh. The user loses prior trend history, which matches the
+        // no-back-compat policy of the v0.8 release notes.
+        match splay_load_owned(&dir, &sym_path) {
+            Ok(Some(table)) => Ok(table),
+            Ok(None)
+            | Err(MemoryError::SplayRead { .. })
+            | Err(MemoryError::SplayReadNull { .. }) => build_empty(),
+            Err(other) => Err(other),
+        }
+    };
+
+    let health = load_or_empty(TREND_HEALTH_NAME, || build_trend_health_table(&[]))?;
+    let hotspots = load_or_empty(TREND_HOTSPOTS_NAME, || build_trend_hotspots_table(&[]))?;
+    let violations = load_or_empty(TREND_VIOLATIONS_NAME, || build_trend_violations_table(&[]))?;
+    Ok((health, hotspots, violations))
+}
+
+/// Splay-native append: load existing trend tables (or treat as
+/// empty if absent), build a one-sample delta from the current scan
+/// + health, concat with the existing rows, splay-save back. Three
+/// tables are touched: `trend_health` (one row), `trend_hotspots`
+/// (up to 20 rows for the current scan's temporal hotspots), and
+/// `trend_violations` (one row per distinct rule code).
+///
+/// Replaces the v0.7 JSON-write path. There is no JSON written or
+/// read by raysense from v0.8 onwards.
+///
+/// Order matters: each `append_one_trend_table` call must load the
+/// existing splay BEFORE building its delta. `ray_sym_load` enforces
+/// position-equality (the disk file's symbol at index `i` must
+/// intern at id `i` in the global sym table). Building a delta first
+/// would intern new strings into slots the disk file expects to hold
+/// its own previously-persisted strings, causing a `corrupt` failure
+/// on the next process's append.
+pub fn append_trend_sample_splay(
+    report: &ScanReport,
+    health: &HealthSummary,
+    root: &Path,
+) -> Result<(), MemoryError> {
+    init_symbols()?;
+    let tables_dir = trend_tables_dir(root);
+    fs::create_dir_all(&tables_dir).map_err(|source| MemoryError::CreateDir {
+        path: tables_dir.clone(),
+        source,
+    })?;
+    let sym_path = tables_dir.join(".sym");
+
+    let sample = crate::health::build_current_trend_sample(report, health);
+
+    append_one_trend_table(&tables_dir, &sym_path, TREND_HEALTH_NAME, || {
+        build_trend_health_table(std::slice::from_ref(&sample))
+    })?;
+    append_one_trend_table(&tables_dir, &sym_path, TREND_HOTSPOTS_NAME, || {
+        build_trend_hotspots_table(std::slice::from_ref(&sample))
+    })?;
+    append_one_trend_table(&tables_dir, &sym_path, TREND_VIOLATIONS_NAME, || {
+        build_trend_violations_table(std::slice::from_ref(&sample))
+    })?;
+
+    Ok(())
+}
+
+/// Append one row (or many) to a single splayed trend table. The
+/// `delta_builder` is invoked AFTER `splay_load_owned` so any new
+/// strings interned by the build land at id positions strictly
+/// beyond what `ray_sym_load` populated from disk.
+fn append_one_trend_table(
+    tables_dir: &Path,
+    sym_path: &Path,
+    name: &'static str,
+    delta_builder: impl FnOnce() -> Result<RayObject, MemoryError>,
+) -> Result<(), MemoryError> {
+    let table_dir = tables_dir.join(name);
+    let combined = match splay_load_owned(&table_dir, sym_path)? {
+        Some(existing) => {
+            let delta = delta_builder()?;
+            concat_tables(&existing, &delta)?
+        }
+        None => delta_builder()?,
+    };
+    let dir_c = CString::new(table_dir.to_string_lossy().into_owned())?;
+    let sym_c = CString::new(sym_path.to_string_lossy().into_owned())?;
+    let err =
+        unsafe { crate::sys::ray_splay_save(combined.as_ptr(), dir_c.as_ptr(), sym_c.as_ptr()) };
+    if err != crate::sys::RAY_OK {
+        return Err(MemoryError::SplaySave {
+            table: name,
+            code: err,
+        });
+    }
+    Ok(())
+}
+
+/// Read the persisted trend log from the splayed `trend_*` tables
+/// and decode rows back into `Vec<TrendSample>`. Returns `None` if
+/// `trend_health` is absent (no trend history yet); callers should
+/// treat that as "no samples" rather than an error.
+pub fn read_trend_history_from_splay(root: &Path) -> Option<Vec<TrendSample>> {
+    let tables_dir = trend_tables_dir(root);
+    let sym_path = tables_dir.join(".sym");
+    let health_dir = tables_dir.join(TREND_HEALTH_NAME);
+    if !health_dir.is_dir() {
+        return None;
+    }
+    let health_table = splay_load_owned(&health_dir, &sym_path).ok().flatten()?;
+    let hotspots_dir = tables_dir.join(TREND_HOTSPOTS_NAME);
+    let hotspots_table = splay_load_owned(&hotspots_dir, &sym_path).ok().flatten();
+    let violations_dir = tables_dir.join(TREND_VIOLATIONS_NAME);
+    let violations_table = splay_load_owned(&violations_dir, &sym_path).ok().flatten();
+    Some(decode_trend_samples(
+        health_table.as_ptr(),
+        hotspots_table.as_ref().map(|t| t.as_ptr()),
+        violations_table.as_ref().map(|t| t.as_ptr()),
+    ))
+}
+
+/// Decode the three trend tables into the typed sample form. Rows
+/// in `trend_health` define the timeline; per-snapshot hotspots and
+/// rule breakdowns are joined by `snapshot_id`. Reuses `cell_value`
+/// so SYM/STR/numeric columns are decoded with the same width and
+/// width-promotion logic as the rest of the baseline reader.
+fn decode_trend_samples(
+    health: *mut crate::sys::ray_t,
+    hotspots: Option<*mut crate::sys::ray_t>,
+    violations: Option<*mut crate::sys::ray_t>,
+) -> Vec<TrendSample> {
+    let nrows = unsafe { crate::sys::ray_table_nrows(health) };
+    if nrows <= 0 {
+        return Vec::new();
+    }
+    let nrows_us = nrows as usize;
+
+    let null_col = std::ptr::null_mut::<crate::sys::ray_t>();
+    fn cols_by_name(
+        table: *mut crate::sys::ray_t,
+    ) -> std::collections::BTreeMap<String, *mut crate::sys::ray_t> {
+        let ncols = unsafe { crate::sys::ray_table_ncols(table) };
+        let mut out = std::collections::BTreeMap::new();
+        for idx in 0..ncols {
+            let name_id = unsafe { crate::sys::ray_table_col_name(table, idx) };
+            let col = unsafe { crate::sys::ray_table_get_col_idx(table, idx) };
+            out.insert(symbol_text(name_id), col);
+        }
+        out
+    }
+    let cell_i64 = |col: *mut crate::sys::ray_t, idx: usize| -> i64 {
+        cell_value(col, idx as i64).as_i64().unwrap_or(0)
+    };
+    let cell_f64 = |col: *mut crate::sys::ray_t, idx: usize| -> f64 {
+        cell_value(col, idx as i64).as_f64().unwrap_or(0.0)
+    };
+    let cell_str = |col: *mut crate::sys::ray_t, idx: usize| -> String {
+        cell_value(col, idx as i64)
+            .as_str()
+            .map(String::from)
+            .unwrap_or_default()
+    };
+
+    let h_cols = cols_by_name(health);
+    let h_ts = h_cols.get("timestamp").copied().unwrap_or(null_col);
+    let h_sid = h_cols.get("snapshot_id").copied().unwrap_or(null_col);
+    let h_score = h_cols.get("score").copied().unwrap_or(null_col);
+    let h_qs = h_cols.get("quality_signal").copied().unwrap_or(null_col);
+    let h_rules = h_cols.get("rules").copied().unwrap_or(null_col);
+    let h_mod = h_cols.get("modularity").copied().unwrap_or(null_col);
+    let h_acy = h_cols.get("acyclicity").copied().unwrap_or(null_col);
+    let h_dep = h_cols.get("depth").copied().unwrap_or(null_col);
+    let h_eq = h_cols.get("equality").copied().unwrap_or(null_col);
+    let h_red = h_cols.get("redundancy").copied().unwrap_or(null_col);
+    let h_su = h_cols
+        .get("structural_uniformity")
+        .copied()
+        .unwrap_or(null_col);
+    let h_grade = h_cols.get("overall_grade").copied().unwrap_or(null_col);
+
+    let mut hotspots_by_snap: std::collections::BTreeMap<String, Vec<TrendHotspotSample>> =
+        std::collections::BTreeMap::new();
+    if let Some(table) = hotspots {
+        let cols = cols_by_name(table);
+        let nrows_h = unsafe { crate::sys::ray_table_nrows(table) } as usize;
+        let c_sid = cols.get("snapshot_id").copied().unwrap_or(null_col);
+        let c_path = cols.get("path").copied().unwrap_or(null_col);
+        let c_commits = cols.get("commits").copied().unwrap_or(null_col);
+        let c_max = cols.get("max_complexity").copied().unwrap_or(null_col);
+        let c_risk = cols.get("risk_score").copied().unwrap_or(null_col);
+        for idx in 0..nrows_h {
+            let snap_id = cell_str(c_sid, idx);
+            hotspots_by_snap
+                .entry(snap_id)
+                .or_default()
+                .push(TrendHotspotSample {
+                    path: cell_str(c_path, idx),
+                    commits: cell_i64(c_commits, idx) as usize,
+                    max_complexity: cell_i64(c_max, idx) as usize,
+                    risk_score: cell_i64(c_risk, idx) as usize,
+                });
+        }
+    }
+
+    let mut violations_by_snap: std::collections::BTreeMap<String, BTreeMap<String, usize>> =
+        std::collections::BTreeMap::new();
+    if let Some(table) = violations {
+        let cols = cols_by_name(table);
+        let nrows_v = unsafe { crate::sys::ray_table_nrows(table) } as usize;
+        let c_sid = cols.get("snapshot_id").copied().unwrap_or(null_col);
+        let c_rule = cols.get("rule_id").copied().unwrap_or(null_col);
+        let c_count = cols.get("count").copied().unwrap_or(null_col);
+        for idx in 0..nrows_v {
+            let snap_id = cell_str(c_sid, idx);
+            let rule = cell_str(c_rule, idx);
+            let count = cell_i64(c_count, idx) as usize;
+            violations_by_snap
+                .entry(snap_id)
+                .or_default()
+                .insert(rule, count);
+        }
+    }
+
+    let mut samples: Vec<TrendSample> = Vec::with_capacity(nrows_us);
+    for idx in 0..nrows_us {
+        let snapshot_id = cell_str(h_sid, idx);
+        let top_hotspots = hotspots_by_snap.remove(&snapshot_id).unwrap_or_default();
+        let rule_breakdown = violations_by_snap.remove(&snapshot_id).unwrap_or_default();
+        samples.push(TrendSample {
+            timestamp: cell_i64(h_ts, idx),
+            snapshot_id,
+            score: cell_i64(h_score, idx) as u8,
+            quality_signal: cell_i64(h_qs, idx) as u32,
+            rules: cell_i64(h_rules, idx) as usize,
+            root_causes: crate::health::RootCauseScores {
+                modularity: cell_f64(h_mod, idx),
+                acyclicity: cell_f64(h_acy, idx),
+                depth: cell_f64(h_dep, idx),
+                equality: cell_f64(h_eq, idx),
+                redundancy: cell_f64(h_red, idx),
+                structural_uniformity: cell_f64(h_su, idx),
+            },
+            overall_grade: cell_str(h_grade, idx),
+            schema: 2,
+            top_hotspots,
+            rule_breakdown,
+        });
+    }
+    samples
+}
+
 /// Long-format trend table: one row per (snapshot, rule_id) pair. v1
 /// samples carry no rule breakdown so they contribute zero rows. Rule
 /// codes repeat across snapshots, so `rule_id` is dict-encoded.
@@ -3023,31 +3419,80 @@ fn table_summary(table: *mut crate::sys::ray_t) -> TableSummary {
 }
 
 #[cfg(test)]
+mod test_lock {
+    use std::sync::Mutex;
+
+    /// Process-wide rayforce lock shared by every test module that
+    /// touches the rayforce runtime (sym table, env, splay loaders,
+    /// `ray_eval_str`). Cargo's parallel test runner would otherwise
+    /// clobber global state.
+    pub(super) static RAYFORCE_TEST_LOCK: Mutex<()> = Mutex::new(());
+}
+
+/// Test-only entry point for the shared rayforce lock. Exposed at
+/// module scope so tests in other files (`cli.rs`, `mcp.rs`, ...)
+/// can serialize without each redefining their own mutex (which
+/// wouldn't actually share).
+#[cfg(test)]
+pub(crate) fn rayforce_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    match test_lock::RAYFORCE_TEST_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Test-only: seed a project root's splayed trend tables with a
+/// synthetic sample list. Replaces any existing trend tables. Used
+/// by tests in other modules that previously wrote a synthetic
+/// `history.json` and now need the splay equivalent.
+#[cfg(test)]
+pub(crate) fn write_trend_history_splay_for_tests(
+    root: &Path,
+    samples: &[TrendSample],
+) -> Result<(), MemoryError> {
+    init_symbols()?;
+    let tables_dir = trend_tables_dir(root);
+    fs::create_dir_all(&tables_dir).map_err(|source| MemoryError::CreateDir {
+        path: tables_dir.clone(),
+        source,
+    })?;
+    let sym_path = tables_dir.join(".sym");
+
+    let health = build_trend_health_table(samples)?;
+    let hotspots = build_trend_hotspots_table(samples)?;
+    let violations = build_trend_violations_table(samples)?;
+
+    let pairs = [
+        (TREND_HEALTH_NAME, health),
+        (TREND_HOTSPOTS_NAME, hotspots),
+        (TREND_VIOLATIONS_NAME, violations),
+    ];
+    for (name, table) in pairs {
+        let dir = tables_dir.join(name);
+        let dir_c = CString::new(dir.to_string_lossy().into_owned())?;
+        let sym_c = CString::new(sym_path.to_string_lossy().into_owned())?;
+        let err =
+            unsafe { crate::sys::ray_splay_save(table.as_ptr(), dir_c.as_ptr(), sym_c.as_ptr()) };
+        if err != crate::sys::RAY_OK {
+            return Err(MemoryError::SplaySave {
+                table: name,
+                code: err,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{scan_path, FileFact, Language, SnapshotFact};
     use serde_json::json;
     use std::path::PathBuf;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// rayforce's runtime, sym table, and env are process-global singletons.
-    /// Cargo runs tests with multiple threads by default, so any test that
-    /// touches `ray_read_splayed` (which calls `ray_sym_load` and clobbers
-    /// the global sym table) or `eval_policy_pack` (which calls
-    /// `ray_env_set` to bind 18 baseline tables under their own names) must
-    /// serialize through this mutex. Pure-Rust helpers and pure-FFI tests
-    /// that do not touch global state can skip it.
-    static RAYFORCE_TEST_LOCK: Mutex<()> = Mutex::new(());
-
     fn rayforce_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        match RAYFORCE_TEST_LOCK.lock() {
-            Ok(guard) => guard,
-            // A previous test panicked while holding the lock; the runtime
-            // is still healthy (it is a process singleton, not per-test
-            // state), so re-take the inner value and continue.
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        super::rayforce_test_guard()
     }
 
     #[test]

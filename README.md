@@ -199,14 +199,13 @@ baselines, zero cross-project bleed.
   complexity, single-owner penalty, and missing-tests penalty,
   refreshed on every save
 - **Drift over time** - every baseline save and `trend record`
-  appends a sample to `.raysense/trends/history.json`. The save
-  materializes three splayed tables (`trend_health`,
-  `trend_hotspots`, `trend_violations`) so agents query "what got
-  worse over the last 30 days" through Rayfall, the typed
-  `raysense_drift` MCP tool, or the `drift` skill, instead of
-  parsing history.json themselves. Verify still surfaces
-  per-dimension regressions against the saved baseline (Equality B
-  to D) for the no-time-window case
+  appends one row to the splayed `trend_health`, `trend_hotspots`,
+  and `trend_violations` tables in the saved baseline. Agents query
+  "what got worse over the last 30 days" through Rayfall, the typed
+  `raysense_drift` MCP tool, or the `drift` skill, all reading the
+  same columnar substrate as every other baseline table. No JSON
+  sidecar. Verify still surfaces per-dimension regressions against
+  the saved baseline (Equality B to D) for the no-time-window case
 - **Bug-density per file** - files where most of the churn is fix
   commits float to the top. Conventional Commits prefixes (fix,
   hotfix, revert) drive the classifier; absolute count and ratio

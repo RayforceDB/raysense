@@ -2035,10 +2035,8 @@ fn baseline_save_tool(args: &Value) -> Result<Value> {
         serde_json::to_string_pretty(&baseline)?,
     )
     .with_context(|| format!("failed to write baseline manifest {}", output.display()))?;
-    if tables_dir.exists() {
-        fs::remove_dir_all(&tables_dir)
-            .with_context(|| format!("failed to clear baseline tables {}", tables_dir.display()))?;
-    }
+    // v0.8: see cli::save_baseline for why tables_dir is preserved
+    // across save (sym short-circuit + trend log preservation).
     memory
         .save_splayed(&tables_dir)
         .with_context(|| format!("failed to write baseline tables {}", tables_dir.display()))?;
@@ -3262,69 +3260,96 @@ mod tests {
         );
     }
 
-    /// Write a synthetic two-sample history.json into a temp dir, then
-    /// run the new trend_tool. Confirms each format/dimension produces a
-    /// well-shaped envelope.
+    /// Build a synthetic TrendSample for the test helpers below.
+    fn synth_sample(
+        timestamp: i64,
+        snapshot_id: &str,
+        score: u8,
+        quality_signal: u32,
+        rules: usize,
+        modularity: f64,
+        equality: f64,
+        overall_grade: &str,
+        hotspots: Vec<(&str, usize, usize, usize)>,
+        rule_breakdown: Vec<(&str, usize)>,
+    ) -> crate::health::TrendSample {
+        crate::health::TrendSample {
+            timestamp,
+            snapshot_id: snapshot_id.to_string(),
+            score,
+            quality_signal,
+            rules,
+            root_causes: crate::health::RootCauseScores {
+                modularity,
+                acyclicity: 0.9,
+                depth: 1.0,
+                equality,
+                redundancy: 0.8,
+                structural_uniformity: 0.7,
+            },
+            overall_grade: overall_grade.to_string(),
+            schema: 2,
+            top_hotspots: hotspots
+                .into_iter()
+                .map(|(p, c, m, r)| crate::health::TrendHotspotSample {
+                    path: p.to_string(),
+                    commits: c,
+                    max_complexity: m,
+                    risk_score: r,
+                })
+                .collect(),
+            rule_breakdown: rule_breakdown
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        }
+    }
+
+    /// Seed a temp project root's splayed trend tables with synthetic
+    /// samples, then run the new trend_tool. v0.8 reads from splay
+    /// only; there is no JSON sidecar.
     #[test]
     fn trend_tool_filters_window_and_formats_output() {
+        let _guard = crate::memory::rayforce_test_guard();
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("raysense-trend-tool-{suffix}"));
-        let trends_dir = root.join(".raysense/trends");
-        std::fs::create_dir_all(&trends_dir).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
 
         let now = unix_time_secs();
-        let recent = now - 3 * 86_400; // 3 days ago: in-window for 7d
-        let old = now - 100 * 86_400; // 100 days ago: out-of-window for 90d
-        let history = json!([
-            {
-                "schema": 2,
-                "timestamp": old,
-                "snapshot_id": "snap-old",
-                "score": 60,
-                "quality_signal": 6000,
-                "rules": 5,
-                "files": 10,
-                "functions": 100,
-                "root_causes": {
-                    "modularity": 0.5, "acyclicity": 0.5, "depth": 0.5,
-                    "equality": 0.5, "redundancy": 0.5, "structural_uniformity": 0.5,
-                },
-                "overall_grade": "D",
-                "top_hotspots": [
-                    {"path": "src/old.rs", "commits": 5, "max_complexity": 10, "risk_score": 50}
-                ],
-                "rule_breakdown": {"old_rule": 5},
-            },
-            {
-                "schema": 2,
-                "timestamp": recent,
-                "snapshot_id": "snap-recent",
-                "score": 80,
-                "quality_signal": 8000,
-                "rules": 2,
-                "files": 12,
-                "functions": 110,
-                "root_causes": {
-                    "modularity": 0.9, "acyclicity": 0.9, "depth": 0.9,
-                    "equality": 0.7, "redundancy": 0.8, "structural_uniformity": 0.7,
-                },
-                "overall_grade": "B",
-                "top_hotspots": [
-                    {"path": "src/big.rs", "commits": 12, "max_complexity": 18, "risk_score": 216}
-                ],
-                "rule_breakdown": {"max_function_complexity": 2},
-            }
-        ]);
-        std::fs::write(
-            trends_dir.join("history.json"),
-            serde_json::to_string_pretty(&history).unwrap(),
-        )
-        .unwrap();
+        let recent = now - 3 * 86_400; // in-window for 7d
+        let old = now - 100 * 86_400; // out-of-window for 90d
+        let samples = vec![
+            synth_sample(
+                old,
+                "snap-old",
+                60,
+                6000,
+                5,
+                0.5,
+                0.5,
+                "D",
+                vec![("src/old.rs", 5, 10, 50)],
+                vec![("old_rule", 5)],
+            ),
+            synth_sample(
+                recent,
+                "snap-recent",
+                80,
+                8000,
+                2,
+                0.9,
+                0.7,
+                "B",
+                vec![("src/big.rs", 12, 18, 216)],
+                vec![("max_function_complexity", 2)],
+            ),
+        ];
+        crate::memory::write_trend_history_splay_for_tests(&root, &samples).unwrap();
 
-        // 7d window must drop the old sample.
+        // 7d window drops the old sample.
         let args = json!({
             "path": root.to_string_lossy().to_string(),
             "window": "7d",
@@ -3378,51 +3403,44 @@ mod tests {
     /// risk_score climbing 50 -> 200 should top the hotspots list.
     #[test]
     fn drift_tool_surfaces_regressions() {
+        let _guard = crate::memory::rayforce_test_guard();
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("raysense-drift-tool-{suffix}"));
-        let trends_dir = root.join(".raysense/trends");
-        std::fs::create_dir_all(&trends_dir).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
 
         let now = unix_time_secs();
         let first_ts = now - 5 * 86_400;
-        let last_ts = now - 1 * 86_400;
-        let history = json!([
-            {
-                "schema": 2, "timestamp": first_ts, "snapshot_id": "before",
-                "score": 80, "quality_signal": 8000, "rules": 0,
-                "files": 10, "functions": 100,
-                "root_causes": {
-                    "modularity": 0.9, "acyclicity": 0.9, "depth": 1.0,
-                    "equality": 0.7, "redundancy": 0.8, "structural_uniformity": 0.7
-                },
-                "overall_grade": "B",
-                "top_hotspots": [{"path": "src/big.rs", "commits": 5, "max_complexity": 10, "risk_score": 50}],
-                "rule_breakdown": {}
-            },
-            {
-                "schema": 2, "timestamp": last_ts, "snapshot_id": "after",
-                "score": 70, "quality_signal": 7000, "rules": 1,
-                "files": 11, "functions": 105,
-                "root_causes": {
-                    "modularity": 0.5, "acyclicity": 0.9, "depth": 1.0,
-                    "equality": 0.7, "redundancy": 0.8, "structural_uniformity": 0.7
-                },
-                "overall_grade": "C",
-                "top_hotspots": [
-                    {"path": "src/big.rs", "commits": 12, "max_complexity": 18, "risk_score": 200},
-                    {"path": "src/new.rs", "commits": 3, "max_complexity": 8, "risk_score": 24}
-                ],
-                "rule_breakdown": {"max_function_complexity": 1}
-            }
-        ]);
-        std::fs::write(
-            trends_dir.join("history.json"),
-            serde_json::to_string_pretty(&history).unwrap(),
-        )
-        .unwrap();
+        let last_ts = now - 86_400;
+        let samples = vec![
+            synth_sample(
+                first_ts,
+                "before",
+                80,
+                8000,
+                0,
+                0.9,
+                0.7,
+                "B",
+                vec![("src/big.rs", 5, 10, 50)],
+                vec![],
+            ),
+            synth_sample(
+                last_ts,
+                "after",
+                70,
+                7000,
+                1,
+                0.5,
+                0.7,
+                "C",
+                vec![("src/big.rs", 12, 18, 200), ("src/new.rs", 3, 8, 24)],
+                vec![("max_function_complexity", 1)],
+            ),
+        ];
+        crate::memory::write_trend_history_splay_for_tests(&root, &samples).unwrap();
 
         let args = json!({
             "path": root.to_string_lossy().to_string(),
@@ -3470,17 +3488,27 @@ mod tests {
 
     #[test]
     fn drift_tool_reports_unavailable_with_one_sample() {
+        let _guard = crate::memory::rayforce_test_guard();
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("raysense-drift-empty-{suffix}"));
-        std::fs::create_dir_all(&root.join(".raysense/trends")).unwrap();
-        std::fs::write(
-            root.join(".raysense/trends/history.json"),
-            "[{\"schema\": 2, \"timestamp\": 1, \"snapshot_id\": \"only\", \"score\": 80, \"quality_signal\": 8000, \"rules\": 0, \"root_causes\": {\"modularity\": 0.9, \"acyclicity\": 0.9, \"depth\": 1.0, \"equality\": 0.7, \"redundancy\": 0.8, \"structural_uniformity\": 0.7}, \"overall_grade\": \"B\"}]",
-        )
-        .unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+
+        let samples = vec![synth_sample(
+            1,
+            "only",
+            80,
+            8000,
+            0,
+            0.9,
+            0.7,
+            "B",
+            vec![],
+            vec![],
+        )];
+        crate::memory::write_trend_history_splay_for_tests(&root, &samples).unwrap();
 
         let args = json!({
             "path": root.to_string_lossy().to_string(),
