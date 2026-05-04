@@ -815,6 +815,14 @@ fn serve_visualization(root: &Path, config_path: Option<&Path>, port: u16) -> Re
         // runs on a private notify thread (sync), and we drain into the
         // async runtime for debouncing + rescan.
         let (fs_tx, mut fs_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        // `stop_rx` blocks the spawn_blocking task instead of `thread::park()`.
+        // After Ctrl+C, dropping `stop_tx` (below, after axum exits) returns
+        // Err from recv, the watcher object goes out of scope, notify's
+        // background thread shuts down, and the spawn_blocking task ends.
+        // Without this signalling path, tokio's runtime drop would block
+        // forever waiting for a parked task to terminate, and Ctrl+C would
+        // appear to do nothing.
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let watcher_root = root.clone();
         let _watcher_keepalive = tokio::task::spawn_blocking(move || {
             use notify::{RecursiveMode, Watcher};
@@ -836,8 +844,10 @@ fn serve_visualization(root: &Path, config_path: Option<&Path>, port: u16) -> Re
                 eprintln!("filesystem watcher attach failed: {err}");
                 return;
             }
-            // Park here forever; dropping the watcher would stop events.
-            std::thread::park();
+            // Block here until shutdown signal. Dropping `stop_tx` from the
+            // async block above causes recv to return Err, then `watcher`
+            // drops cleanly on scope exit.
+            let _ = stop_rx.recv();
         });
 
         let scanner_state = state.clone();
@@ -923,6 +933,10 @@ fn serve_visualization(root: &Path, config_path: Option<&Path>, port: u16) -> Re
             })
             .await
             .context("server error")?;
+
+        // Wake the filesystem watcher's spawn_blocking task so the runtime
+        // can shut down. See the channel construction above for the why.
+        drop(stop_tx);
 
         Ok::<(), anyhow::Error>(())
     })
