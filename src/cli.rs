@@ -126,16 +126,23 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Register raysense as an MCP server with local Claude hosts.
-    /// No flags = auto-detect Claude Desktop and the `claude` CLI and
-    /// install to whichever are present.
+    /// Register raysense across every local Claude host.
+    /// No flags = auto-detect Claude Desktop, Claude Code, and Cowork (the
+    /// Desktop research-preview agent mode) and install to whichever are
+    /// present. Pass `--desktop` / `--code` / `--cowork` to force a subset.
     Install {
         /// Force-install for Claude Desktop (edits claude_desktop_config.json).
         #[arg(long)]
         desktop: bool,
-        /// Force-install for Claude Code (shells out to `claude mcp add`).
+        /// Force-install the raysense plugin for Claude Code (edits
+        /// `~/.claude/settings.json`).
         #[arg(long)]
         code: bool,
+        /// Force-install for Cowork (Claude Desktop's research-preview agent
+        /// mode); registers the raysense marketplace in every local cowork
+        /// session's `known_marketplaces.json`.
+        #[arg(long)]
+        cowork: bool,
     },
 }
 
@@ -444,8 +451,16 @@ fn run_advanced(command: Command) -> Result<()> {
             &generated_paths,
             json,
         )?,
-        Command::Install { desktop, code } => {
-            crate::install::run(crate::install::InstallSelection { desktop, code })?
+        Command::Install {
+            desktop,
+            code,
+            cowork,
+        } => {
+            crate::install::run(crate::install::InstallSelection {
+                desktop,
+                code,
+                cowork,
+            })?
         }
         Command::Baseline { command } => match command {
             BaselineCommand::Save {

@@ -82,15 +82,24 @@ Step by step instead:
 
 ```bash
 cargo install raysense   # binary only
-raysense install         # register MCP with whichever Claude hosts are present
+raysense install         # register raysense with every Claude host present
 ```
 
-The install command auto-detects what's on the machine. Force a single host
-when you want to be explicit:
+The install command auto-detects every Claude host on the machine and
+registers raysense with each one in its native form:
+
+| Host | Where it writes | What you get |
+|---|---|---|
+| Claude Desktop | `claude_desktop_config.json` | MCP server (50 tools + 6 prompts in the "+" menu) |
+| Claude Code | `~/.claude/settings.json` (marketplace + enabledPlugins) | Plugin: tools + prompts + slash commands (`/raysense:audit`) + skills |
+| Cowork | `local-agent-mode-sessions/<account>/<device>/cowork_plugins/known_marketplaces.json` | Marketplace registered; finish with `/plugin install raysense@raysense-marketplace` in your next Cowork session |
+
+Force a subset when you want to be explicit:
 
 ```bash
-raysense install --desktop   # only Claude Desktop (edits claude_desktop_config.json)
-raysense install --code      # only Claude Code   (delegates to `claude mcp add`)
+raysense install --desktop   # only Claude Desktop
+raysense install --code      # only Claude Code (plugin install)
+raysense install --cowork    # only Cowork (research preview)
 ```
 
 Re-running is safe. Existing `raysense` entries are overwritten silently, so

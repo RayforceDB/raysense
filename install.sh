@@ -29,8 +29,15 @@
 # What it does:
 #   1. Verifies prerequisites (cargo, git, make, a C compiler).
 #   2. Runs `cargo install raysense` from crates.io.
-#   3. Runs `raysense install` to register the MCP server with whichever
-#      Claude hosts are present on the machine (Claude Desktop, Claude Code).
+#   3. Runs `raysense install` to register raysense across every Claude host
+#      detected on this machine:
+#        - Claude Desktop  (MCP server in claude_desktop_config.json)
+#        - Claude Code     (raysense plugin in ~/.claude/settings.json:
+#                           tools + prompts + slash commands + skills)
+#        - Cowork          (Desktop research-preview agent mode: registers
+#                           the marketplace; finish with `/plugin install
+#                           raysense@raysense-marketplace` in your next
+#                           Cowork session)
 #
 # Flags:
 #   --no-mcp     Skip the `raysense install` step (binary only).
@@ -117,10 +124,10 @@ if ! have raysense; then
     exit 0
 fi
 
-say "registering raysense as an MCP server"
+say "registering raysense across every detected Claude host"
 raysense install || {
-    warn "MCP registration did not complete cleanly."
-    warn "You can re-run 'raysense install' at any time, or pass --desktop / --code to target a specific host."
+    warn "host registration did not complete cleanly."
+    warn "You can re-run 'raysense install' at any time, or pass --desktop / --code / --cowork to target a specific host."
     exit 0
 }
 
