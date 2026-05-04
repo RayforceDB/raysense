@@ -126,6 +126,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Register raysense as an MCP server with local Claude hosts.
+    /// No flags = auto-detect Claude Desktop and the `claude` CLI and
+    /// install to whichever are present.
+    Install {
+        /// Force-install for Claude Desktop (edits claude_desktop_config.json).
+        #[arg(long)]
+        desktop: bool,
+        /// Force-install for Claude Code (shells out to `claude mcp add`).
+        #[arg(long)]
+        code: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -433,6 +444,9 @@ fn run_advanced(command: Command) -> Result<()> {
             &generated_paths,
             json,
         )?,
+        Command::Install { desktop, code } => {
+            crate::install::run(crate::install::InstallSelection { desktop, code })?
+        }
         Command::Baseline { command } => match command {
             BaselineCommand::Save {
                 path,

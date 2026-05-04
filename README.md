@@ -70,9 +70,21 @@ shuffling files around will not lift it.
 
 ## Install
 
+One-liner (also registers raysense as an MCP server with Claude Desktop and
+the `claude` CLI if either is installed):
+
 ```bash
-cargo install raysense
+curl -fsSL https://raw.githubusercontent.com/RayforceDB/raysense/main/install.sh | sh
 ```
+
+Or step by step:
+
+```bash
+cargo install raysense   # binary only
+raysense install         # register MCP with whichever Claude hosts are present
+```
+
+`raysense install --desktop` / `raysense install --code` target a specific host.
 
 ## Use
 

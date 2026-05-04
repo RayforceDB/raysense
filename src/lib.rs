@@ -28,6 +28,7 @@ pub mod cli;
 pub mod facts;
 pub mod graph;
 pub mod health;
+pub mod install;
 pub mod mcp;
 pub mod memory;
 pub mod profile;
