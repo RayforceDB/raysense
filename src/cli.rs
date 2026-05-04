@@ -1117,6 +1117,16 @@ pub(crate) fn visualization_html(
             inherits_in[base_file].insert(type_fact.file_id);
         }
     }
+    for impl_fact in &report.trait_impls {
+        let Some(&trait_file) = type_name_to_file.get(&impl_fact.trait_name) else {
+            continue;
+        };
+        if trait_file == impl_fact.file_id {
+            continue;
+        }
+        inherits_out[impl_fact.file_id].insert(trait_file);
+        inherits_in[trait_file].insert(impl_fact.file_id);
+    }
     let render_paths = |ids: &std::collections::BTreeSet<usize>| -> Vec<String> {
         ids.iter()
             .filter_map(|id| path_for_file.get(*id).cloned())

@@ -73,7 +73,12 @@ use thiserror::Error;
 ///   `internal`, `restricted`, `private`, `unknown`) populated
 ///   via per-plugin `visibility_patterns`. Hard break: v6
 ///   baselines fail the schema check and require a fresh save.
-pub const SCHEMA_VERSION: i64 = 7;
+/// - v8: new `trait_impls` table records `impl Trait for Type`
+///   relationships extracted from Rust sources, so blast-radius /
+///   coupling tooling can follow the trait -> implementer edge
+///   without round-tripping through `TypeFact.bases`. Hard break:
+///   v7 baselines fail the schema check and require a fresh save.
+pub const SCHEMA_VERSION: i64 = 8;
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -176,6 +181,7 @@ pub struct MemorySummary {
     pub file_ages: TableSummary,
     pub change_coupling: TableSummary,
     pub inheritance: TableSummary,
+    pub trait_impls: TableSummary,
     pub arch_cycles: TableSummary,
     pub arch_unstable: TableSummary,
     pub arch_foundations: TableSummary,
@@ -289,6 +295,7 @@ pub struct RayMemory {
     file_ages: RayObject,
     change_coupling: RayObject,
     inheritance: RayObject,
+    trait_impls: RayObject,
     arch_cycles: RayObject,
     arch_unstable: RayObject,
     arch_foundations: RayObject,
@@ -330,6 +337,7 @@ impl RayMemory {
         let file_ages = build_file_ages_table(&health)?;
         let change_coupling = build_change_coupling_table(&health)?;
         let inheritance = build_inheritance_table(report)?;
+        let trait_impls = build_trait_impls_table(report)?;
         let arch_cycles = build_arch_cycles_table(&health)?;
         let arch_unstable = build_arch_unstable_table(&health)?;
         let arch_foundations = build_arch_foundations_table(&health)?;
@@ -366,6 +374,7 @@ impl RayMemory {
                 ("hotspots", hotspots.as_ptr()),
                 ("imports", imports.as_ptr()),
                 ("inheritance", inheritance.as_ptr()),
+                ("trait_impls", trait_impls.as_ptr()),
                 ("module_edges", module_edges.as_ptr()),
                 ("rules", rules.as_ptr()),
                 ("temporal_hotspots", temporal_hotspots.as_ptr()),
@@ -394,6 +403,7 @@ impl RayMemory {
             file_ages,
             change_coupling,
             inheritance,
+            trait_impls,
             arch_cycles,
             arch_unstable,
             arch_foundations,
@@ -426,6 +436,7 @@ impl RayMemory {
             file_ages: table_summary(self.file_ages.as_ptr()),
             change_coupling: table_summary(self.change_coupling.as_ptr()),
             inheritance: table_summary(self.inheritance.as_ptr()),
+            trait_impls: table_summary(self.trait_impls.as_ptr()),
             arch_cycles: table_summary(self.arch_cycles.as_ptr()),
             arch_unstable: table_summary(self.arch_unstable.as_ptr()),
             arch_foundations: table_summary(self.arch_foundations.as_ptr()),
@@ -479,6 +490,7 @@ impl RayMemory {
             &sym_path,
         )?;
         self.save_table("inheritance", self.inheritance.as_ptr(), dir, &sym_path)?;
+        self.save_table("trait_impls", self.trait_impls.as_ptr(), dir, &sym_path)?;
         self.save_table("arch_cycles", self.arch_cycles.as_ptr(), dir, &sym_path)?;
         self.save_table("arch_unstable", self.arch_unstable.as_ptr(), dir, &sym_path)?;
         self.save_table(
@@ -2504,6 +2516,38 @@ fn build_inheritance_table(report: &ScanReport) -> Result<RayObject, MemoryError
     )
 }
 
+fn build_trait_impls_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
+    let rows = report.trait_impls.len();
+    table(
+        5,
+        [
+            (
+                "impl_id",
+                i64_vec(rows, report.trait_impls.iter().map(|i| i.impl_id as i64))?,
+            ),
+            (
+                "file_id",
+                i64_vec(rows, report.trait_impls.iter().map(|i| i.file_id as i64))?,
+            ),
+            (
+                "type_name",
+                str_vec(rows, report.trait_impls.iter().map(|i| i.type_name.clone()))?,
+            ),
+            (
+                "trait_name",
+                str_vec(
+                    rows,
+                    report.trait_impls.iter().map(|i| i.trait_name.clone()),
+                )?,
+            ),
+            (
+                "line",
+                i64_vec(rows, report.trait_impls.iter().map(|i| i.line as i64))?,
+            ),
+        ],
+    )
+}
+
 fn build_changed_files_table(health: &HealthSummary) -> Result<RayObject, MemoryError> {
     let rows = health.metrics.evolution.top_changed_files.len();
     table(
@@ -3571,6 +3615,12 @@ mod tests {
             .sum();
         assert_eq!(summary.inheritance.columns, 3);
         assert_eq!(summary.inheritance.rows as usize, inheritance_rows);
+        assert_eq!(summary.trait_impls.columns, 5);
+        assert_eq!(
+            summary.trait_impls.rows as usize,
+            report.trait_impls.len(),
+            "every trait_impls fact materializes a row"
+        );
     }
 
     #[test]
@@ -3860,6 +3910,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph: crate::GraphMetrics::default(),
         }
     }

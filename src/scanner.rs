@@ -23,7 +23,7 @@
 
 use crate::facts::{
     CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
-    ImportResolution, Language, ScanReport, SnapshotFact, TypeFact, Visibility,
+    ImportResolution, Language, ScanReport, SnapshotFact, TraitImplFact, TypeFact, Visibility,
 };
 use crate::graph::compute_graph_metrics;
 use crate::health::{LanguagePluginConfig, RaysenseConfig};
@@ -85,6 +85,7 @@ pub fn scan_path_with_config(
     let mut imports = Vec::new();
     let mut calls = Vec::new();
     let mut types: Vec<TypeFact> = Vec::new();
+    let mut trait_impls: Vec<TraitImplFact> = Vec::new();
 
     for entry in WalkBuilder::new(&root)
         .hidden(false)
@@ -241,6 +242,11 @@ pub fn scan_path_with_config(
             types.push(type_fact);
         }
 
+        for mut impl_fact in extract_trait_impls(file_id, &content, language) {
+            impl_fact.impl_id = trait_impls.len();
+            trait_impls.push(impl_fact);
+        }
+
         files.push(file_fact);
     }
 
@@ -269,6 +275,7 @@ pub fn scan_path_with_config(
         calls,
         call_edges,
         types,
+        trait_impls,
         graph,
     })
 }
@@ -2663,6 +2670,111 @@ fn extract_tree_sitter_types(
     Some(out)
 }
 
+/// Extract `impl Trait for Type` style relationships from a source file.
+/// Currently dispatches via tree-sitter for Rust; other languages return
+/// an empty vector until their grammar dispatch is added (Swift
+/// `extension Foo: Bar` is the obvious next candidate).
+fn extract_trait_impls(file_id: usize, content: &str, language: Language) -> Vec<TraitImplFact> {
+    match language {
+        Language::Rust => extract_rust_trait_impls(file_id, content).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn extract_rust_trait_impls(file_id: usize, content: &str) -> Option<Vec<TraitImplFact>> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+    let mut out = Vec::new();
+    collect_rust_trait_impls(file_id, content, root, &mut out);
+    Some(out)
+}
+
+fn collect_rust_trait_impls(
+    file_id: usize,
+    content: &str,
+    node: Node<'_>,
+    out: &mut Vec<TraitImplFact>,
+) {
+    if node.kind() == "impl_item" {
+        if let Some(trait_node) = node.child_by_field_name("trait") {
+            if let Some(type_node) = node.child_by_field_name("type") {
+                let trait_name = rust_impl_target_name(content, trait_node);
+                let type_name = rust_impl_target_name(content, type_node);
+                if let (Some(trait_name), Some(type_name)) = (trait_name, type_name) {
+                    let generic_params = rust_impl_generic_param_names(content, node);
+                    if !generic_params.contains(&type_name) {
+                        out.push(TraitImplFact {
+                            impl_id: 0,
+                            file_id,
+                            type_name,
+                            trait_name,
+                            line: node.start_position().row + 1,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_rust_trait_impls(file_id, content, child, out);
+    }
+}
+
+/// Resolve the head identifier name of an `impl_item`'s `trait` or
+/// `type` field. Walks `generic_type` / `scoped_type_identifier` /
+/// `reference_type` wrappers; returns `None` for primitives or shapes
+/// the grammar didn't tag with a name we can recover.
+fn rust_impl_target_name(content: &str, node: Node<'_>) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => node_text(content, node),
+        "generic_type" => node
+            .child_by_field_name("type")
+            .and_then(|inner| rust_impl_target_name(content, inner)),
+        "scoped_type_identifier" => node
+            .child_by_field_name("name")
+            .and_then(|inner| node_text(content, inner)),
+        "reference_type" => node
+            .child_by_field_name("type")
+            .and_then(|inner| rust_impl_target_name(content, inner)),
+        // Primitive targets (`&str`, `[u8]`) and tuples: skip -- no
+        // matching `TypeFact` exists for them anywhere in the report.
+        _ => None,
+    }
+}
+
+/// Names of generic type parameters declared on an `impl_item`, used to
+/// filter out blanket impls (`impl<T> Foo for T`) where the implementer
+/// position is just a parameter and would otherwise pollute the
+/// inheritance graph with phantom relationships.
+fn rust_impl_generic_param_names(content: &str, impl_node: Node<'_>) -> Vec<String> {
+    let Some(params) = impl_node.child_by_field_name("type_parameters") else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    let mut cursor = params.walk();
+    for child in params.children(&mut cursor) {
+        if child.kind() == "type_parameter" {
+            if let Some(name) = child
+                .child_by_field_name("name")
+                .or_else(|| child.named_child(0))
+            {
+                if let Some(text) = node_text(content, name) {
+                    names.push(text);
+                }
+            }
+        }
+    }
+    names
+}
+
 fn collect_tree_sitter_types(
     file_id: usize,
     content: &str,
@@ -3988,6 +4100,77 @@ fn helper() {}
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].target, "foo::Bar");
         assert_eq!(imports[0].alias.as_deref(), Some("Baz"));
+    }
+
+    #[test]
+    fn extracts_rust_trait_impl_single() {
+        let content = "trait Greet {}\nstruct Dog;\nimpl Greet for Dog {}\n";
+        let impls = extract_trait_impls(0, content, Language::Rust);
+        assert_eq!(impls.len(), 1);
+        assert_eq!(impls[0].trait_name, "Greet");
+        assert_eq!(impls[0].type_name, "Dog");
+    }
+
+    #[test]
+    fn extracts_rust_multiple_impls_of_one_trait() {
+        let content = "trait Greet {}\nstruct Dog;\nstruct Cat;\nimpl Greet for Dog {}\nimpl Greet for Cat {}\n";
+        let impls = extract_trait_impls(0, content, Language::Rust);
+        assert_eq!(impls.len(), 2);
+        let pairs: std::collections::BTreeSet<(String, String)> = impls
+            .iter()
+            .map(|i| (i.type_name.clone(), i.trait_name.clone()))
+            .collect();
+        assert!(pairs.contains(&("Dog".to_string(), "Greet".to_string())));
+        assert!(pairs.contains(&("Cat".to_string(), "Greet".to_string())));
+    }
+
+    #[test]
+    fn extracts_rust_generic_impl_uses_head_name() {
+        let content = "trait Greet {}\nimpl<T> Greet for Vec<T> {}\n";
+        let impls = extract_trait_impls(0, content, Language::Rust);
+        assert_eq!(impls.len(), 1);
+        assert_eq!(impls[0].type_name, "Vec");
+        assert_eq!(impls[0].trait_name, "Greet");
+    }
+
+    #[test]
+    fn skips_rust_blanket_impls_over_type_parameter() {
+        let content = "trait Foo {}\ntrait Bar {}\nimpl<T: Bar> Foo for T {}\n";
+        let impls = extract_trait_impls(0, content, Language::Rust);
+        assert!(
+            impls.is_empty(),
+            "blanket impl whose implementer is just a type parameter must not pollute the graph"
+        );
+    }
+
+    #[test]
+    fn inherent_impl_block_emits_no_trait_relation() {
+        let content = "struct Foo;\nimpl Foo { fn bar(&self) {} }\n";
+        let impls = extract_trait_impls(0, content, Language::Rust);
+        assert!(
+            impls.is_empty(),
+            "an inherent impl Foo {{}} block has no trait field, so no trait/impl edge"
+        );
+    }
+
+    #[test]
+    fn scan_populates_trait_impls_in_report() {
+        let root = temp_scan_root("trait_impls");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub trait Greet {}\npub struct Dog;\nimpl Greet for Dog {}\n",
+        )
+        .unwrap();
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            report
+                .trait_impls
+                .iter()
+                .any(|i| i.trait_name == "Greet" && i.type_name == "Dog"),
+            "scan_path_with_config carries trait_impls through the public API"
+        );
     }
 
     #[test]

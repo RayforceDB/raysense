@@ -4237,6 +4237,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -4282,6 +4283,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -4336,6 +4338,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -4387,6 +4390,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -4438,6 +4442,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
         let mut config = RaysenseConfig::default();
@@ -4492,6 +4497,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -4531,6 +4537,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -4593,6 +4600,7 @@ mod tests {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         }
     }
@@ -5023,6 +5031,7 @@ extensions = ["min"]
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -5064,6 +5073,7 @@ extensions = ["min"]
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
         let mut config = RaysenseConfig::default();
@@ -5107,6 +5117,7 @@ extensions = ["min"]
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -5142,6 +5153,7 @@ extensions = ["min"]
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -5186,6 +5198,7 @@ extensions = ["min"]
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
 
@@ -5266,6 +5279,7 @@ fn second(input: i32) -> i32 {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let health = compute_health(&report);
@@ -5332,6 +5346,7 @@ fn exported_surface() -> i32 {
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let mut config = RaysenseConfig::default();
@@ -5397,6 +5412,7 @@ fn exported_surface() -> i32 {
             calls,
             call_edges,
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
 
@@ -5438,6 +5454,7 @@ fn exported_surface() -> i32 {
             calls,
             call_edges,
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
 
@@ -5476,6 +5493,7 @@ fn exported_surface() -> i32 {
             calls,
             call_edges,
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let config: RaysenseConfig = toml::from_str(
@@ -5522,6 +5540,7 @@ no_tests_detected = false
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
         let config: RaysenseConfig = toml::from_str(
@@ -5562,6 +5581,7 @@ min_acyclicity = 0.9
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let config: RaysenseConfig = toml::from_str(
@@ -5602,6 +5622,7 @@ max_function_lines = 50
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph: compute_graph_metrics(&[], &[]),
         };
         let config: RaysenseConfig = toml::from_str(
@@ -5650,6 +5671,7 @@ no_tests_detected = false
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
         let config: RaysenseConfig = toml::from_str(
@@ -5702,6 +5724,7 @@ reason = "runtime code must not depend on tests"
             calls: Vec::new(),
             call_edges: Vec::new(),
             types: Vec::new(),
+            trait_impls: Vec::new(),
             graph,
         };
         let config: RaysenseConfig = toml::from_str(

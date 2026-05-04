@@ -206,6 +206,10 @@ pub struct ScanReport {
     pub call_edges: Vec<CallEdgeFact>,
     #[serde(default)]
     pub types: Vec<TypeFact>,
+    /// `impl Trait for Type` style relationships (Rust today). Populated
+    /// alongside `types` for languages whose plugin extracts them.
+    #[serde(default)]
+    pub trait_impls: Vec<TraitImplFact>,
     pub graph: crate::graph::GraphMetrics,
 }
 
@@ -216,12 +220,29 @@ pub struct TypeFact {
     pub name: String,
     pub is_abstract: bool,
     pub line: usize,
-    /// Base classes / interfaces named on the type's defining line.
-    /// Empty when the language declares inheritance separately
-    /// (e.g. Rust `impl Trait for Type`).
+    /// Base classes / interfaces named on the type's defining line. For
+    /// languages that declare inheritance inline (`class Foo extends
+    /// Bar`, `class Foo(Bar):`) these are populated at parse time.
+    /// For Rust, `impl Trait for Type` is captured as a `TraitImplFact`
+    /// on the `ScanReport` instead, so this field stays empty.
     #[serde(default)]
     pub bases: Vec<String>,
     /// Visibility classification of the type declaration.
     #[serde(default)]
     pub visibility: Visibility,
+}
+
+/// One `impl Trait for Type` relationship. Languages that declare
+/// inheritance separately from the type definition (Rust impl blocks,
+/// Swift `extension Foo: Bar`, future Go method-set inference) emit
+/// these so blast-radius / coupling / cycles tooling can see the
+/// trait -> implementer edge without forcing a synthetic `TypeFact`
+/// in every file that mentions the implementer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraitImplFact {
+    pub impl_id: usize,
+    pub file_id: usize,
+    pub type_name: String,
+    pub trait_name: String,
+    pub line: usize,
 }
