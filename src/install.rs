@@ -156,7 +156,7 @@ fn install_claude_desktop(bin: &Path) -> Result<String> {
 
     let entry = json!({
         "command": bin.to_string_lossy(),
-        "args": ["mcp"],
+        "args": ["--mcp"],
     });
 
     let existing = if path.exists() {
@@ -183,7 +183,7 @@ fn install_claude_code(bin: &Path) -> Result<String> {
             "user",
             "--",
             bin_str.as_str(),
-            "mcp",
+            "--mcp",
         ])
         .output()
         .with_context(|| format!("run {} mcp add", claude.display()))?;
@@ -295,7 +295,7 @@ mod tests {
     fn raysense_entry() -> Value {
         json!({
             "command": "/usr/local/bin/raysense",
-            "args": ["mcp"],
+            "args": ["--mcp"],
         })
     }
 
@@ -308,7 +308,7 @@ mod tests {
             parsed["mcpServers"]["raysense"]["command"],
             "/usr/local/bin/raysense"
         );
-        assert_eq!(parsed["mcpServers"]["raysense"]["args"][0], "mcp");
+        assert_eq!(parsed["mcpServers"]["raysense"]["args"][0], "--mcp");
     }
 
     #[test]
