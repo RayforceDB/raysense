@@ -191,6 +191,7 @@ pub fn remove_file(report: &ScanReport, file_path: &str) -> Result<ScanReport, S
             is_abstract: type_fact.is_abstract,
             line: type_fact.line,
             bases: type_fact.bases.clone(),
+            visibility: type_fact.visibility,
         });
     }
 
@@ -482,7 +483,7 @@ mod tests {
     use super::*;
     use crate::facts::{
         CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
-        ImportResolution, Language,
+        ImportResolution, Language, Visibility,
     };
     use std::path::PathBuf;
 
@@ -507,6 +508,7 @@ mod tests {
             name: name.to_string(),
             start_line: 1,
             end_line: 10,
+            visibility: Visibility::default(),
         }
     }
 

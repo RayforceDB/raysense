@@ -170,6 +170,13 @@ pub struct LanguagePluginConfig {
     /// keeps existing baselines unchanged for languages whose plugin
     /// hasn't been wired for alias capture.
     pub capture_import_aliases: bool,
+    /// Per-plugin mapping from a normalized `Visibility` variant name
+    /// (lowercase: `public`, `protected`, `internal`, `restricted`,
+    /// `private`) to a list of source-line prefix patterns. The classifier
+    /// walks the configured patterns longest-prefix-first so
+    /// `pub(crate)` wins over `pub `. An entry with no matching pattern
+    /// stays `Visibility::Unknown`.
+    pub visibility_patterns: BTreeMap<String, Vec<String>>,
     /// Tree-sitter node kinds representing function parameter declarations.
     pub parameter_node_kinds: Vec<String>,
     /// Tree-sitter node kinds that increment cyclomatic complexity (`if`,
@@ -223,6 +230,7 @@ impl Default for LanguagePluginConfig {
             test_attribute_patterns: Vec::new(),
             conditional_test_attributes: Vec::new(),
             capture_import_aliases: false,
+            visibility_patterns: BTreeMap::new(),
             parameter_node_kinds: Vec::new(),
             complexity_node_kinds: Vec::new(),
             logical_operator_kinds: Vec::new(),
@@ -4197,7 +4205,7 @@ mod tests {
     use super::*;
     use crate::facts::{
         CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
-        Language, SnapshotFact,
+        Language, SnapshotFact, Visibility,
     };
     use crate::graph::compute_graph_metrics;
     use std::fs;
@@ -4891,6 +4899,7 @@ test_module_patterns = ["tests/*"]
 test_attribute_patterns = ["@Test"]
 conditional_test_attributes = ["#[cfg(test)]"]
 capture_import_aliases = true
+visibility_patterns = { public = ["pub "], internal = ["pub(crate)"] }
 parameter_node_kinds = ["parameter"]
 complexity_node_kinds = ["if_expression", "while_expression"]
 logical_operator_kinds = ["&&", "||"]
@@ -4914,6 +4923,14 @@ abstract_base_classes = ["Base", "Abstract"]
         assert_eq!(plugin.test_attribute_patterns, vec!["@Test"]);
         assert_eq!(plugin.conditional_test_attributes, vec!["#[cfg(test)]"]);
         assert!(plugin.capture_import_aliases);
+        assert_eq!(
+            plugin.visibility_patterns.get("public"),
+            Some(&vec!["pub ".to_string()])
+        );
+        assert_eq!(
+            plugin.visibility_patterns.get("internal"),
+            Some(&vec!["pub(crate)".to_string()])
+        );
         assert_eq!(plugin.parameter_node_kinds, vec!["parameter"]);
         assert_eq!(
             plugin.complexity_node_kinds,
@@ -4948,6 +4965,7 @@ extensions = ["min"]
         assert!(plugin.test_attribute_patterns.is_empty());
         assert!(plugin.conditional_test_attributes.is_empty());
         assert!(!plugin.capture_import_aliases);
+        assert!(plugin.visibility_patterns.is_empty());
         assert!(plugin.parameter_node_kinds.is_empty());
         assert!(plugin.complexity_node_kinds.is_empty());
         assert!(plugin.logical_operator_kinds.is_empty());
@@ -5156,6 +5174,7 @@ extensions = ["min"]
                 name: "large".to_string(),
                 start_line: 10,
                 end_line: 95,
+                visibility: Visibility::default(),
             }],
             entry_points: vec![EntryPointFact {
                 entry_id: 0,
@@ -5212,6 +5231,7 @@ fn second(input: i32) -> i32 {
                 name: "exported".to_string(),
                 start_line: 2,
                 end_line: 4,
+                visibility: Visibility::default(),
             },
             FunctionFact {
                 function_id: 1,
@@ -5219,6 +5239,7 @@ fn second(input: i32) -> i32 {
                 name: "first".to_string(),
                 start_line: 6,
                 end_line: 11,
+                visibility: Visibility::default(),
             },
             FunctionFact {
                 function_id: 2,
@@ -5226,6 +5247,7 @@ fn second(input: i32) -> i32 {
                 name: "second".to_string(),
                 start_line: 13,
                 end_line: 18,
+                visibility: Visibility::default(),
             },
         ];
         let report = ScanReport {
@@ -5292,6 +5314,7 @@ fn exported_surface() -> i32 {
             name: "exported_surface".to_string(),
             start_line: 2,
             end_line: 4,
+            visibility: Visibility::default(),
         }];
         let report = ScanReport {
             snapshot: SnapshotFact {
@@ -5761,6 +5784,7 @@ order = 2
             name: name.to_string(),
             start_line: 1,
             end_line: 1,
+            visibility: Visibility::default(),
         }
     }
 

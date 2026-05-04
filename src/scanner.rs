@@ -23,7 +23,7 @@
 
 use crate::facts::{
     CallEdgeFact, CallFact, EntryPointFact, EntryPointKind, FileFact, FunctionFact, ImportFact,
-    ImportResolution, Language, ScanReport, SnapshotFact, TypeFact,
+    ImportResolution, Language, ScanReport, SnapshotFact, TypeFact, Visibility,
 };
 use crate::graph::compute_graph_metrics;
 use crate::health::{LanguagePluginConfig, RaysenseConfig};
@@ -155,6 +155,24 @@ pub fn scan_path_with_config(
         } else {
             extract_functions(file_id, language, &content)
         };
+        let visibility_patterns_owned;
+        let visibility_patterns = match plugin.as_ref() {
+            Some(plugin) => &plugin.visibility_patterns,
+            None => match synthesize_language_plugin_defaults(language) {
+                Some(synth) => {
+                    visibility_patterns_owned = synth.visibility_patterns;
+                    &visibility_patterns_owned
+                }
+                None => {
+                    visibility_patterns_owned = std::collections::BTreeMap::new();
+                    &visibility_patterns_owned
+                }
+            },
+        };
+        for function in &mut file_functions {
+            let line = line_at(&content, function.start_line);
+            function.visibility = classify_visibility(line, visibility_patterns);
+        }
         for function in &mut file_functions {
             function.function_id = functions.len();
             functions.push(function.clone());
@@ -209,11 +227,15 @@ pub fn scan_path_with_config(
         } else {
             extract_types(file_id, &file_fact, &content, plugin.as_ref())
         };
-        let merged_types = merge_tree_sitter_types_with_line_types(
+        let mut merged_types = merge_tree_sitter_types_with_line_types(
             extract_tree_sitter_types(file_id, &content, language),
             line_types,
             plugin.as_ref(),
         );
+        for type_fact in &mut merged_types {
+            let line = line_at(&content, type_fact.line);
+            type_fact.visibility = classify_visibility(line, visibility_patterns);
+        }
         for mut type_fact in merged_types {
             type_fact.type_id = types.len();
             types.push(type_fact);
@@ -776,6 +798,39 @@ fn apply_builtin_profile_defaults(plugin: &mut LanguagePluginConfig) {
         _ => Vec::new(),
     };
     plugin.capture_import_aliases = matches!(plugin.name.as_str(), "rust");
+    plugin.visibility_patterns = builtin_visibility_patterns(plugin.name.as_str());
+}
+
+/// Built-in `visibility_patterns` table for the languages whose modifiers
+/// raysense recognizes out of the box. Other languages get an empty map
+/// (and therefore `Visibility::Unknown` on every fact) until a project
+/// plugin spells the patterns out.
+fn builtin_visibility_patterns(name: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    match name {
+        "rust" => {
+            map.insert("public".to_string(), vec!["pub ".to_string()]);
+            map.insert("internal".to_string(), vec!["pub(crate)".to_string()]);
+            map.insert(
+                "restricted".to_string(),
+                vec!["pub(super)".to_string(), "pub(in ".to_string()],
+            );
+        }
+        "java" | "kotlin" | "scala" => {
+            map.insert("public".to_string(), vec!["public ".to_string()]);
+            map.insert("protected".to_string(), vec!["protected ".to_string()]);
+            map.insert("private".to_string(), vec!["private ".to_string()]);
+        }
+        "csharp" => {
+            map.insert("public".to_string(), vec!["public ".to_string()]);
+            map.insert("protected".to_string(), vec!["protected ".to_string()]);
+            map.insert("private".to_string(), vec!["private ".to_string()]);
+            map.insert("internal".to_string(), vec!["internal ".to_string()]);
+        }
+        _ => {}
+    }
+    map
 }
 
 fn language_name(language: Language) -> &'static str {
@@ -997,6 +1052,7 @@ fn collect_tree_sitter_functions(
                     name,
                     start_line: node.start_position().row + 1,
                     end_line: node.end_position().row + 1,
+                    visibility: Visibility::default(),
                 });
             }
         }
@@ -1173,6 +1229,54 @@ fn synthesize_language_plugin_defaults(language: Language) -> Option<LanguagePlu
     Some(plugin)
 }
 
+/// Classify a single trimmed source line against a plugin's
+/// `visibility_patterns` map. Returns the matching `Visibility` variant,
+/// or `Visibility::Unknown` when no pattern matches. Patterns are walked
+/// longest-prefix-first so longer specific tokens (e.g. `pub(crate)`)
+/// win over their shorter shared prefix (`pub `).
+fn classify_visibility(
+    line: &str,
+    patterns: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Visibility {
+    if patterns.is_empty() {
+        return Visibility::Unknown;
+    }
+    let trimmed = line.trim_start();
+    let mut best: Option<(usize, Visibility)> = None;
+    for (variant_name, prefixes) in patterns {
+        let variant = match variant_name.as_str() {
+            "public" => Visibility::Public,
+            "protected" => Visibility::Protected,
+            "internal" => Visibility::Internal,
+            "restricted" => Visibility::Restricted,
+            "private" => Visibility::Private,
+            _ => continue,
+        };
+        for prefix in prefixes {
+            if prefix.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with(prefix.as_str())
+                && best.map(|(len, _)| prefix.len() > len).unwrap_or(true)
+            {
+                best = Some((prefix.len(), variant));
+            }
+        }
+    }
+    best.map(|(_, variant)| variant)
+        .unwrap_or(Visibility::Unknown)
+}
+
+/// Read line `line_no` (1-indexed) from `content`, returning an empty
+/// string if out of range. Used by the visibility classifier to peek at
+/// the declaration line without re-collecting `content.lines()`.
+fn line_at(content: &str, line_no: usize) -> &str {
+    if line_no == 0 {
+        return "";
+    }
+    content.lines().nth(line_no - 1).unwrap_or("")
+}
+
 /// True when the (trimmed) line above `function_start_line` -- skipping
 /// blank and comment lines -- begins with any pattern in `patterns`.
 /// Implements `test_attribute_patterns` semantics for languages whose
@@ -1320,6 +1424,7 @@ fn extract_token_functions(file_id: usize, content: &str, token: &str) -> Vec<Fu
                 name: name.to_string(),
                 start_line: idx + 1,
                 end_line: block_end_line(&lines, idx),
+                visibility: Visibility::default(),
             })
         })
         .collect()
@@ -1343,6 +1448,7 @@ fn extract_prefixed_functions(file_id: usize, content: &str, prefix: &str) -> Ve
                 name: name.to_string(),
                 start_line: idx + 1,
                 end_line: indented_block_end_line(&lines, idx),
+                visibility: Visibility::default(),
             })
         })
         .collect()
@@ -1362,6 +1468,7 @@ fn extract_typescript_functions(file_id: usize, content: &str) -> Vec<FunctionFa
                     name: name.to_string(),
                     start_line: idx + 1,
                     end_line: block_end_line(&lines, idx),
+                    visibility: Visibility::default(),
                 });
             }
         }
@@ -1402,6 +1509,7 @@ fn extract_c_like_functions(file_id: usize, content: &str) -> Vec<FunctionFact> 
                 name: name.to_string(),
                 start_line: idx + 1,
                 end_line: block_end_line(&lines, idx),
+                visibility: Visibility::default(),
             })
         })
         .collect()
@@ -1439,6 +1547,7 @@ fn extract_plugin_functions(
                     name: name.to_string(),
                     start_line: idx + 1,
                     end_line: generic_block_end_line(&lines, idx),
+                    visibility: Visibility::default(),
                 });
             }
             break;
@@ -1541,6 +1650,7 @@ fn extract_query_functions(
             name,
             start_line: node.start_position().row + 1,
             end_line: node.end_position().row + 1,
+            visibility: Visibility::default(),
         });
     }
     functions.sort_by(|a, b| {
@@ -2032,7 +2142,10 @@ fn count_comment_lines(content: &str) -> usize {
 /// Fan a single `prefix::{a, b, c}` style target out into `["prefix::a",
 /// "prefix::b", "prefix::c"]`. Inputs without braces pass through unchanged
 /// so callers can use this unconditionally. Nested braces are not supported —
-/// only the first brace group is expanded.
+/// only the first brace group is expanded. Test-only helper kept around so
+/// the existing brace-shape tests continue to read the way they did before
+/// alias capture landed; production code calls `expand_brace_targets_with_aliases`.
+#[cfg(test)]
 fn expand_brace_targets(target: &str) -> Vec<String> {
     expand_brace_targets_with_aliases(target)
         .into_iter()
@@ -2502,6 +2615,7 @@ fn extract_types(
             is_abstract: is_abstract || abstract_by_base,
             line: idx + 1,
             bases,
+            visibility: Visibility::default(),
         });
     }
     out
@@ -2595,6 +2709,7 @@ fn collect_tree_sitter_types(
                 is_abstract: false,
                 line: node.start_position().row + 1,
                 bases,
+                visibility: Visibility::default(),
             });
         }
     }
@@ -3612,6 +3727,7 @@ fn extract_rayfall_functions(file_id: usize, content: &str) -> Vec<FunctionFact>
                     name,
                     start_line: idx + 1,
                     end_line,
+                    visibility: Visibility::default(),
                 });
                 named_lambda_positions.insert((idx, fn_pos));
                 from = fn_pos.max(pos + 1);
@@ -3643,6 +3759,7 @@ fn extract_rayfall_functions(file_id: usize, content: &str) -> Vec<FunctionFact>
                     name: format!("lambda@{}", idx + 1),
                     start_line: idx + 1,
                     end_line,
+                    visibility: Visibility::default(),
                 });
             }
             from = pos + 3;
@@ -3723,6 +3840,7 @@ fn extract_rayfall_types(file_id: usize, content: &str) -> Vec<TypeFact> {
                     is_abstract: false,
                     line: idx + 1,
                     bases: Vec::new(),
+                    visibility: Visibility::default(),
                 });
                 from = pos + 5;
             } else {
@@ -3870,6 +3988,106 @@ fn helper() {}
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].target, "foo::Bar");
         assert_eq!(imports[0].alias.as_deref(), Some("Baz"));
+    }
+
+    #[test]
+    fn classifies_rust_pub_crate_as_internal() {
+        let patterns = builtin_visibility_patterns("rust");
+        assert_eq!(
+            classify_visibility("pub(crate) fn foo() {}", &patterns),
+            Visibility::Internal
+        );
+    }
+
+    #[test]
+    fn classifies_rust_pub_super_as_restricted() {
+        let patterns = builtin_visibility_patterns("rust");
+        assert_eq!(
+            classify_visibility("pub(super) fn foo() {}", &patterns),
+            Visibility::Restricted
+        );
+    }
+
+    #[test]
+    fn classifies_rust_pub_in_path_as_restricted() {
+        let patterns = builtin_visibility_patterns("rust");
+        assert_eq!(
+            classify_visibility("pub(in crate::a::b) fn foo() {}", &patterns),
+            Visibility::Restricted
+        );
+    }
+
+    #[test]
+    fn classifies_rust_bare_pub_as_public() {
+        let patterns = builtin_visibility_patterns("rust");
+        assert_eq!(
+            classify_visibility("pub fn foo() {}", &patterns),
+            Visibility::Public
+        );
+    }
+
+    #[test]
+    fn classifies_rust_no_modifier_as_unknown() {
+        let patterns = builtin_visibility_patterns("rust");
+        assert_eq!(
+            classify_visibility("fn foo() {}", &patterns),
+            Visibility::Unknown,
+            "no modifier matches no pattern -- consumers may treat Unknown as private per language convention"
+        );
+    }
+
+    #[test]
+    fn classifies_java_protected_as_protected() {
+        let patterns = builtin_visibility_patterns("java");
+        assert_eq!(
+            classify_visibility("protected void run() {}", &patterns),
+            Visibility::Protected
+        );
+    }
+
+    #[test]
+    fn classify_visibility_walks_longest_prefix_first() {
+        let patterns = builtin_visibility_patterns("rust");
+        // `pub(crate)` is longer than `pub `; the longer must win even
+        // though both prefixes start with `pub`.
+        assert_eq!(
+            classify_visibility("pub(crate) struct S;", &patterns),
+            Visibility::Internal
+        );
+    }
+
+    #[test]
+    fn scan_populates_visibility_on_rust_functions_and_types() {
+        let root = temp_scan_root("visibility");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub fn open() {}\npub(crate) fn internal() {}\nfn private_one() {}\npub struct Open;\npub(crate) struct Internal;\nstruct Private;\n",
+        )
+        .unwrap();
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        let by_name: std::collections::HashMap<&str, &FunctionFact> = report
+            .functions
+            .iter()
+            .map(|function| (function.name.as_str(), function))
+            .collect();
+        assert_eq!(by_name["open"].visibility, Visibility::Public);
+        assert_eq!(by_name["internal"].visibility, Visibility::Internal);
+        assert_eq!(by_name["private_one"].visibility, Visibility::Unknown);
+
+        let types_by_name: std::collections::HashMap<&str, &TypeFact> = report
+            .types
+            .iter()
+            .map(|type_fact| (type_fact.name.as_str(), type_fact))
+            .collect();
+        if let Some(open) = types_by_name.get("Open") {
+            assert_eq!(open.visibility, Visibility::Public);
+        }
+        if let Some(internal) = types_by_name.get("Internal") {
+            assert_eq!(internal.visibility, Visibility::Internal);
+        }
     }
 
     #[test]
@@ -4668,6 +4886,7 @@ int run(void) {
             name: "main".to_string(),
             start_line: 1,
             end_line: 1,
+            visibility: Visibility::default(),
         }];
 
         let entries = extract_entry_points(
@@ -5146,6 +5365,7 @@ int run(void) {
             name: name.to_string(),
             start_line,
             end_line,
+            visibility: Visibility::default(),
         }
     }
 

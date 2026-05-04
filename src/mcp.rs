@@ -2802,6 +2802,10 @@ fn config_schema() -> Value {
                                 "test_attribute_patterns": {"type": "array", "items": {"type": "string"}},
                                 "conditional_test_attributes": {"type": "array", "items": {"type": "string"}},
                                 "capture_import_aliases": {"type": "boolean"},
+                                "visibility_patterns": {
+                                    "type": "object",
+                                    "additionalProperties": {"type": "array", "items": {"type": "string"}}
+                                },
                                 "parameter_node_kinds": {"type": "array", "items": {"type": "string"}},
                                 "complexity_node_kinds": {"type": "array", "items": {"type": "string"}},
                                 "logical_operator_kinds": {"type": "array", "items": {"type": "string"}},

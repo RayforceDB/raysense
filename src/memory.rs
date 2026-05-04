@@ -68,7 +68,12 @@ use thiserror::Error;
 ///   `import { foo as bar }`, Python `import x as y`). Empty
 ///   string when no alias is declared. Hard break: v5
 ///   baselines fail the schema check and require a fresh save.
-pub const SCHEMA_VERSION: i64 = 6;
+/// - v7: `functions` and `types` tables gain a normalized
+///   `visibility` symbol column (`public`, `protected`,
+///   `internal`, `restricted`, `private`, `unknown`) populated
+///   via per-plugin `visibility_patterns`. Hard break: v6
+///   baselines fail the schema check and require a fresh save.
+pub const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -1737,15 +1742,23 @@ fn build_functions_table(report: &ScanReport) -> Result<RayObject, MemoryError> 
             .iter()
             .map(|function| function.end_line as i64),
     )?;
+    let visibilities = sym_vec(
+        report.functions.len(),
+        report
+            .functions
+            .iter()
+            .map(|function| function.visibility.as_str().to_string()),
+    )?;
 
     table(
-        5,
+        6,
         [
             ("function_id", ids),
             ("file_id", file_ids),
             ("name", names),
             ("start_line", start_lines),
             ("end_line", end_lines),
+            ("visibility", visibilities),
         ],
     )
 }
@@ -1974,15 +1987,23 @@ fn build_types_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
         report.types.len(),
         report.types.iter().map(|type_fact| type_fact.line as i64),
     )?;
+    let visibilities = sym_vec(
+        report.types.len(),
+        report
+            .types
+            .iter()
+            .map(|type_fact| type_fact.visibility.as_str().to_string()),
+    )?;
 
     table(
-        5,
+        6,
         [
             ("type_id", ids),
             ("file_id", file_ids),
             ("name", names),
             ("is_abstract", abstract_flags),
             ("line", lines),
+            ("visibility", visibilities),
         ],
     )
 }
@@ -3527,7 +3548,8 @@ mod tests {
         assert_eq!(summary.calls.columns, 5);
         assert_eq!(summary.call_edges.columns, 4);
         assert_eq!(summary.types.rows as usize, report.types.len());
-        assert_eq!(summary.types.columns, 5);
+        assert_eq!(summary.types.columns, 6);
+        assert_eq!(summary.functions.columns, 6);
         assert_eq!(summary.health.rows, 1);
         assert_eq!(summary.health.columns, 48);
         assert_eq!(summary.hotspots.columns, 5);

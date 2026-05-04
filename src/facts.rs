@@ -100,6 +100,11 @@ pub struct FunctionFact {
     pub name: String,
     pub start_line: usize,
     pub end_line: usize,
+    /// Visibility classification of the declaration. `Unknown` until a
+    /// per-plugin pattern matches (or always, for languages whose
+    /// `visibility_patterns` is empty).
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +113,38 @@ pub struct EntryPointFact {
     pub file_id: usize,
     pub kind: EntryPointKind,
     pub symbol: String,
+}
+
+/// Normalized visibility level for a function or type declaration.
+/// Languages map their syntactic modifiers to this small enum via the
+/// per-plugin `visibility_patterns` config: e.g. Rust `pub(crate)` ->
+/// `Internal`, Java `protected` -> `Protected`. `Unknown` is the serde
+/// default and means "no pattern matched / not classified".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Public,
+    Protected,
+    Internal,
+    Restricted,
+    Private,
+    #[default]
+    Unknown,
+}
+
+impl Visibility {
+    /// Lowercase string form, used for the splayed `visibility` symbol
+    /// column. Mirrors the `#[serde(rename_all = "lowercase")]` mapping.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Protected => "protected",
+            Self::Internal => "internal",
+            Self::Restricted => "restricted",
+            Self::Private => "private",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,4 +221,7 @@ pub struct TypeFact {
     /// (e.g. Rust `impl Trait for Type`).
     #[serde(default)]
     pub bases: Vec<String>,
+    /// Visibility classification of the type declaration.
+    #[serde(default)]
+    pub visibility: Visibility,
 }
