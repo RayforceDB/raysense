@@ -164,6 +164,7 @@ pub fn scan_path_with_config(
             file_id,
             language,
             &relative_path,
+            &content,
             &file_functions,
             plugin.as_ref(),
         );
@@ -754,6 +755,15 @@ fn apply_builtin_profile_defaults(plugin: &mut LanguagePluginConfig) {
         "typescript" | "javascript" | "python" => vec![".".to_string()],
         _ => vec![".".to_string()],
     };
+    plugin.test_attribute_patterns = match plugin.name.as_str() {
+        "rust" => vec!["#[test]".to_string()],
+        "java" | "kotlin" => vec!["@Test".to_string()],
+        _ => Vec::new(),
+    };
+    plugin.conditional_test_attributes = match plugin.name.as_str() {
+        "rust" => vec!["#[cfg(test)]".to_string()],
+        _ => Vec::new(),
+    };
 }
 
 fn language_name(language: Language) -> &'static str {
@@ -1053,6 +1063,7 @@ fn extract_entry_points(
     file_id: usize,
     language: Language,
     path: &Path,
+    content: &str,
     functions: &[FunctionFact],
     plugin: Option<&LanguagePluginConfig>,
 ) -> Vec<EntryPointFact> {
@@ -1078,7 +1089,190 @@ fn extract_entry_points(
         entries.push(new_entry(file_id, EntryPointKind::Test, path_symbol(path)));
     }
 
+    let synthesized;
+    let effective_plugin = match plugin {
+        Some(plugin) => Some(plugin),
+        None => match synthesize_language_plugin_defaults(language) {
+            Some(plugin) => {
+                synthesized = plugin;
+                Some(&synthesized)
+            }
+            None => None,
+        },
+    };
+    if let Some(plugin) = effective_plugin {
+        let mut already_test: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        if !plugin.test_attribute_patterns.is_empty() {
+            let lines: Vec<&str> = content.lines().collect();
+            for (idx, function) in functions.iter().enumerate() {
+                if function_has_preceding_test_attribute(
+                    &lines,
+                    function.start_line,
+                    &plugin.test_attribute_patterns,
+                ) {
+                    entries.push(new_entry(
+                        file_id,
+                        EntryPointKind::Test,
+                        function.name.clone(),
+                    ));
+                    already_test.insert(idx);
+                }
+            }
+        }
+        if !plugin.conditional_test_attributes.is_empty() {
+            let ranges =
+                collect_cfg_test_ranges(content, language, &plugin.conditional_test_attributes);
+            if !ranges.is_empty() {
+                for (idx, function) in functions.iter().enumerate() {
+                    if already_test.contains(&idx) {
+                        continue;
+                    }
+                    if ranges.iter().any(|(start, end)| {
+                        function.start_line >= *start && function.start_line <= *end
+                    }) {
+                        entries.push(new_entry(
+                            file_id,
+                            EntryPointKind::Test,
+                            function.name.clone(),
+                        ));
+                        already_test.insert(idx);
+                    }
+                }
+            }
+        }
+    }
+
     entries
+}
+
+/// Synthesize the built-in plugin defaults for a known language so that
+/// scans without a project-configured plugin still see language-aware
+/// behaviour (test attributes, etc.). Returns `None` for languages that
+/// have no built-in profile entry.
+fn synthesize_language_plugin_defaults(language: Language) -> Option<LanguagePluginConfig> {
+    if matches!(language, Language::Unknown) {
+        return None;
+    }
+    let mut plugin = LanguagePluginConfig {
+        name: language_name(language).to_string(),
+        ..LanguagePluginConfig::default()
+    };
+    apply_builtin_profile_defaults(&mut plugin);
+    Some(plugin)
+}
+
+/// True when the (trimmed) line above `function_start_line` -- skipping
+/// blank and comment lines -- begins with any pattern in `patterns`.
+/// Implements `test_attribute_patterns` semantics for languages whose
+/// per-function test marker is a single source line (e.g. Rust `#[test]`,
+/// Java `@Test`).
+fn function_has_preceding_test_attribute(
+    lines: &[&str],
+    function_start_line: usize,
+    patterns: &[String],
+) -> bool {
+    if function_start_line < 2 || function_start_line - 1 > lines.len() {
+        return false;
+    }
+    let mut idx = function_start_line - 2;
+    loop {
+        let line = lines[idx].trim();
+        let is_skippable = line.is_empty()
+            || line.starts_with("//")
+            || line.starts_with("///")
+            || line.starts_with("/*")
+            || line.starts_with("*");
+        if is_skippable {
+            if idx == 0 {
+                return false;
+            }
+            idx -= 1;
+            continue;
+        }
+        return patterns
+            .iter()
+            .any(|pattern| line.starts_with(pattern.trim()));
+    }
+}
+
+/// Walk the source tree for `attribute_item`-like nodes whose leading
+/// text matches any pattern in `patterns`, returning the inclusive
+/// 1-indexed line range of the *next* annotated item (mod, function,
+/// nested item). Used to cascade test classification: any function whose
+/// definition falls in one of the returned ranges is part of a test
+/// scope. Currently dispatches via tree-sitter for Rust; other languages
+/// return an empty vector until their grammar dispatch is added.
+fn collect_cfg_test_ranges(
+    content: &str,
+    language: Language,
+    patterns: &[String],
+) -> Vec<(usize, usize)> {
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+    let ts_language: tree_sitter::Language = match language {
+        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
+        _ => return Vec::new(),
+    };
+    let mut parser = Parser::new();
+    if parser.set_language(&ts_language).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return Vec::new();
+    };
+    let normalized: Vec<String> = patterns
+        .iter()
+        .map(|pattern| pattern.split_whitespace().collect::<String>())
+        .filter(|pattern| !pattern.is_empty())
+        .collect();
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    walk_cfg_test_attributes(content, tree.root_node(), &normalized, &mut ranges);
+    ranges
+}
+
+fn walk_cfg_test_attributes(
+    content: &str,
+    node: Node<'_>,
+    normalized_patterns: &[String],
+    ranges: &mut Vec<(usize, usize)>,
+) {
+    let mut cursor = node.walk();
+    let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+    for (idx, child) in children.iter().enumerate() {
+        if child.kind() != "attribute_item" {
+            continue;
+        }
+        let Some(text) = node_text(content, *child) else {
+            continue;
+        };
+        let collapsed: String = text.split_whitespace().collect();
+        if !normalized_patterns
+            .iter()
+            .any(|pattern| collapsed.starts_with(pattern))
+        {
+            continue;
+        }
+        let mut next = idx + 1;
+        while let Some(sibling) = children.get(next) {
+            match sibling.kind() {
+                "attribute_item" | "line_comment" | "block_comment" => next += 1,
+                _ => break,
+            }
+        }
+        if let Some(target) = children.get(next) {
+            ranges.push((
+                target.start_position().row + 1,
+                target.end_position().row + 1,
+            ));
+        }
+    }
+    for child in &children {
+        walk_cfg_test_attributes(content, *child, normalized_patterns, ranges);
+    }
 }
 
 fn new_entry(file_id: usize, kind: EntryPointKind, symbol: impl Into<String>) -> EntryPointFact {
@@ -4345,6 +4539,7 @@ int run(void) {
             0,
             Language::Rust,
             Path::new("examples/demo.rs"),
+            "fn main() {}\n",
             &functions,
             None,
         );
@@ -4352,6 +4547,189 @@ int run(void) {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].kind, EntryPointKind::Binary);
         assert_eq!(entries[1].kind, EntryPointKind::Example);
+    }
+
+    #[test]
+    fn attribute_test_marks_rust_function_as_test_entry() {
+        let content = "#[test]\nfn ok() {}\nfn helper() {}\n";
+        let functions = extract_functions(0, Language::Rust, content);
+        let entries = extract_entry_points(
+            0,
+            Language::Rust,
+            Path::new("src/lib.rs"),
+            content,
+            &functions,
+            None,
+        );
+        let test_symbols: Vec<&str> = entries
+            .iter()
+            .filter(|entry| entry.kind == EntryPointKind::Test)
+            .map(|entry| entry.symbol.as_str())
+            .collect();
+        assert_eq!(
+            test_symbols,
+            vec!["ok"],
+            "only the #[test]-annotated function is a test entry"
+        );
+    }
+
+    #[test]
+    fn cfg_test_module_marker_marks_contained_functions_as_test() {
+        let content =
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn alpha() {}\n    fn helper() {}\n}\n";
+        let functions = extract_functions(0, Language::Rust, content);
+        let entries = extract_entry_points(
+            0,
+            Language::Rust,
+            Path::new("src/lib.rs"),
+            content,
+            &functions,
+            None,
+        );
+        let test_symbols: std::collections::BTreeSet<String> = entries
+            .iter()
+            .filter(|entry| entry.kind == EntryPointKind::Test)
+            .map(|entry| entry.symbol.clone())
+            .collect();
+        assert!(test_symbols.contains("alpha"));
+        assert!(
+            test_symbols.contains("helper"),
+            "#[cfg(test)] cascades to functions that lack their own #[test] marker"
+        );
+        assert_eq!(
+            test_symbols.len(),
+            2,
+            "alpha is counted exactly once even though it matches both rules"
+        );
+    }
+
+    #[test]
+    fn extended_test_attribute_pattern_is_honored() {
+        let content = "#[runtime_test]\nasync fn flow() {}\n";
+        let functions = extract_functions(0, Language::Rust, content);
+        let mut plugin = LanguagePluginConfig {
+            name: "rust".to_string(),
+            ..LanguagePluginConfig::default()
+        };
+        apply_builtin_profile_defaults(&mut plugin);
+        plugin
+            .test_attribute_patterns
+            .push("#[runtime_test]".to_string());
+        let entries = extract_entry_points(
+            0,
+            Language::Rust,
+            Path::new("src/lib.rs"),
+            content,
+            &functions,
+            Some(&plugin),
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == EntryPointKind::Test && entry.symbol == "flow"),
+            "profile-extended test attribute is honored"
+        );
+    }
+
+    #[test]
+    fn helper_function_without_attribute_is_not_test_entry() {
+        let content = "fn helper() {}\n";
+        let functions = extract_functions(0, Language::Rust, content);
+        let entries = extract_entry_points(
+            0,
+            Language::Rust,
+            Path::new("src/lib.rs"),
+            content,
+            &functions,
+            None,
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.kind != EntryPointKind::Test),
+            "no test entries when the source has no test markers"
+        );
+    }
+
+    #[test]
+    fn cfg_test_detection_is_plugin_driven() {
+        let content = "#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n";
+        let functions = extract_functions(0, Language::Rust, content);
+        let mut plugin = LanguagePluginConfig {
+            name: "rust".to_string(),
+            ..LanguagePluginConfig::default()
+        };
+        apply_builtin_profile_defaults(&mut plugin);
+        plugin.test_attribute_patterns.clear();
+        plugin.conditional_test_attributes.clear();
+        let entries = extract_entry_points(
+            0,
+            Language::Rust,
+            Path::new("src/lib.rs"),
+            content,
+            &functions,
+            Some(&plugin),
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.kind != EntryPointKind::Test),
+            "clearing the patterns disables test detection -- proves the knob is consulted"
+        );
+    }
+
+    #[test]
+    fn scan_classifies_inline_cfg_test_module_as_test_entry() {
+        let root = temp_scan_root("inline_cfg_test");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub fn run() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn alpha() {}\n    fn helper() {}\n}\n",
+        )
+        .unwrap();
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        let lib_id = report
+            .files
+            .iter()
+            .find(|file| file.path == PathBuf::from("src/lib.rs"))
+            .map(|file| file.file_id)
+            .expect("scan produces a fact for src/lib.rs");
+        let test_symbols: std::collections::BTreeSet<String> = report
+            .entry_points
+            .iter()
+            .filter(|entry| entry.file_id == lib_id && entry.kind == EntryPointKind::Test)
+            .map(|entry| entry.symbol.clone())
+            .collect();
+        assert!(
+            test_symbols.contains("alpha"),
+            "the #[test]-annotated function is detected"
+        );
+        assert!(
+            test_symbols.contains("helper"),
+            "the un-annotated function inside the #[cfg(test)] mod cascades"
+        );
+    }
+
+    #[test]
+    fn java_test_attribute_marks_function_as_test_entry() {
+        let content = "@Test\nvoid run() {}\n";
+        let functions = extract_token_functions(0, content, "void ");
+        let entries = extract_entry_points(
+            0,
+            Language::Java,
+            Path::new("src/main/java/Sample.java"),
+            content,
+            &functions,
+            None,
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == EntryPointKind::Test && entry.symbol == "run"),
+            "@Test attribute proves the mechanism is generic across languages"
+        );
     }
 
     #[test]

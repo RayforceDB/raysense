@@ -155,8 +155,15 @@ pub struct LanguagePluginConfig {
     /// Path patterns matching test modules (in addition to `test_path_patterns`).
     pub test_module_patterns: Vec<String>,
     /// Source-line attributes/decorators that mark a function as a test
-    /// (e.g. `#[test]`, `@Test`).
+    /// (e.g. `#[test]`, `@Test`). Matched against the (trimmed) line
+    /// immediately above each function, walking past blank/comment lines.
     pub test_attribute_patterns: Vec<String>,
+    /// Attributes whose presence marks an entire scope (mod, function, or
+    /// any nested item) as test-only code, cascading to every function
+    /// contained within. Canonical example: Rust `#[cfg(test)]`. Matched
+    /// against the leading text of `attribute_item`-style nodes via
+    /// tree-sitter so multi-line attribute spellings still resolve.
+    pub conditional_test_attributes: Vec<String>,
     /// Tree-sitter node kinds representing function parameter declarations.
     pub parameter_node_kinds: Vec<String>,
     /// Tree-sitter node kinds that increment cyclomatic complexity (`if`,
@@ -208,6 +215,7 @@ impl Default for LanguagePluginConfig {
             entry_point_patterns: Vec::new(),
             test_module_patterns: Vec::new(),
             test_attribute_patterns: Vec::new(),
+            conditional_test_attributes: Vec::new(),
             parameter_node_kinds: Vec::new(),
             complexity_node_kinds: Vec::new(),
             logical_operator_kinds: Vec::new(),
@@ -4863,7 +4871,7 @@ mod tests {
     #[test]
     fn plugin_config_round_trips_extended_semantic_fields() {
         let config: RaysenseConfig = toml::from_str(
-            r#"
+            r##"
 [[scan.plugins]]
 name = "toy"
 extensions = ["toy"]
@@ -4874,11 +4882,12 @@ module_prefix_directives = ["package "]
 entry_point_patterns = ["main", "init"]
 test_module_patterns = ["tests/*"]
 test_attribute_patterns = ["@Test"]
+conditional_test_attributes = ["#[cfg(test)]"]
 parameter_node_kinds = ["parameter"]
 complexity_node_kinds = ["if_expression", "while_expression"]
 logical_operator_kinds = ["&&", "||"]
 abstract_base_classes = ["Base", "Abstract"]
-"#,
+"##,
         )
         .expect("plugin config with new fields parses");
 
@@ -4895,6 +4904,7 @@ abstract_base_classes = ["Base", "Abstract"]
         assert_eq!(plugin.entry_point_patterns, vec!["main", "init"]);
         assert_eq!(plugin.test_module_patterns, vec!["tests/*"]);
         assert_eq!(plugin.test_attribute_patterns, vec!["@Test"]);
+        assert_eq!(plugin.conditional_test_attributes, vec!["#[cfg(test)]"]);
         assert_eq!(plugin.parameter_node_kinds, vec!["parameter"]);
         assert_eq!(
             plugin.complexity_node_kinds,
@@ -4927,6 +4937,7 @@ extensions = ["min"]
         assert!(plugin.entry_point_patterns.is_empty());
         assert!(plugin.test_module_patterns.is_empty());
         assert!(plugin.test_attribute_patterns.is_empty());
+        assert!(plugin.conditional_test_attributes.is_empty());
         assert!(plugin.parameter_node_kinds.is_empty());
         assert!(plugin.complexity_node_kinds.is_empty());
         assert!(plugin.logical_operator_kinds.is_empty());
