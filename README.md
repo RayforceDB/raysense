@@ -106,11 +106,74 @@ Re-running is safe. Existing `raysense` entries are overwritten silently, so
 upgrading via `cargo install raysense` and then re-running `raysense install`
 points the host at the new binary in one step.
 
-Skip the MCP wiring if you only want the CLI:
+Skip the host wiring if you only want the CLI:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RayforceDB/raysense/main/install.sh | sh -s -- --no-mcp
 ```
+
+### Update
+
+To upgrade an existing install to the latest release:
+
+```bash
+cargo install raysense --force   # pull the newest binary from crates.io
+raysense install                 # repoint every detected host at the new binary
+```
+
+Or in one shot via the installer (it also takes `--version` if you want to pin):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RayforceDB/raysense/main/install.sh | sh
+```
+
+For Claude Code, after upgrading the binary also run:
+
+```
+/plugin uninstall raysense@raysense-marketplace
+/plugin install raysense@raysense-marketplace
+```
+
+(or use `/plugin reinstall raysense` if your Claude Code version supports it,
+followed by `/reload-plugins`). This pulls the new plugin manifest, slash
+commands, and skills from GitHub. The MCP server picks up the new binary
+automatically because it's resolved from `PATH` on each launch.
+
+For Cowork, run `/plugin install raysense@raysense-marketplace` in a fresh
+Cowork session (the marketplace was registered by `raysense install`; cowork
+fetches the plugin on first install).
+
+For Claude Desktop, just **quit and reopen** the app — the MCP server respawns
+on launch and the new binary is on PATH from `cargo install --force`.
+
+### Agent surfaces
+
+Once raysense is installed, agents see it through up to four surfaces. Which
+ones light up depends on the host:
+
+| Surface | Invoked by | Available in |
+|---|---|---|
+| **MCP tools** (`raysense_health`, `raysense_hotspots`, `raysense_blast_radius`, …) | The model auto-calls them as needed | Desktop, Code, Cowork |
+| **MCP prompts** (templated workflows, parametrized) | Desktop "+" attachment menu / Claude Code `/mcp__raysense__*` | Desktop, Code, Cowork |
+| **Plugin slash commands** (`/raysense:*`) | User typing `/` | Code, Cowork |
+| **Plugin skills** (model-triggered phase workflows) | The model picks them up automatically when phase-relevant | Code, Cowork |
+
+The six workflow names are consistent across surfaces:
+
+| Name | What it does | Args |
+|---|---|---|
+| `bootstrap` | Scan, save baseline, surface top hotspots / failing rules | `path` |
+| `verify` | Rescan, diff against the session baseline | `path` |
+| `drift` | Diff over a time window (7d / 30d / 90d) | `path`, optional `window` |
+| `impact` | Blast radius + coupling + cycle exposure for one file | `path`, `file` |
+| `query` | Run a Rayfall query (`select` / `.graph.*` / Datalog) against the baseline | `path`, `question` |
+| `audit` | Heavy review: architecture, evolution, test gaps, DSM | `path` |
+
+In Claude Code, type `/raysense:audit /path/to/repo` for the slash form, or
+let the model invoke the matching skill. In Claude Desktop, click the "+"
+attachment button next to the prompt bar, pick `raysense → audit`, and fill in
+the path. The MCP tools (50+ of them, listed in `raysense --help` and via
+`tools/list`) are always callable directly by the model.
 
 ## Use
 

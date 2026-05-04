@@ -372,20 +372,32 @@
     <div class="section-eyebrow">AGENT INTEGRATION</div>
     <h2>MCP server for any AI coding agent.</h2>
     <p class="section-lead">
-      Raysense ships as a Claude Code plugin and as a stdio MCP server compatible with any client that speaks the Model Context Protocol. Install the plugin and the agent gets six skills covering the edit loop: scan and baseline at session start, blast radius before edits, regression diff after, drift across a time window, full audits on demand, and a Rayfall query skill for any question the typed tools do not already answer. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
+      Raysense ships as a Claude Code / Cowork plugin and as a stdio MCP server compatible with any client that speaks the Model Context Protocol. One <code>raysense install</code> registers raysense across every Claude host on the machine: MCP server in Claude Desktop's <code>claude_desktop_config.json</code>, plugin in Claude Code's <code>~/.claude/settings.json</code>, and marketplace seed in Cowork's per-session registry. The plugin gives the agent six edit-loop workflows (<code>bootstrap</code>, <code>verify</code>, <code>drift</code>, <code>impact</code>, <code>query</code>, <code>audit</code>) exposed three ways: model-triggered skills, user-typed slash commands (<code>/raysense:audit</code>), and MCP prompts in the Desktop "+" menu. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
     </p>
 
     <div class="code-block code-block-wide">
-      <div class="code-block-head">claude code plugin (six edit-loop skills)</div>
+      <div class="code-block-head">one shot (every detected Claude host)</div>
+<pre><code><span class="hl-cmt">$</span> <span class="hl-kw">cargo</span> install raysense
+<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install              <span class="hl-cmt"># auto-detect Claude Desktop, Claude Code, and Cowork</span>
+<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install <span class="hl-sym">--desktop</span>    <span class="hl-cmt"># only Claude Desktop  (claude_desktop_config.json)</span>
+<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install <span class="hl-sym">--code</span>       <span class="hl-cmt"># only Claude Code     (~/.claude/settings.json plugin install)</span>
+<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install <span class="hl-sym">--cowork</span>     <span class="hl-cmt"># only Cowork          (research preview; finish in-session)</span></code></pre>
+    </div>
+
+    <div class="code-block code-block-wide">
+      <div class="code-block-head">claude code plugin (manual route, equivalent to `raysense install --code`)</div>
 <pre><code><span class="hl-kw">/plugin</span> marketplace add <span class="hl-str">RayforceDB/raysense</span>
 <span class="hl-kw">/plugin</span> install <span class="hl-str">raysense</span></code></pre>
     </div>
 
     <div class="code-block code-block-wide">
-      <div class="code-block-head">stdio mcp server (claude desktop / claude code / any mcp client)</div>
-<pre><code><span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install              <span class="hl-cmt"># auto-detect Claude Desktop and the `claude` CLI</span>
-<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install <span class="hl-sym">--desktop</span>    <span class="hl-cmt"># only Claude Desktop  (edits claude_desktop_config.json)</span>
-<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install <span class="hl-sym">--code</span>       <span class="hl-cmt"># only Claude Code     (delegates to `claude mcp add`)</span></code></pre>
+      <div class="code-block-head">update</div>
+<pre><code><span class="hl-cmt">$</span> <span class="hl-kw">cargo</span> install raysense <span class="hl-sym">--force</span>   <span class="hl-cmt"># pull the newest binary from crates.io</span>
+<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install                 <span class="hl-cmt"># repoint every detected host at the new binary</span>
+
+<span class="hl-cmt"># Claude Code: refresh the plugin (slash commands, skills) on top of that</span>
+<span class="hl-kw">/plugin</span> reinstall <span class="hl-str">raysense</span>
+<span class="hl-kw">/reload-plugins</span></code></pre>
     </div>
 
     <div class="phase-grid">

@@ -6,12 +6,15 @@ Raysense is built for AI-edited repositories. When agents commit dozens of chang
 
 ## Key facts
 
-- Install: `cargo install raysense` (published on crates.io)
+- Install: `cargo install raysense && raysense install` (binary on crates.io; `raysense install` registers raysense across every Claude host on the machine)
+- One-liner: `curl -fsSL https://raw.githubusercontent.com/RayforceDB/raysense/main/install.sh | sh`
+- Update: `cargo install raysense --force && raysense install` (re-runs are idempotent; existing entries are silently overwritten)
 - License: MIT
 - Author: Anton Kundenko
 - Source: https://github.com/RayforceDB/raysense
 - Languages: 69 supported (11 tree-sitter built-ins with full AST analysis - Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, Ruby, C, Rust - plus Rayfall via native S-expression extraction; 57 more via configurable prefix-pattern plugins)
-- Claude Code plugin: `/plugin marketplace add RayforceDB/raysense`
+- Hosts auto-installed by `raysense install`: Claude Desktop (MCP server in claude_desktop_config.json), Claude Code (raysense plugin in ~/.claude/settings.json - tools + prompts + slash commands `/raysense:*` + skills), Cowork (marketplace registered; finish in-session with `/plugin install raysense@raysense-marketplace`)
+- Manual Claude Code plugin install: `/plugin marketplace add RayforceDB/raysense` then `/plugin install raysense`
 
 ## Six graded dimensions
 
@@ -38,7 +41,16 @@ raysense --mcp          # stdio MCP server for agents
 
 ## Agent integration
 
-Raysense ships as a Claude Code plugin. The plugin gives the agent six skills covering the edit loop:
+Raysense ships as a Claude Code / Cowork plugin and a stdio MCP server. `raysense install` (no flags) registers raysense with every Claude host detected on the machine. The plugin gives the agent six edit-loop workflows, surfaced four ways depending on the host:
+
+| Surface | Invoked by | Available in |
+|---|---|---|
+| MCP tools (`raysense_health`, `raysense_blast_radius`, ...) | Model auto-calls | Desktop, Code, Cowork |
+| MCP prompts (templated workflows with parameters) | Desktop "+" attachment menu / Code `/mcp__raysense__*` | Desktop, Code, Cowork |
+| Plugin slash commands (`/raysense:*`) | User typing `/` | Code, Cowork |
+| Plugin skills (model-triggered phase workflows) | Model picks up automatically | Code, Cowork |
+
+The six workflows:
 
 1. Bootstrap. At session start: scan, save baseline, materialise scan results as splayed-table memory.
 2. Impact. Before non-trivial edits: blast radius, coupling, cycle exposure.
