@@ -664,7 +664,7 @@
       <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="assets/img/rayforce-mark.svg" onerror="this.remove()"><span class="lang-name">Rayfall</span></div>
       <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/simple-icons/rescript.svg" onerror="this.remove()"><span class="lang-name">ReScript</span></div>
       <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/ruby/ruby-plain.svg" onerror="this.remove()"><span class="lang-name">Ruby</span></div>
-      <div class="lang-cell lang-tier-2"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/rust/rust-original.svg" onerror="this.remove()"><span class="lang-name">Rust</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/rust/rust-original.svg" onerror="this.remove()"><span class="lang-name">Rust</span></div>
       <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/scala/scala-plain.svg" onerror="this.remove()"><span class="lang-name">Scala</span></div>
       <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/file-icons/scheme.svg" onerror="this.remove()"><span class="lang-name">Scheme</span></div>
       <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/bash/bash-plain.svg" onerror="this.remove()"><span class="lang-name">Shell</span></div>
@@ -729,7 +729,7 @@
 
       <div class="faq-item">
         <h3>What languages get full AST analysis?</h3>
-        <p>Eleven tree-sitter built-ins get full AST parsing: C and Rust at tier 2 (cyclomatic and cognitive complexity), and Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, and Ruby at tier 3 (complexity plus type-inheritance graphs). Rayfall (the RayforceDB query language) joins tier 3 with native S-expression extraction. The remaining 57 languages are covered by configurable prefix-pattern plugins that extract functions and imports without an AST. Every other metric on the page (edit-risk, drift, evolution, blast radius) works at every tier.</p>
+        <p>Eleven tree-sitter built-ins get full AST parsing: C at tier 2 (cyclomatic and cognitive complexity), and Rust, Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, and Ruby at tier 3 (complexity plus type-inheritance graphs). Rust additionally tracks <code>impl Trait for Type</code> blocks, normalized visibility (<code>pub</code> / <code>pub(crate)</code> / <code>pub(super)</code> / <code>pub(in path)</code>), <code>use ... as alias</code> renames, inline <code>#[cfg(test)]</code> module test detection, and Cargo workspace member resolution so cross-crate imports classify as Local. Rayfall (the RayforceDB query language) joins tier 3 with native S-expression extraction. The remaining 57 languages are covered by configurable prefix-pattern plugins that extract functions and imports without an AST. Every other metric on the page (edit-risk, drift, evolution, blast radius) works at every tier.</p>
       </div>
 
       <div class="faq-item">
@@ -809,7 +809,7 @@
       "name": "What languages get full AST analysis?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Eleven tree-sitter built-ins get full AST parsing: C and Rust at tier 2 (cyclomatic and cognitive complexity), and Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, and Ruby at tier 3 (complexity plus type-inheritance graphs). Rayfall joins tier 3 with native S-expression extraction. The remaining 57 languages are covered by configurable prefix-pattern plugins that extract functions and imports without an AST. Every other metric on the page (edit-risk, drift, evolution, blast radius) works at every tier."
+        "text": "Eleven tree-sitter built-ins get full AST parsing: C at tier 2 (cyclomatic and cognitive complexity), and Rust, Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, and Ruby at tier 3 (complexity plus type-inheritance graphs). Rust additionally tracks impl Trait for Type blocks, normalized visibility (pub / pub(crate) / pub(super) / pub(in path)), use ... as alias renames, inline #[cfg(test)] module test detection, and Cargo workspace member resolution so cross-crate imports classify as Local. Rayfall joins tier 3 with native S-expression extraction. The remaining 57 languages are covered by configurable prefix-pattern plugins that extract functions and imports without an AST. Every other metric on the page (edit-risk, drift, evolution, blast radius) works at every tier."
       }
     },
     {
