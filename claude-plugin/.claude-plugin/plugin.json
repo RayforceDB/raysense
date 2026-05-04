@@ -1,7 +1,7 @@
 {
   "name": "raysense",
-  "version": "0.4.1",
-  "description": "Architectural telemetry for AI coding agents. Phase-scoped skills over the raysense MCP server: scan + baseline at session start, blast-radius before edits, regression diff after, on-demand architecture audits, time-window drift detection.",
+  "version": "0.5.0",
+  "description": "Architectural telemetry for AI coding agents. Phase-scoped skills + slash commands over the raysense MCP server: scan + baseline at session start, blast-radius before edits, regression diff after, on-demand architecture audits, time-window drift detection.",
   "author": {
     "name": "Anton Kundenko",
     "email": "anton.kundenko@gmail.com"
