@@ -29,7 +29,7 @@ use crate::{
     build_baseline, compute_health_with_config, diff_baselines, is_foundation_file,
     scan_path_with_config, ImportResolution, ProjectBaseline, RaysenseConfig,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -115,6 +115,18 @@ fn handle_message(line: &str, state: &mut McpState) -> Result<Option<Value>> {
             };
             Ok(Some(result))
         }
+        "prompts/list" => Ok(id.map(|id| jsonrpc_result(id, prompts_list()))),
+        "prompts/get" => {
+            let Some(id) = id else {
+                return Ok(None);
+            };
+            let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+            let result = match get_prompt(&params) {
+                Ok(value) => jsonrpc_result(id, value),
+                Err(err) => jsonrpc_error(id, -32602, &err.to_string()),
+            };
+            Ok(Some(result))
+        }
         _ => Ok(id.map(|id| jsonrpc_error(id, -32601, "method not found"))),
     }
 }
@@ -124,6 +136,9 @@ fn initialize_result() -> Value {
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": {
             "tools": {
+                "listChanged": false
+            },
+            "prompts": {
                 "listChanged": false
             }
         },
@@ -406,6 +421,142 @@ fn tools_list() -> Value {
             }
         ]
     })
+}
+
+/// User-triggered slash-command surface for Claude Desktop / Claude Code.
+/// Each prompt mirrors the matching skill in `claude-plugin/skills/`: a short
+/// templated message that nudges the model to call the right MCP tools and
+/// return a structured summary. Prompt arguments are textually substituted
+/// into the body via `{name}` placeholders.
+struct PromptSpec {
+    name: &'static str,
+    description: &'static str,
+    arguments: &'static [PromptArg],
+    template: &'static str,
+}
+
+struct PromptArg {
+    name: &'static str,
+    description: &'static str,
+    required: bool,
+    default: Option<&'static str>,
+}
+
+const PROMPTS: &[PromptSpec] = &[
+    PromptSpec {
+        name: "bootstrap",
+        description: "Scan the project, save a baseline, and surface the top hotspots / failing rules. Run once at the start of a coding session.",
+        arguments: &[PromptArg { name: "path", description: "Absolute path to the project root.", required: true, default: None }],
+        template: "Bootstrap a raysense session for the project at `{path}`.\n\n1. Call `raysense_health` with `path: {path}`. Note the overall grade and the weakest dimension.\n2. Call `raysense_baseline_save` with `path: {path}` to persist the baseline (`{path}/.raysense/baseline/`).\n3. Call `raysense_memory_summary` with `path: {path}` to confirm the splayed tables are live; report row/column counts.\n4. Call `raysense_hotspots` and `raysense_rules` with `path: {path}`. List the three hottest files and any rules currently failing.\n\nFinish with a short summary: overall grade, weakest dimension, the three hottest files, and pre-existing rule failures (so later regressions can be told apart from baseline noise).",
+    },
+    PromptSpec {
+        name: "verify",
+        description: "Rescan after edits and diff against the session baseline. Flags new rule failures, newly-hot files, and dimensions that worsened.",
+        arguments: &[PromptArg { name: "path", description: "Absolute path to the project root.", required: true, default: None }],
+        template: "Verify that recent edits in `{path}` have not regressed structural health.\n\n1. Call `raysense_rescan` with `path: {path}` to refresh the live scan and trend log.\n2. Call `raysense_baseline_diff` with `path: {path}` to compare the current scan against the saved baseline.\n\nReport deltas only: rules that newly tripped, files that became hot, dimensions that worsened. If nothing regressed, say so explicitly.",
+    },
+    PromptSpec {
+        name: "drift",
+        description: "Detect structural drift over a time window. Diffs latest scan against baseline plus trend history; ranks worsened dimensions, newly hot files, newly tripped rules.",
+        arguments: &[
+            PromptArg { name: "path", description: "Absolute path to the project root.", required: true, default: None },
+            PromptArg { name: "window", description: "Time window: 7d, 30d, or 90d.", required: false, default: Some("30d") },
+        ],
+        template: "Detect structural drift in the project at `{path}` over the `{window}` window.\n\n1. Call `raysense_drift` with `path: {path}` and `window: {window}`.\n2. Cross-check with `raysense_trend` over the same window for any dimension that visibly trended down.\n\nProduce a punch list, ranked: dimensions that worsened most, files that became newly hot, rules that newly tripped. Include the magnitude of each delta.",
+    },
+    PromptSpec {
+        name: "impact",
+        description: "Compute the blast radius of a file before refactoring or deleting it. Reports direct/transitive dependents, coupling, and cycle exposure.",
+        arguments: &[
+            PromptArg { name: "path", description: "Absolute path to the project root.", required: true, default: None },
+            PromptArg { name: "file", description: "Path of the file to analyze (relative to the project root, or absolute).", required: true, default: None },
+        ],
+        template: "Compute the structural impact of changing `{file}` in the project at `{path}`.\n\n1. Call `raysense_blast_radius` with `path: {path}` and `file: {file}` to enumerate direct and transitive dependents.\n2. Call `raysense_coupling` with `path: {path}` to read the fan-in / fan-out profile for `{file}`.\n3. Call `raysense_cycles` with `path: {path}` to check whether `{file}` participates in any cycle.\n\nFinish with a verdict: is changing `{file}` a local edit, a coupled edit (touch-and-test the dependents), or a structural edit (cycle / high fan-in — split the work)?",
+    },
+    PromptSpec {
+        name: "query",
+        description: "Answer a custom structural question against the saved baseline. Picks the right Rayfall query shape (select, .graph.*, or Datalog) and returns both query and result.",
+        arguments: &[
+            PromptArg { name: "path", description: "Absolute path to the project root.", required: true, default: None },
+            PromptArg { name: "question", description: "The structural question to answer (natural language).", required: true, default: None },
+        ],
+        template: "Answer the following structural question against the raysense baseline at `{path}`:\n\n> {question}\n\n1. Call `raysense_baseline_tables` with `path: {path}` to see the available tables and their columns.\n2. Decide the query shape:\n   - **Select** (filter / project / aggregate over baseline tables) — for \"files where X and Y\" style questions.\n   - **Graph algorithm** (`.graph.pagerank`, `.graph.louvain`, `.graph.topsort`, `.graph.shortest_path`, `.graph.k_shortest`, `.graph.betweenness`, `.graph.closeness`, `.graph.bfs`, `.graph.mst`) — for centrality, clustering, or reachability over the call graph.\n   - **Datalog** (transitive closure: `reaches`, `depends-on`, `tainted-by`) — for declarative reachability.\n3. Call `raysense_baseline_query` with `path: {path}` and the chosen Rayfall expression.\n\nShow the query you ran, then the result, then a one-line interpretation.",
+    },
+    PromptSpec {
+        name: "audit",
+        description: "Heavy structural audit: architecture review, evolution hotspots, test gaps, and DSM. Run on demand, not in the routine edit loop.",
+        arguments: &[PromptArg { name: "path", description: "Absolute path to the project root.", required: true, default: None }],
+        template: "Run a heavy structural audit of the project at `{path}`.\n\n1. Call `raysense_architecture` with `path: {path}` for top-level metrics, root-cause scores, cycles, levels, and unstable modules.\n2. Call `raysense_evolution` with `path: {path}` for churn × coupling hotspots.\n3. Call `raysense_test_gaps` with `path: {path}` for under-tested high-traffic files.\n4. Call `raysense_dsm` with `path: {path}` for the dependency structure matrix.\n\nSynthesize a written architecture review: structural strengths, the three biggest risks, and three concrete remediations to consider.",
+    },
+];
+
+fn prompts_list() -> Value {
+    let prompts: Vec<Value> = PROMPTS.iter().map(prompt_to_listing).collect();
+    json!({ "prompts": prompts })
+}
+
+fn prompt_to_listing(spec: &PromptSpec) -> Value {
+    let arguments: Vec<Value> = spec
+        .arguments
+        .iter()
+        .map(|arg| {
+            json!({
+                "name": arg.name,
+                "description": arg.description,
+                "required": arg.required,
+            })
+        })
+        .collect();
+    json!({
+        "name": spec.name,
+        "description": spec.description,
+        "arguments": arguments,
+    })
+}
+
+fn get_prompt(params: &Value) -> Result<Value> {
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing prompt name"))?;
+    let spec = PROMPTS
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| anyhow!("unknown prompt: {}", name))?;
+
+    let supplied = params.get("arguments").and_then(Value::as_object);
+    let mut text = spec.template.to_string();
+    for arg in spec.arguments {
+        let value = supplied
+            .and_then(|obj| obj.get(arg.name))
+            .and_then(Value::as_str);
+        let resolved = match value {
+            Some(v) => v,
+            None => {
+                if let Some(d) = arg.default {
+                    d
+                } else if arg.required {
+                    bail!("missing required argument: {}", arg.name);
+                } else {
+                    continue;
+                }
+            }
+        };
+        text = text.replace(&format!("{{{}}}", arg.name), resolved);
+    }
+
+    Ok(json!({
+        "description": spec.description,
+        "messages": [
+            {
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": text,
+                }
+            }
+        ]
+    }))
 }
 
 fn call_tool(params: &Value, state: &mut McpState) -> Result<Value> {
@@ -3519,5 +3670,111 @@ mod tests {
         assert_eq!(result["samples"], json!(1));
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn initialize_advertises_prompts_capability() {
+        let result = initialize_result();
+        assert!(result["capabilities"]["prompts"].is_object());
+        assert_eq!(result["capabilities"]["prompts"]["listChanged"], false);
+    }
+
+    #[test]
+    fn lists_all_six_prompts() {
+        let mut state = McpState::default();
+        let response = handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"prompts/list","params":{}}"#,
+            &mut state,
+        )
+        .unwrap()
+        .unwrap();
+        let prompts = response["result"]["prompts"].as_array().unwrap();
+        let names: Vec<&str> = prompts
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+
+        for expected in ["bootstrap", "verify", "drift", "impact", "query", "audit"] {
+            assert!(
+                names.contains(&expected),
+                "missing prompt {expected}, got {names:?}"
+            );
+        }
+
+        let bootstrap = prompts
+            .iter()
+            .find(|p| p["name"] == "bootstrap")
+            .expect("bootstrap prompt present");
+        let path_arg = bootstrap["arguments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "path")
+            .expect("path argument exposed");
+        assert_eq!(path_arg["required"], true);
+    }
+
+    #[test]
+    fn get_prompt_substitutes_arguments() {
+        let mut state = McpState::default();
+        let response = handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"bootstrap","arguments":{"path":"/tmp/proj"}}}"#,
+            &mut state,
+        )
+        .unwrap()
+        .unwrap();
+        let messages = response["result"]["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        let text = messages[0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains("/tmp/proj"), "path not substituted: {text}");
+        assert!(!text.contains("{path}"), "placeholder leaked: {text}");
+    }
+
+    #[test]
+    fn get_prompt_uses_default_for_optional_arg() {
+        let mut state = McpState::default();
+        let response = handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"drift","arguments":{"path":"/tmp/proj"}}}"#,
+            &mut state,
+        )
+        .unwrap()
+        .unwrap();
+        let text = response["result"]["messages"][0]["content"]["text"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains("`30d`"), "default window missing: {text}");
+    }
+
+    #[test]
+    fn get_prompt_errors_on_unknown_name() {
+        let mut state = McpState::default();
+        let response = handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"nope"}}"#,
+            &mut state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("nope"));
+    }
+
+    #[test]
+    fn get_prompt_errors_on_missing_required_arg() {
+        let mut state = McpState::default();
+        let response = handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"impact","arguments":{"path":"/tmp/proj"}}}"#,
+            &mut state,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("file"));
     }
 }
