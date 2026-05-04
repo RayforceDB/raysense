@@ -78,10 +78,12 @@ pub fn scan_path_with_config(
             source,
         })?;
     let config = load_project_plugins(&root, config)?;
-    // Workspace discovery runs once per scan. The map is built eagerly
-    // so future slices can wire it into `crate::` resolution and
-    // cross-crate import classification without changing this seam.
-    let _workspace = crate::workspace::discover(&root, &config);
+    // Workspace discovery runs once per scan and feeds Rust resolution
+    // so `crate::X` targets the importing member's `src/` and
+    // `use my_workspace_crate::X` classifies as Local instead of
+    // External. Empty workspace map -> resolution falls back to the
+    // pre-workspace generic path-walk.
+    let workspace = crate::workspace::discover(&root, &config);
 
     let mut files = Vec::new();
     let mut functions = Vec::new();
@@ -256,7 +258,7 @@ pub fn scan_path_with_config(
 
     let alias_map = build_alias_map(&root, &config);
     apply_alias_rewrites(&mut imports, &files, &alias_map);
-    resolve_imports(&files, &mut imports, &config);
+    resolve_imports(&files, &mut imports, &config, &workspace);
     let call_edges = resolve_call_edges(&files, &functions, &calls);
 
     let snapshot_id = snapshot_id(&files);
@@ -3210,7 +3212,12 @@ fn apply_alias_replacement(replacement: &str, suffix: &str) -> String {
     }
 }
 
-fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact], config: &RaysenseConfig) {
+fn resolve_imports(
+    files: &[FileFact],
+    imports: &mut [ImportFact],
+    config: &RaysenseConfig,
+    workspace: &crate::workspace::WorkspaceMap,
+) {
     let mut by_path = HashMap::new();
     let mut by_module = HashMap::new();
     let profile = ProjectProfile::infer(files);
@@ -3234,8 +3241,9 @@ fn resolve_imports(files: &[FileFact], imports: &mut [ImportFact], config: &Rays
             &by_module,
             &profile.include_roots,
             config,
+            workspace,
         );
-        import.resolution = classify_import(from_file, import, config);
+        import.resolution = classify_import(from_file, import, config, workspace);
     }
 }
 
@@ -3324,6 +3332,7 @@ fn classify_import(
     from_file: &FileFact,
     import: &ImportFact,
     config: &RaysenseConfig,
+    workspace: &crate::workspace::WorkspaceMap,
 ) -> ImportResolution {
     if import.resolved_file.is_some() {
         return ImportResolution::Local;
@@ -3344,7 +3353,9 @@ fn classify_import(
         {
             ImportResolution::Local
         }
-        Language::Rust if rust_target_is_local(&import.target) => ImportResolution::Unresolved,
+        Language::Rust if rust_target_is_local(&import.target, workspace) => {
+            ImportResolution::Unresolved
+        }
         Language::TypeScript if import.target.starts_with('.') => ImportResolution::Unresolved,
         Language::Python if import.target.starts_with('.') => ImportResolution::Unresolved,
         Language::C | Language::Cpp if import.kind == "include" => ImportResolution::Unresolved,
@@ -3359,8 +3370,9 @@ fn resolve_import(
     by_module: &HashMap<String, usize>,
     include_roots: &[PathBuf],
     config: &RaysenseConfig,
+    workspace: &crate::workspace::WorkspaceMap,
 ) -> Option<usize> {
-    let candidates = import_candidates(from_file, import, include_roots, config);
+    let candidates = import_candidates(from_file, import, include_roots, config, workspace);
     candidates
         .iter()
         .find_map(|candidate| by_path.get(candidate).copied())
@@ -3374,9 +3386,10 @@ fn import_candidates(
     import: &ImportFact,
     include_roots: &[PathBuf],
     config: &RaysenseConfig,
+    workspace: &crate::workspace::WorkspaceMap,
 ) -> Vec<String> {
     match from_file.language {
-        Language::Rust => rust_import_candidates(&from_file.path, &import.target),
+        Language::Rust => rust_import_candidates(&from_file.path, &import.target, workspace),
         Language::Python => python_import_candidates(&import.target),
         Language::TypeScript => typescript_import_candidates(&from_file.path, &import.target),
         Language::C | Language::Cpp => {
@@ -3473,13 +3486,49 @@ fn plugin_import_candidates(
     candidates
 }
 
-fn rust_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
-    if !rust_target_is_local(target) {
+fn rust_import_candidates(
+    from_path: &Path,
+    target: &str,
+    workspace: &crate::workspace::WorkspaceMap,
+) -> Vec<String> {
+    if !rust_target_is_local(target, workspace) {
         return Vec::new();
     }
 
-    let target = normalize_rust_target(target);
     let mut candidates = Vec::new();
+
+    // Cross-crate target: first segment is a workspace member name.
+    // `use beta::thing` -> search inside `beta`'s `src/` rather than
+    // walking from the importer's path.
+    let trimmed = target.trim();
+    if !trimmed.starts_with("crate::")
+        && !trimmed.starts_with("self::")
+        && !trimmed.starts_with("super::")
+    {
+        if let Some((first, rest)) = trimmed.split_once("::") {
+            if let Some(member) = workspace.members_by_crate.get(first) {
+                let prefix_target = rest.replace("::", "/");
+                let prefix_target = prefix_target
+                    .split('/')
+                    .filter(|segment| !segment.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                if !prefix_target.is_empty() {
+                    candidates.push(normalize_path(
+                        member.src_dir.join(format!("{prefix_target}.rs")),
+                    ));
+                    candidates.push(normalize_path(
+                        member.src_dir.join(format!("{prefix_target}/mod.rs")),
+                    ));
+                }
+                candidates.push(normalize_path(member.src_dir.join("lib.rs")));
+                candidates.push(normalize_path(member.src_dir.join("mod.rs")));
+                return candidates;
+            }
+        }
+    }
+
+    let target = normalize_rust_target(target);
 
     for prefix in rust_module_prefixes(&target) {
         candidates.push(format!("{prefix}.rs"));
@@ -3487,7 +3536,7 @@ fn rust_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
         candidates.push(format!("src/{prefix}.rs"));
         candidates.push(format!("src/{prefix}/mod.rs"));
 
-        if let Some(crate_src) = rust_crate_src_dir(from_path) {
+        if let Some(crate_src) = rust_crate_src_dir(from_path, workspace) {
             candidates.push(normalize_path(crate_src.join(format!("{prefix}.rs"))));
             candidates.push(normalize_path(crate_src.join(format!("{prefix}/mod.rs"))));
         }
@@ -3496,14 +3545,24 @@ fn rust_import_candidates(from_path: &Path, target: &str) -> Vec<String> {
     candidates
 }
 
-fn rust_target_is_local(target: &str) -> bool {
+fn rust_target_is_local(target: &str, workspace: &crate::workspace::WorkspaceMap) -> bool {
     let target = target.trim();
-    target.starts_with("crate::")
+    if target.starts_with("crate::")
         || target.starts_with("self::")
         || target.starts_with("super::")
         || target == "super"
         || target == "self"
         || !target.contains("::")
+    {
+        return true;
+    }
+    // Cross-crate workspace target: `use my_workspace_crate::Foo`.
+    if let Some((first, _)) = target.split_once("::") {
+        if workspace.members_by_crate.contains_key(first) {
+            return true;
+        }
+    }
+    false
 }
 
 fn normalize_rust_target(target: &str) -> String {
@@ -3543,7 +3602,48 @@ fn rust_module_prefixes(target: &str) -> Vec<String> {
         .collect()
 }
 
-fn rust_crate_src_dir(from_path: &Path) -> Option<PathBuf> {
+fn rust_crate_src_dir(
+    from_path: &Path,
+    workspace: &crate::workspace::WorkspaceMap,
+) -> Option<PathBuf> {
+    // Workspace-aware path: use the importing member's `src/` so
+    // `crate::X` from `crates/a/src/lib.rs` resolves under
+    // `crates/a/src/` rather than whatever `src/` raysense hits first.
+    if !workspace.members_by_crate.is_empty() {
+        let normalized = normalize_path(from_path);
+        let normalized = normalized.trim_end_matches('/');
+        let mut best: Option<&crate::workspace::MemberCrate> = None;
+        for member in workspace.members_by_crate.values() {
+            let manifest_dir = normalize_path(&member.manifest_dir);
+            let manifest_dir = manifest_dir.trim_end_matches('/');
+            let prefix = if manifest_dir.is_empty() || manifest_dir == "." {
+                String::new()
+            } else {
+                format!("{manifest_dir}/")
+            };
+            if prefix.is_empty() || normalized.starts_with(&prefix) {
+                let len = prefix.len();
+                if best
+                    .map(|m| {
+                        let cur = normalize_path(&m.manifest_dir);
+                        let cur = cur.trim_end_matches('/');
+                        let cur_len = if cur.is_empty() || cur == "." {
+                            0
+                        } else {
+                            cur.len() + 1
+                        };
+                        len > cur_len
+                    })
+                    .unwrap_or(true)
+                {
+                    best = Some(member);
+                }
+            }
+        }
+        if let Some(member) = best {
+            return Some(member.src_dir.clone());
+        }
+    }
     let mut out = PathBuf::new();
     for component in from_path.components() {
         let Component::Normal(part) = component else {
@@ -4108,6 +4208,97 @@ fn helper() {}
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].target, "foo::Bar");
         assert_eq!(imports[0].alias.as_deref(), Some("Baz"));
+    }
+
+    #[test]
+    fn workspace_internal_use_resolves_as_local() {
+        let root = temp_scan_root("workspace_local");
+        fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\"]\n",
+        )
+        .unwrap();
+        for (member, name, body) in [
+            (
+                "crates/alpha",
+                "alpha",
+                "use beta::thing;\npub fn use_beta() { let _ = thing(); }\n",
+            ),
+            ("crates/beta", "beta", "pub fn thing() {}\n"),
+        ] {
+            let manifest_dir = root.join(member);
+            fs::create_dir_all(manifest_dir.join("src")).unwrap();
+            fs::write(
+                manifest_dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n"),
+            )
+            .unwrap();
+            fs::write(manifest_dir.join("src/lib.rs"), body).unwrap();
+        }
+
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        let beta_thing_import = report
+            .imports
+            .iter()
+            .find(|import| import.target == "beta::thing")
+            .expect("the use beta::thing import is captured");
+        assert_eq!(
+            beta_thing_import.resolution,
+            ImportResolution::Local,
+            "cross-crate workspace import resolves as Local instead of External"
+        );
+        assert!(beta_thing_import.resolved_file.is_some());
+    }
+
+    #[test]
+    fn workspace_crate_self_import_uses_member_src_dir() {
+        let root = temp_scan_root("workspace_crate_self");
+        fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\"]\n",
+        )
+        .unwrap();
+        // Both members declare a `module` sibling. The importer in
+        // crates/alpha/src/lib.rs uses `crate::module`, which must
+        // resolve to crates/alpha/src/module.rs (its own member's
+        // source root) -- never crates/beta/src/module.rs.
+        for member in ["crates/alpha", "crates/beta"] {
+            let name = member.rsplit('/').next().unwrap();
+            let manifest_dir = root.join(member);
+            fs::create_dir_all(manifest_dir.join("src")).unwrap();
+            fs::write(
+                manifest_dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n"),
+            )
+            .unwrap();
+            fs::write(manifest_dir.join("src/module.rs"), "pub fn item() {}\n").unwrap();
+        }
+        fs::write(root.join("crates/alpha/src/lib.rs"), "use crate::module;\n").unwrap();
+        fs::write(root.join("crates/beta/src/lib.rs"), "").unwrap();
+
+        let report = scan_path_with_config(&root, &RaysenseConfig::default()).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        let import = report
+            .imports
+            .iter()
+            .find(|import| import.target == "crate::module")
+            .expect("crate::module import captured");
+        let resolved_id = import.resolved_file.expect("resolved against alpha's src");
+        let resolved_path = report
+            .files
+            .iter()
+            .find(|file| file.file_id == resolved_id)
+            .map(|file| file.path.to_string_lossy().to_string())
+            .unwrap();
+        assert!(
+            resolved_path.contains("crates/alpha/src/module.rs"),
+            "crate:: resolution must use the importing member's src dir, got {resolved_path}"
+        );
     }
 
     #[test]
@@ -4940,7 +5131,12 @@ int run(void) {
         ];
         let mut imports = vec![new_import(0, "crate::graph", "use")];
 
-        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
+        resolve_imports(
+            &files,
+            &mut imports,
+            &RaysenseConfig::default(),
+            &crate::workspace::WorkspaceMap::default(),
+        );
 
         assert_eq!(imports[0].resolved_file, Some(1));
         assert_eq!(imports[0].resolution, ImportResolution::Local);
@@ -4958,7 +5154,12 @@ int run(void) {
             new_import(0, "../widgets", "import"),
         ];
 
-        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
+        resolve_imports(
+            &files,
+            &mut imports,
+            &RaysenseConfig::default(),
+            &crate::workspace::WorkspaceMap::default(),
+        );
 
         assert_eq!(imports[0].resolved_file, Some(1));
         assert_eq!(imports[1].resolved_file, Some(2));
@@ -4974,7 +5175,12 @@ int run(void) {
         ];
         let mut imports = vec![new_import(0, "crate::memory", "use")];
 
-        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
+        resolve_imports(
+            &files,
+            &mut imports,
+            &RaysenseConfig::default(),
+            &crate::workspace::WorkspaceMap::default(),
+        );
 
         assert_eq!(imports[0].resolved_file, Some(1));
         assert_eq!(imports[0].resolution, ImportResolution::Local);
@@ -4985,7 +5191,12 @@ int run(void) {
         let files = vec![file(0, "src/main.rs", Language::Rust)];
         let mut imports = vec![new_import(0, "serde::Serialize", "use")];
 
-        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
+        resolve_imports(
+            &files,
+            &mut imports,
+            &RaysenseConfig::default(),
+            &crate::workspace::WorkspaceMap::default(),
+        );
 
         assert_eq!(imports[0].resolved_file, None);
         assert_eq!(imports[0].resolution, ImportResolution::External);
@@ -5005,7 +5216,12 @@ int run(void) {
             new_import(0, "missing.h", "include"),
         ];
 
-        resolve_imports(&files, &mut imports, &RaysenseConfig::default());
+        resolve_imports(
+            &files,
+            &mut imports,
+            &RaysenseConfig::default(),
+            &crate::workspace::WorkspaceMap::default(),
+        );
 
         assert_eq!(imports[0].resolution, ImportResolution::System);
         assert_eq!(imports[1].resolved_file, Some(1));

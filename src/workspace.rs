@@ -112,8 +112,8 @@ fn discover_cargo_workspace(root: &Path, map: &mut WorkspaceMap) {
     }
 
     for relative in member_paths {
-        let manifest_dir = root.join(&relative);
-        let member_manifest = manifest_dir.join("Cargo.toml");
+        let manifest_dir_abs = root.join(&relative);
+        let member_manifest = manifest_dir_abs.join("Cargo.toml");
         let Ok(member_text) = std::fs::read_to_string(&member_manifest) else {
             continue;
         };
@@ -128,10 +128,18 @@ fn discover_cargo_workspace(root: &Path, map: &mut WorkspaceMap) {
         else {
             continue;
         };
-        let src_dir = manifest_dir.join("src");
-        if !src_dir.is_dir() {
+        if !manifest_dir_abs.join("src").is_dir() {
             continue;
         }
+        // Store paths relative to the scan root so the scanner's by-path
+        // index (also keyed by scan-relative paths) can match the
+        // candidates we generate. A root manifest's `[package]` collapses
+        // to plain `src`.
+        let src_dir = if relative == PathBuf::from(".") {
+            PathBuf::from("src")
+        } else {
+            relative.join("src")
+        };
         let member = MemberCrate {
             crate_name: crate_name.to_string(),
             manifest_dir: relative.clone(),
