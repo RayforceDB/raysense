@@ -183,7 +183,12 @@
     <div class="section-eyebrow">INSTALL</div>
     <h2>One binary. A few flags.</h2>
 
-    <div class="code-grid">
+    <div class="code-block code-block-wide">
+      <div class="code-block-head">install (one-liner)</div>
+<pre><code><span class="hl-cmt">$</span> curl <span class="hl-sym">-fsSL</span> https://raw.githubusercontent.com/RayforceDB/raysense/main/install.sh <span class="hl-sym">|</span> sh</code></pre>
+    </div>
+
+    <div class="code-grid" style="margin-top: 12px;">
       <div class="code-block">
         <div class="code-block-head">install</div>
 <pre><code><span class="hl-cmt">$</span> <span class="hl-kw">cargo</span> install raysense</code></pre>
@@ -237,9 +242,16 @@
     </p>
 
     <div class="code-block code-block-wide">
-      <div class="code-block-head">install</div>
+      <div class="code-block-head">claude code plugin (six edit-loop skills)</div>
 <pre><code><span class="hl-kw">/plugin</span> marketplace add <span class="hl-str">RayforceDB/raysense</span>
 <span class="hl-kw">/plugin</span> install <span class="hl-str">raysense</span></code></pre>
+    </div>
+
+    <div class="code-block code-block-wide">
+      <div class="code-block-head">stdio mcp server (claude desktop / claude code / any mcp client)</div>
+<pre><code><span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install              <span class="hl-cmt"># auto-detect Claude Desktop and the `claude` CLI</span>
+<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install <span class="hl-sym">--desktop</span>    <span class="hl-cmt"># only Claude Desktop  (edits claude_desktop_config.json)</span>
+<span class="hl-cmt">$</span> <span class="hl-kw">raysense</span> install <span class="hl-sym">--code</span>       <span class="hl-cmt"># only Claude Code     (delegates to `claude mcp add`)</span></code></pre>
     </div>
 
     <div class="phase-grid">
