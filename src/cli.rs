@@ -455,13 +455,11 @@ fn run_advanced(command: Command) -> Result<()> {
             desktop,
             code,
             cowork,
-        } => {
-            crate::install::run(crate::install::InstallSelection {
-                desktop,
-                code,
-                cowork,
-            })?
-        }
+        } => crate::install::run(crate::install::InstallSelection {
+            desktop,
+            code,
+            cowork,
+        })?,
         Command::Baseline { command } => match command {
             BaselineCommand::Save {
                 path,

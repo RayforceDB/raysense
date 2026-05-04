@@ -676,10 +676,7 @@ mod tests {
         let (text, action) = upsert_cowork_marketplace("").unwrap();
         assert_eq!(action, "added");
         let parsed: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            parsed[MARKETPLACE_NAME]["source"]["repo"],
-            MARKETPLACE_REPO
-        );
+        assert_eq!(parsed[MARKETPLACE_NAME]["source"]["repo"], MARKETPLACE_REPO);
     }
 
     #[test]
