@@ -130,6 +130,7 @@ mod tests {
             kind: "use".to_string(),
             resolution: ImportResolution::Local,
             resolved_file: Some(to_file),
+            alias: None,
         }
     }
 }

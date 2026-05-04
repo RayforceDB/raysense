@@ -164,6 +164,12 @@ pub struct LanguagePluginConfig {
     /// against the leading text of `attribute_item`-style nodes via
     /// tree-sitter so multi-line attribute spellings still resolve.
     pub conditional_test_attributes: Vec<String>,
+    /// When `true`, the scanner records `as`-style import aliases on
+    /// `ImportFact.alias` (Rust `use foo::Bar as Baz;`, ES
+    /// `import { foo as bar }`, Python `import x as y`). Default `false`
+    /// keeps existing baselines unchanged for languages whose plugin
+    /// hasn't been wired for alias capture.
+    pub capture_import_aliases: bool,
     /// Tree-sitter node kinds representing function parameter declarations.
     pub parameter_node_kinds: Vec<String>,
     /// Tree-sitter node kinds that increment cyclomatic complexity (`if`,
@@ -216,6 +222,7 @@ impl Default for LanguagePluginConfig {
             test_module_patterns: Vec::new(),
             test_attribute_patterns: Vec::new(),
             conditional_test_attributes: Vec::new(),
+            capture_import_aliases: false,
             parameter_node_kinds: Vec::new(),
             complexity_node_kinds: Vec::new(),
             logical_operator_kinds: Vec::new(),
@@ -4883,6 +4890,7 @@ entry_point_patterns = ["main", "init"]
 test_module_patterns = ["tests/*"]
 test_attribute_patterns = ["@Test"]
 conditional_test_attributes = ["#[cfg(test)]"]
+capture_import_aliases = true
 parameter_node_kinds = ["parameter"]
 complexity_node_kinds = ["if_expression", "while_expression"]
 logical_operator_kinds = ["&&", "||"]
@@ -4905,6 +4913,7 @@ abstract_base_classes = ["Base", "Abstract"]
         assert_eq!(plugin.test_module_patterns, vec!["tests/*"]);
         assert_eq!(plugin.test_attribute_patterns, vec!["@Test"]);
         assert_eq!(plugin.conditional_test_attributes, vec!["#[cfg(test)]"]);
+        assert!(plugin.capture_import_aliases);
         assert_eq!(plugin.parameter_node_kinds, vec!["parameter"]);
         assert_eq!(
             plugin.complexity_node_kinds,
@@ -4938,6 +4947,7 @@ extensions = ["min"]
         assert!(plugin.test_module_patterns.is_empty());
         assert!(plugin.test_attribute_patterns.is_empty());
         assert!(plugin.conditional_test_attributes.is_empty());
+        assert!(!plugin.capture_import_aliases);
         assert!(plugin.parameter_node_kinds.is_empty());
         assert!(plugin.complexity_node_kinds.is_empty());
         assert!(plugin.logical_operator_kinds.is_empty());
@@ -5740,6 +5750,7 @@ order = 2
             kind: "use".to_string(),
             resolution,
             resolved_file,
+            alias: None,
         }
     }
 

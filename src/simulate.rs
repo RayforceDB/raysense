@@ -132,6 +132,7 @@ pub fn remove_file(report: &ScanReport, file_path: &str) -> Result<ScanReport, S
             kind: import.kind.clone(),
             resolution: import.resolution,
             resolved_file: new_resolved,
+            alias: import.alias.clone(),
         });
     }
 
@@ -312,6 +313,7 @@ pub fn add_edge(
         kind: "what_if".to_string(),
         resolution: ImportResolution::Local,
         resolved_file: Some(to_id),
+        alias: None,
     });
     after.snapshot.import_count = after.imports.len();
     after.graph = compute_graph_metrics(&after.files, &after.imports);
@@ -516,6 +518,7 @@ mod tests {
             kind: "use".to_string(),
             resolution: ImportResolution::Local,
             resolved_file: resolved,
+            alias: None,
         }
     }
 

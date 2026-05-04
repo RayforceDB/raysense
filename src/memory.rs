@@ -63,7 +63,12 @@ use thiserror::Error;
 ///   `concat`; `baseline save` reads them off disk and re-emits
 ///   them rather than rebuilding from JSON. Hard break: v4
 ///   baselines fail the schema check and require a fresh save.
-pub const SCHEMA_VERSION: i64 = 5;
+/// - v6: `imports` table gains an `alias` column capturing
+///   `as`-style renames (Rust `use foo::Bar as Baz`, ES
+///   `import { foo as bar }`, Python `import x as y`). Empty
+///   string when no alias is declared. Hard break: v5
+///   baselines fail the schema check and require a fresh save.
+pub const SCHEMA_VERSION: i64 = 6;
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
@@ -1811,9 +1816,16 @@ fn build_imports_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
             .iter()
             .map(|import| import.resolved_file.map(|id| id as i64).unwrap_or(-1)),
     )?;
+    let aliases = str_vec(
+        report.imports.len(),
+        report
+            .imports
+            .iter()
+            .map(|import| import.alias.clone().unwrap_or_default()),
+    )?;
 
     table(
-        6,
+        7,
         [
             ("import_id", ids),
             ("from_file", from_files),
@@ -1821,6 +1833,7 @@ fn build_imports_table(report: &ScanReport) -> Result<RayObject, MemoryError> {
             ("kind", kinds),
             ("resolution", resolutions),
             ("resolved_file", resolved_files),
+            ("alias", aliases),
         ],
     )
 }

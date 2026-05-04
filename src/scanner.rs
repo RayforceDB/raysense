@@ -178,6 +178,17 @@ pub fn scan_path_with_config(
         } else {
             extract_imports(file_id, language, &content)
         };
+        let alias_capture_enabled = match plugin.as_ref() {
+            Some(plugin) => plugin.capture_import_aliases,
+            None => synthesize_language_plugin_defaults(language)
+                .map(|plugin| plugin.capture_import_aliases)
+                .unwrap_or(false),
+        };
+        if !alias_capture_enabled {
+            for import in &mut file_imports {
+                import.alias = None;
+            }
+        }
         for import in &mut file_imports {
             import.import_id = imports.len();
             imports.push(import.clone());
@@ -764,6 +775,7 @@ fn apply_builtin_profile_defaults(plugin: &mut LanguagePluginConfig) {
         "rust" => vec!["#[cfg(test)]".to_string()],
         _ => Vec::new(),
     };
+    plugin.capture_import_aliases = matches!(plugin.name.as_str(), "rust");
 }
 
 fn language_name(language: Language) -> &'static str {
@@ -1913,8 +1925,8 @@ fn collect_tree_sitter_imports(
     match node.kind() {
         "use_declaration" => {
             if let Some(target) = rust_use_target(content, node) {
-                for expanded in expand_brace_targets(&target) {
-                    imports.push(new_import(file_id, &expanded, "use"));
+                for (expanded, alias) in expand_brace_targets_with_aliases(&target) {
+                    imports.push(new_import_with_alias(file_id, &expanded, "use", alias));
                 }
             }
         }
@@ -2022,25 +2034,58 @@ fn count_comment_lines(content: &str) -> usize {
 /// so callers can use this unconditionally. Nested braces are not supported —
 /// only the first brace group is expanded.
 fn expand_brace_targets(target: &str) -> Vec<String> {
+    expand_brace_targets_with_aliases(target)
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect()
+}
+
+/// Same as `expand_brace_targets` but also recognizes per-item `as alias`
+/// renames. `use crate::{a, b as c, d}` -> `[(crate::a, None),
+/// (crate::b, Some("c")), (crate::d, None)]`. Top-level `use a::B as C`
+/// is also handled. The brace expansion preserves existing semantics; the
+/// alias is attached only to the matching item.
+fn expand_brace_targets_with_aliases(target: &str) -> Vec<(String, Option<String>)> {
     let Some(open) = target.find('{') else {
-        return vec![target.to_string()];
+        let (path, alias) = split_use_alias(target);
+        return vec![(path.to_string(), alias)];
     };
     let Some(close_rel) = target[open..].find('}') else {
-        return vec![target.to_string()];
+        let (path, alias) = split_use_alias(target);
+        return vec![(path.to_string(), alias)];
     };
     let close = open + close_rel;
     let prefix = &target[..open];
     let suffix = &target[close + 1..];
-    let items: Vec<String> = target[open + 1..close]
+    let items: Vec<(String, Option<String>)> = target[open + 1..close]
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|item| format!("{prefix}{item}{suffix}"))
+        .map(|item| {
+            let (path, alias) = split_use_alias(item);
+            let full = format!("{prefix}{path}{suffix}");
+            (full, alias)
+        })
         .collect();
     if items.is_empty() {
-        return vec![target.to_string()];
+        let (path, alias) = split_use_alias(target);
+        return vec![(path.to_string(), alias)];
     }
     items
+}
+
+/// Split a `path as alias` segment into `(path, Some(alias))`. The
+/// separator is the literal token ` as ` so identifiers ending in
+/// "as" don't false-match. Inputs without `as` return `(input, None)`.
+fn split_use_alias(item: &str) -> (&str, Option<String>) {
+    let trimmed = item.trim();
+    if let Some((path, alias)) = trimmed.rsplit_once(" as ") {
+        let alias = alias.trim().trim_end_matches(';').trim();
+        if !alias.is_empty() {
+            return (path.trim(), Some(alias.to_string()));
+        }
+    }
+    (trimmed, None)
 }
 
 fn rust_mod_target(content: &str, node: Node<'_>) -> Option<String> {
@@ -2220,11 +2265,10 @@ fn extract_rust_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
     for line in content.lines() {
         let trimmed = line.trim_start();
         if let Some(target) = trimmed.strip_prefix("use ") {
-            imports.push(new_import(
-                file_id,
-                target.trim_end_matches(';').trim(),
-                "use",
-            ));
+            let stripped = target.trim_end_matches(';').trim();
+            for (expanded, alias) in expand_brace_targets_with_aliases(stripped) {
+                imports.push(new_import_with_alias(file_id, &expanded, "use", alias));
+            }
         }
         if let Some(rest) = trimmed.strip_prefix("mod ") {
             if rest.contains('{') {
@@ -2380,6 +2424,15 @@ fn clean_c_include_target(target: &str) -> &str {
 }
 
 fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
+    new_import_with_alias(file_id, target, kind, None)
+}
+
+fn new_import_with_alias(
+    file_id: usize,
+    target: &str,
+    kind: &str,
+    alias: Option<String>,
+) -> ImportFact {
     ImportFact {
         import_id: 0,
         from_file: file_id,
@@ -2387,6 +2440,7 @@ fn new_import(file_id: usize, target: &str, kind: &str) -> ImportFact {
         kind: kind.to_string(),
         resolution: ImportResolution::Unresolved,
         resolved_file: None,
+        alias,
     }
 }
 
@@ -3636,6 +3690,7 @@ fn extract_rayfall_imports(file_id: usize, content: &str) -> Vec<ImportFact> {
                 kind,
                 resolution: ImportResolution::Unresolved,
                 resolved_file: None,
+                alias: None,
             });
             break;
         }
@@ -3784,6 +3839,86 @@ fn helper() {}
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].target, "crate::graph");
         assert_eq!(imports[1].target, "crate::scanner");
+    }
+
+    #[test]
+    fn extracts_rust_use_alias() {
+        let content = "use foo::Bar as Baz;\n";
+        let imports = extract_imports(0, Language::Rust, content);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].target, "foo::Bar");
+        assert_eq!(imports[0].alias.as_deref(), Some("Baz"));
+    }
+
+    #[test]
+    fn extracts_rust_brace_use_with_per_item_aliases() {
+        let content = "use crate::{a, b as c, d};\n";
+        let imports = extract_imports(0, Language::Rust, content);
+        assert_eq!(imports.len(), 3);
+        assert_eq!(imports[0].target, "crate::a");
+        assert_eq!(imports[0].alias, None);
+        assert_eq!(imports[1].target, "crate::b");
+        assert_eq!(imports[1].alias.as_deref(), Some("c"));
+        assert_eq!(imports[2].target, "crate::d");
+        assert_eq!(imports[2].alias, None);
+    }
+
+    #[test]
+    fn rust_line_based_fallback_captures_alias() {
+        let content = "use foo::Bar as Baz;\n";
+        let imports = extract_rust_imports(0, content);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].target, "foo::Bar");
+        assert_eq!(imports[0].alias.as_deref(), Some("Baz"));
+    }
+
+    #[test]
+    fn split_use_alias_handles_common_shapes() {
+        assert_eq!(split_use_alias("foo::Bar"), ("foo::Bar", None));
+        assert_eq!(
+            split_use_alias("foo::Bar as Baz"),
+            ("foo::Bar", Some("Baz".to_string()))
+        );
+        assert_eq!(
+            split_use_alias("  foo::Bar as Baz  "),
+            ("foo::Bar", Some("Baz".to_string())),
+            "leading/trailing whitespace is trimmed"
+        );
+        assert_eq!(
+            split_use_alias("classname"),
+            ("classname", None),
+            "names that merely contain `as` substrings do not false-match"
+        );
+    }
+
+    #[test]
+    fn alias_capture_disabled_by_config_drops_alias() {
+        let root = temp_scan_root("alias_disabled");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "use foo::Bar as Baz;\npub fn ok() {}\n",
+        )
+        .unwrap();
+        let config: RaysenseConfig = toml::from_str(
+            r#"
+[[scan.plugins]]
+name = "rust"
+extensions = ["rs"]
+import_prefixes = ["use "]
+function_prefixes = ["fn "]
+capture_import_aliases = false
+"#,
+        )
+        .unwrap();
+        let report = scan_path_with_config(&root, &config).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        let alias_present = report.imports.iter().any(|import| import.alias.is_some());
+        assert!(
+            !alias_present,
+            "with capture_import_aliases = false the alias must be cleared"
+        );
     }
 
     #[test]

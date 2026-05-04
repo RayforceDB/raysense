@@ -125,6 +125,12 @@ pub struct ImportFact {
     pub kind: String,
     pub resolution: ImportResolution,
     pub resolved_file: Option<usize>,
+    /// Alias bound by the import, if the source spells out a rename
+    /// (Rust `use foo::Bar as Baz;`, ES `import { foo as bar }`,
+    /// Python `import x as y`). `None` when no alias is declared or the
+    /// language plugin doesn't capture them.
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

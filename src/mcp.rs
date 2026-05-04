@@ -2801,6 +2801,7 @@ fn config_schema() -> Value {
                                 "test_module_patterns": {"type": "array", "items": {"type": "string"}},
                                 "test_attribute_patterns": {"type": "array", "items": {"type": "string"}},
                                 "conditional_test_attributes": {"type": "array", "items": {"type": "string"}},
+                                "capture_import_aliases": {"type": "boolean"},
                                 "parameter_node_kinds": {"type": "array", "items": {"type": "string"}},
                                 "complexity_node_kinds": {"type": "array", "items": {"type": "string"}},
                                 "logical_operator_kinds": {"type": "array", "items": {"type": "string"}},
