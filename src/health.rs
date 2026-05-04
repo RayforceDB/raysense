@@ -177,6 +177,11 @@ pub struct LanguagePluginConfig {
     /// `pub(crate)` wins over `pub `. An entry with no matching pattern
     /// stays `Visibility::Unknown`.
     pub visibility_patterns: BTreeMap<String, Vec<String>>,
+    /// File names raysense should treat as package-manager workspace
+    /// manifests for this language (Cargo.toml for Rust; future:
+    /// `package.json` for npm, `go.work` for Go, `pyproject.toml` for
+    /// uv). Empty disables workspace discovery for the plugin.
+    pub workspace_manifest_files: Vec<String>,
     /// Tree-sitter node kinds representing function parameter declarations.
     pub parameter_node_kinds: Vec<String>,
     /// Tree-sitter node kinds that increment cyclomatic complexity (`if`,
@@ -231,6 +236,7 @@ impl Default for LanguagePluginConfig {
             conditional_test_attributes: Vec::new(),
             capture_import_aliases: false,
             visibility_patterns: BTreeMap::new(),
+            workspace_manifest_files: Vec::new(),
             parameter_node_kinds: Vec::new(),
             complexity_node_kinds: Vec::new(),
             logical_operator_kinds: Vec::new(),
@@ -4908,6 +4914,7 @@ test_attribute_patterns = ["@Test"]
 conditional_test_attributes = ["#[cfg(test)]"]
 capture_import_aliases = true
 visibility_patterns = { public = ["pub "], internal = ["pub(crate)"] }
+workspace_manifest_files = ["Cargo.toml"]
 parameter_node_kinds = ["parameter"]
 complexity_node_kinds = ["if_expression", "while_expression"]
 logical_operator_kinds = ["&&", "||"]
@@ -4939,6 +4946,7 @@ abstract_base_classes = ["Base", "Abstract"]
             plugin.visibility_patterns.get("internal"),
             Some(&vec!["pub(crate)".to_string()])
         );
+        assert_eq!(plugin.workspace_manifest_files, vec!["Cargo.toml"]);
         assert_eq!(plugin.parameter_node_kinds, vec!["parameter"]);
         assert_eq!(
             plugin.complexity_node_kinds,
@@ -4974,6 +4982,7 @@ extensions = ["min"]
         assert!(plugin.conditional_test_attributes.is_empty());
         assert!(!plugin.capture_import_aliases);
         assert!(plugin.visibility_patterns.is_empty());
+        assert!(plugin.workspace_manifest_files.is_empty());
         assert!(plugin.parameter_node_kinds.is_empty());
         assert!(plugin.complexity_node_kinds.is_empty());
         assert!(plugin.logical_operator_kinds.is_empty());

@@ -35,6 +35,7 @@ pub mod profile;
 pub mod scanner;
 pub mod simulate;
 pub mod sys;
+pub mod workspace;
 
 pub use baseline::{
     build_baseline, diff_baselines, BaselineDiff, BaselineModuleEdge, ModuleEdgeDelta,

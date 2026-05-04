@@ -2806,6 +2806,7 @@ fn config_schema() -> Value {
                                     "type": "object",
                                     "additionalProperties": {"type": "array", "items": {"type": "string"}}
                                 },
+                                "workspace_manifest_files": {"type": "array", "items": {"type": "string"}},
                                 "parameter_node_kinds": {"type": "array", "items": {"type": "string"}},
                                 "complexity_node_kinds": {"type": "array", "items": {"type": "string"}},
                                 "logical_operator_kinds": {"type": "array", "items": {"type": "string"}},

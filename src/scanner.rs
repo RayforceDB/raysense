@@ -78,6 +78,10 @@ pub fn scan_path_with_config(
             source,
         })?;
     let config = load_project_plugins(&root, config)?;
+    // Workspace discovery runs once per scan. The map is built eagerly
+    // so future slices can wire it into `crate::` resolution and
+    // cross-crate import classification without changing this seam.
+    let _workspace = crate::workspace::discover(&root, &config);
 
     let mut files = Vec::new();
     let mut functions = Vec::new();
@@ -806,6 +810,10 @@ fn apply_builtin_profile_defaults(plugin: &mut LanguagePluginConfig) {
     };
     plugin.capture_import_aliases = matches!(plugin.name.as_str(), "rust");
     plugin.visibility_patterns = builtin_visibility_patterns(plugin.name.as_str());
+    plugin.workspace_manifest_files = match plugin.name.as_str() {
+        "rust" => vec!["Cargo.toml".to_string()],
+        _ => Vec::new(),
+    };
 }
 
 /// Built-in `visibility_patterns` table for the languages whose modifiers
