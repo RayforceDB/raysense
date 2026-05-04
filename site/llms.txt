@@ -10,7 +10,7 @@ Raysense is built for AI-edited repositories. When agents commit dozens of chang
 - License: MIT
 - Author: Anton Kundenko
 - Source: https://github.com/RayforceDB/raysense
-- Languages: 45 supported (Rust, Python, TypeScript, C, C++ via tree-sitter; 40 more via configurable plugins)
+- Languages: 69 supported (11 tree-sitter built-ins with full AST analysis - Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, Ruby, C, Rust - plus Rayfall via native S-expression extraction; 57 more via configurable prefix-pattern plugins)
 - Claude Code plugin: `/plugin marketplace add RayforceDB/raysense`
 
 ## Six graded dimensions
@@ -38,13 +38,14 @@ raysense --mcp          # stdio MCP server for agents
 
 ## Agent integration
 
-Raysense ships as a Claude Code plugin. The plugin gives the agent five skills covering the edit loop:
+Raysense ships as a Claude Code plugin. The plugin gives the agent six skills covering the edit loop:
 
 1. Bootstrap. At session start: scan, save baseline, materialise scan results as splayed-table memory.
 2. Impact. Before non-trivial edits: blast radius, coupling, cycle exposure.
 3. Verify. After edits: rescan, rule check, baseline diff.
-4. Audit. On request: architecture, DSM, evolution signals, test gaps.
-5. Query. Anytime: ad-hoc Rayfall expressions over the saved baseline (filter, project, aggregate, graph algorithms, Datalog rules with transitive closure).
+4. Drift. Periodically (daily, weekly, pre-PR): compare the latest scan to the trend history across a configurable window (7d, 30d, 90d). Returns dimensions that worsened, files newly hot, and rules newly tripped.
+5. Audit. On request: architecture, DSM, evolution signals, test gaps.
+6. Query. Anytime: ad-hoc Rayfall expressions over the saved baseline (filter, project, aggregate, graph algorithms, Datalog rules with transitive closure).
 
 Project state lives in `<repo>/.raysense/`, never in a global registry. Two concurrent sessions on two different repos are strictly independent.
 
@@ -84,9 +85,11 @@ Long Rayfall queries (group-by aggregations, pivots) emit throttled progress lin
 
 The agent memory, baseline tables, and live dashboard storage are powered by Rayforce (https://github.com/RayforceDB/rayforce), an open-source in-memory analytics runtime optimised for graph-shaped queries. Linked statically. Nothing extra to install.
 
-## Optional links
+## Optional
 
 - Site: https://sense.rayforcedb.com/
 - Repository: https://github.com/RayforceDB/raysense
 - Crate: https://crates.io/crates/raysense
 - Sister project: https://github.com/RayforceDB/rayforce
+- About the maintainer: https://sense.rayforcedb.com/about/
+- Comparison vs alternatives: https://sense.rayforcedb.com/compare/

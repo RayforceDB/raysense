@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Raysense - architecture quality scored on every save</title>
-  <meta name="description" content="Raysense scores your repository's architecture on every save. Six structural dimensions, graded A through F, aggregated into a 0-to-100 number. Published to your CI, your dashboard, and your AI agent over MCP."/>
+  <meta name="description" content="Raysense scores codebase architecture on every save. Six dimensions graded A-F, one 0-to-100 number, published to CI, a live treemap, and AI agents over MCP."/>
   <meta name="theme-color" content="#0a0e13"/>
 
   <link rel="canonical" href="https://sense.rayforcedb.com/"/>
@@ -19,7 +19,10 @@
   <meta property="og:image:height" content="630"/>
   <meta property="og:image:alt" content="Raysense - a structural X-ray for the codebases AI agents are writing."/>
   <meta name="twitter:card" content="summary_large_image"/>
+  <meta name="twitter:title" content="Raysense - architecture quality scored on every save"/>
+  <meta name="twitter:description" content="A structural X-ray for the codebases AI agents are writing. Six dimensions, A-F grades, one 0-to-100 score, MCP-native."/>
   <meta name="twitter:image" content="https://sense.rayforcedb.com/assets/img/og-card.png"/>
+  <meta name="twitter:image:alt" content="Raysense treemap dashboard showing per-file architecture grades"/>
 
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg"/>
 
@@ -41,41 +44,171 @@
         "@type": "SoftwareApplication",
         "@id": "https://sense.rayforcedb.com/#software",
         "name": "Raysense",
+        "alternateName": "raysense",
         "url": "https://sense.rayforcedb.com/",
         "description": "Raysense scores a code repository's architecture across six structural dimensions, graded A through F and aggregated into a 0-to-100 number. CLI, CI gate, live treemap dashboard, and stdio MCP server for AI coding agents.",
+        "abstract": "A structural X-ray for the codebases AI agents are writing. Open-source Rust CLI plus stdio MCP server that scores architecture across modularity, acyclicity, depth, equality, redundancy, and uniformity, publishes the score to CI as a pass/fail gate, to a live treemap dashboard, and to AI coding agents over MCP before their next edit.",
         "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "StaticCodeAnalysis",
         "operatingSystem": "Linux, macOS, Windows",
+        "softwareVersion": "0.8.1",
+        "creativeWorkStatus": "Published",
+        "datePublished": "2026-04-30",
+        "dateModified": "2026-05-04",
+        "inLanguage": "en",
+        "isAccessibleForFree": true,
         "offers": {
           "@type": "Offer",
           "price": "0",
-          "priceCurrency": "USD"
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock"
         },
         "downloadUrl": "https://crates.io/crates/raysense",
         "installUrl": "https://crates.io/crates/raysense",
+        "softwareHelp": {
+          "@type": "CreativeWork",
+          "url": "https://github.com/RayforceDB/raysense#readme"
+        },
         "codeRepository": "https://github.com/RayforceDB/raysense",
         "license": "https://opensource.org/licenses/MIT",
         "programmingLanguage": "Rust",
-        "keywords": "codebase architecture, code quality, dependency graph, MCP, AI agents, Rust CLI, static analysis",
-        "author": {
-          "@type": "Person",
-          "name": "Anton Kundenko"
+        "runtimePlatform": "Rust 1.70+",
+        "keywords": "codebase architecture, code quality, dependency graph, MCP, AI agents, Rust CLI, static analysis, generative engine optimization, codebase health",
+        "image": "https://sense.rayforcedb.com/assets/img/og-card.png",
+        "screenshot": {
+          "@type": "ImageObject",
+          "url": "https://sense.rayforcedb.com/assets/img/treemap-mockup.svg",
+          "caption": "Raysense treemap dashboard showing per-file health and hotspots",
+          "encodingFormat": "image/svg+xml"
         },
-        "publisher": {
-          "@id": "https://sense.rayforcedb.com/#org"
-        }
+        "featureList": [
+          "Six-dimensional architecture grading (modularity, acyclicity, depth, equality, redundancy, uniformity)",
+          "Aggregate 0-to-100 architecture score on every save",
+          "Live treemap dashboard at http://localhost:7000",
+          "CI pass/fail gate via raysense --check",
+          "Stdio MCP server compatible with any Model Context Protocol client",
+          "Claude Code plugin with six edit-loop skills (bootstrap, impact, verify, drift, audit, query)",
+          "Baseline save and what-if simulation before touching the working tree",
+          "Splayed-table agent memory backed by Rayforce columnar storage",
+          "Edit-risk score per file combining churn, complexity, bus-factor, and missing-tests",
+          "Score drift per session with per-dimension breakdown",
+          "Bug-density per file from Conventional Commits classification",
+          "Test gap detection ranked by structural risk",
+          "Evolution signals: bus factor, change-coupling pairs, temporal hotspots, file age, bug-fix concentration",
+          "Rayfall query language over the saved baseline (select, .graph.* algorithms, Datalog)",
+          "Architectural rules as code under .raysense/policies/*.rfl",
+          "Bring-your-own-data CSV import that joins the baseline (coverage, lint counts, embeddings)",
+          "Vector primitives in Rayfall: cos-dist, l2-dist, knn, hnsw-build, ann",
+          "69 languages out of the box across three analysis tiers"
+        ],
+        "audience": {
+          "@type": "Audience",
+          "audienceType": "Software developers and AI coding agents"
+        },
+        "author": { "@id": "https://sense.rayforcedb.com/#person-anton" },
+        "maintainer": { "@id": "https://sense.rayforcedb.com/#person-anton" },
+        "publisher": { "@id": "https://sense.rayforcedb.com/#org" },
+        "isBasedOn": { "@id": "https://sense.rayforcedb.com/#sourcecode" },
+        "sameAs": [
+          "https://github.com/RayforceDB/raysense",
+          "https://crates.io/crates/raysense"
+        ]
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "@id": "https://sense.rayforcedb.com/#sourcecode",
+        "name": "Raysense source code",
+        "description": "Rust source for the Raysense CLI, library, and stdio MCP server.",
+        "codeRepository": "https://github.com/RayforceDB/raysense",
+        "url": "https://github.com/RayforceDB/raysense",
+        "programmingLanguage": {
+          "@type": "ComputerLanguage",
+          "name": "Rust"
+        },
+        "runtimePlatform": "Rust 1.70+",
+        "license": "https://opensource.org/licenses/MIT",
+        "codeSampleType": "full",
+        "targetProduct": { "@id": "https://sense.rayforcedb.com/#software" },
+        "author": { "@id": "https://sense.rayforcedb.com/#person-anton" },
+        "maintainer": { "@id": "https://sense.rayforcedb.com/#person-anton" },
+        "publisher": { "@id": "https://sense.rayforcedb.com/#org" }
+      },
+      {
+        "@type": "Person",
+        "@id": "https://sense.rayforcedb.com/#person-anton",
+        "name": "Anton Kundenko",
+        "url": "https://sense.rayforcedb.com/about/",
+        "image": "https://avatars.githubusercontent.com/RayforceDB",
+        "jobTitle": "Founder",
+        "affiliation": { "@id": "https://sense.rayforcedb.com/#org" },
+        "worksFor": { "@id": "https://sense.rayforcedb.com/#org" },
+        "knowsAbout": [
+          "Software architecture",
+          "Static code analysis",
+          "Dependency graph analytics",
+          "Columnar databases",
+          "Model Context Protocol",
+          "AI coding agents",
+          "Rust"
+        ],
+        "sameAs": [
+          "https://github.com/RayforceDB"
+        ]
       },
       {
         "@type": "Organization",
         "@id": "https://sense.rayforcedb.com/#org",
         "name": "RayforceDB",
         "url": "https://github.com/RayforceDB",
-        "sameAs": ["https://github.com/RayforceDB"]
+        "logo": "https://sense.rayforcedb.com/assets/img/rayforce-logo-light.svg",
+        "founder": { "@id": "https://sense.rayforcedb.com/#person-anton" },
+        "sameAs": [
+          "https://github.com/RayforceDB",
+          "https://crates.io/crates/raysense"
+        ]
+      },
+      {
+        "@type": "WebSite",
+        "@id": "https://sense.rayforcedb.com/#website",
+        "url": "https://sense.rayforcedb.com/",
+        "name": "Raysense",
+        "description": "A structural X-ray for the codebases AI agents are writing.",
+        "inLanguage": "en",
+        "publisher": { "@id": "https://sense.rayforcedb.com/#org" },
+        "about": { "@id": "https://sense.rayforcedb.com/#software" },
+        "mainEntity": { "@id": "https://sense.rayforcedb.com/#software" }
       }
     ]
   }
   </script>
 </head>
 <body>
+
+<!-- Icon sprite. Font Awesome 6 Free, CC BY 4.0. https://fontawesome.com/license/free -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-rocket" viewBox="0 0 512 512"><path d="M156.6 384.9L125.7 354c-8.5-8.5-11.5-20.8-7.7-32.2c3-8.9 7-20.5 11.8-33.8H24c-8.6 0-16.6-4.6-20.9-12.1s-4.2-16.7.2-24.1l52.5-88.5c13-21.9 36.5-35.3 61.9-35.3H200c2.4-4 4.8-7.7 7.2-11.3C289.1-4.1 411.1-8.1 483.9 5.3c11.6 2.1 20.6 11.2 22.8 22.8c13.4 72.9 9.3 194.8-111.4 276.7c-3.5 2.4-7.3 4.8-11.3 7.2v82.3c0 25.4-13.4 49-35.3 61.9l-88.5 52.5c-7.4 4.4-16.6 4.5-24.1.2S224 496.7 224 488V380.8c-14.1 4.9-26.4 8.9-35.7 11.9c-11.2 3.6-23.4.5-31.8-7.8zM384 168a40 40 0 1 0 0-80a40 40 0 1 0 0 80"/></symbol>
+  <symbol id="i-bullseye" viewBox="0 0 512 512"><path d="M448 256a192 192 0 1 0-384 0a192 192 0 1 0 384 0M0 256a256 256 0 1 1 512 0a256 256 0 1 1-512 0m256 80a80 80 0 1 0 0-160a80 80 0 1 0 0 160m0-224a144 144 0 1 1 0 288a144 144 0 1 1 0-288m-32 144a32 32 0 1 1 64 0a32 32 0 1 1-64 0"/></symbol>
+  <symbol id="i-circle-check" viewBox="0 0 512 512"><path d="M256 512a256 256 0 1 0 0-512a256 256 0 1 0 0 512m113-303L241 337c-9.4 9.4-24.6 9.4-33.9 0l-64-64c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l47 47L335 175c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9z"/></symbol>
+  <symbol id="i-wind" viewBox="0 0 512 512"><path d="M288 32c0 17.7 14.3 32 32 32h32c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32 14.3-32 32s14.3 32 32 32h320c53 0 96-43 96-96S405 0 352 0h-32c-17.7 0-32 14.3-32 32m64 352c0 17.7 14.3 32 32 32h32c53 0 96-43 96-96s-43-96-96-96H32c-17.7 0-32 14.3-32 32s14.3 32 32 32h384c17.7 0 32 14.3 32 32s-14.3 32-32 32h-32c-17.7 0-32 14.3-32 32M128 512h32c53 0 96-43 96-96s-43-96-96-96H32c-17.7 0-32 14.3-32 32s14.3 32 32 32h128c17.7 0 32 14.3 32 32s-14.3 32-32 32h-32c-17.7 0-32 14.3-32 32s14.3 32 32 32"/></symbol>
+  <symbol id="i-magnifying-glass-chart" viewBox="0 0 512 512"><path d="M416 208c0 45.9-14.9 88.3-40 122.7l126.6 126.7c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0s208 93.1 208 208m-312 8v64c0 13.3 10.7 24 24 24s24-10.7 24-24v-64c0-13.3-10.7-24-24-24s-24 10.7-24 24m80-96v160c0 13.3 10.7 24 24 24s24-10.7 24-24V120c0-13.3-10.7-24-24-24s-24 10.7-24 24m80 64v96c0 13.3 10.7 24 24 24s24-10.7 24-24v-96c0-13.3-10.7-24-24-24s-24 10.7-24 24"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 576 512"><path d="M9.4 86.6c-12.5-12.5-12.5-32.7 0-45.2s32.8-12.5 45.3 0l192 192c12.5 12.5 12.5 32.8 0 45.3l-192 192c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L178.7 256zM256 416h288c17.7 0 32 14.3 32 32s-14.3 32-32 32H256c-17.7 0-32-14.3-32-32s14.3-32 32-32"/></symbol>
+  <symbol id="i-file-shield" viewBox="0 0 576 512"><path d="M0 64C0 28.7 28.7 0 64 0h160v128c0 17.7 14.3 32 32 32h128v47l-92.8 37.1c-21.3 8.5-35.2 29.1-35.2 52c0 56.6 18.9 148 94.2 208.3c-9 4.8-19.3 7.6-30.2 7.6H64c-35.3 0-64-28.7-64-64zm384 64H256V0zm39.1 97.7c5.7-2.3 12.1-2.3 17.8 0l120 48c9.1 3.7 15.1 12.5 15.1 22.3c0 63.3-25.9 168.8-134.8 214.2c-5.9 2.5-12.6 2.5-18.5 0C313.9 464.8 288 359.3 288 296c0-9.8 6-18.6 15.1-22.3zM527.4 312L432 273.8v187.8c68.2-33 91.5-99 95.4-149.7z"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 512 512"><path d="M403.8 34.4c12-5 25.7-2.2 34.9 6.9l64 64c6 6 9.4 14.1 9.4 22.6s-3.4 16.6-9.4 22.6l-64 64c-9.2 9.2-22.9 11.9-34.9 6.9S384 204.8 384 191.8v-32h-32c-10.1 0-19.6 4.7-25.6 12.8L284 229.3L244 176l31.2-41.6C293.3 110.2 321.8 96 352 96h32V64c0-12.9 7.8-24.6 19.8-29.6M164 282.7l40 53.3l-31.2 41.6C154.7 401.8 126.2 416 96 416H32c-17.7 0-32-14.3-32-32s14.3-32 32-32h64c10.1 0 19.6-4.7 25.6-12.8zm274.6 188c-9.2 9.2-22.9 11.9-34.9 6.9S383.9 461 383.9 448v-32h-32c-30.2 0-58.7-14.2-76.8-38.4L121.6 172.8c-6-8.1-15.5-12.8-25.6-12.8H32c-17.7 0-32-14.3-32-32s14.3-32 32-32h64c30.2 0 58.7 14.2 76.8 38.4l153.6 204.8c6 8.1 15.5 12.8 25.6 12.8h32v-32c0-12.9 7.8-24.6 19.8-29.6s25.7-2.2 34.9 6.9l64 64c6 6 9.4 14.1 9.4 22.6s-3.4 16.6-9.4 22.6l-64 64z"/></symbol>
+  <symbol id="i-clock-rotate-left" viewBox="0 0 512 512"><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24h110.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75m181 53c-13.3 0-24 10.7-24 24v104c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></symbol>
+  <symbol id="i-table" viewBox="0 0 512 512"><path d="M64 256v-96h160v96zm0 64h160v96H64zm224 96v-96h160v96zm160-160H288v-96h160zM64 32C28.7 32 0 60.7 0 96v320c0 35.3 28.7 64 64 64h384c35.3 0 64-28.7 64-64V96c0-35.3-28.7-64-64-64z"/></symbol>
+  <symbol id="i-network-wired" viewBox="0 0 640 512"><path d="M256 64h128v64H256zM240 0c-26.5 0-48 21.5-48 48v96c0 26.5 21.5 48 48 48h48v32H32c-17.7 0-32 14.3-32 32s14.3 32 32 32h96v32H80c-26.5 0-48 21.5-48 48v96c0 26.5 21.5 48 48 48h160c26.5 0 48-21.5 48-48v-96c0-26.5-21.5-48-48-48h-48v-32h256v32h-48c-26.5 0-48 21.5-48 48v96c0 26.5 21.5 48 48 48h160c26.5 0 48-21.5 48-48v-96c0-26.5-21.5-48-48-48h-48v-32h96c17.7 0 32-14.3 32-32s-14.3-32-32-32H352v-32h48c26.5 0 48-21.5 48-48V48c0-26.5-21.5-48-48-48zM96 448v-64h128v64zm320-64h128v64H416z"/></symbol>
+  <symbol id="i-diagram-project" viewBox="0 0 576 512"><path d="M0 80c0-26.5 21.5-48 48-48h96c26.5 0 48 21.5 48 48v16h192V80c0-26.5 21.5-48 48-48h96c26.5 0 48 21.5 48 48v96c0 26.5-21.5 48-48 48h-96c-26.5 0-48-21.5-48-48v-16H192v16c0 1.7-.1 3.4-.3 5L272 288h96c26.5 0 48 21.5 48 48v96c0 26.5-21.5 48-48 48h-96c-26.5 0-48-21.5-48-48v-96c0-1.7.1-3.4.3-5L144 224H48c-26.5 0-48-21.5-48-48z"/></symbol>
+  <symbol id="i-wave-square" viewBox="0 0 640 512"><path d="M128 64c0-17.7 14.3-32 32-32h160c17.7 0 32 14.3 32 32v352h96V256c0-17.7 14.3-32 32-32h128c17.7 0 32 14.3 32 32s-14.3 32-32 32h-96v160c0 17.7-14.3 32-32 32H320c-17.7 0-32-14.3-32-32V96h-96v160c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32h96z"/></symbol>
+  <symbol id="i-table-cells" viewBox="0 0 512 512"><path d="M64 32C28.7 32 0 60.7 0 96v320c0 35.3 28.7 64 64 64h384c35.3 0 64-28.7 64-64V96c0-35.3-28.7-64-64-64zm88 64v64H64V96zm56 0h88v64h-88zm240 0v64h-88V96zM64 224h88v64H64zm232 0v64h-88v-64zm64 0h88v64h-88zM152 352v64H64v-64zm56 0h88v64h-88zm240 0v64h-88v-64z"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 448 512"><path d="M64 32C64 14.3 49.7 0 32 0S0 14.3 0 32v448c0 17.7 14.3 32 32 32s32-14.3 32-32V352l64.3-16.1c41.1-10.3 84.6-5.5 122.5 13.4c44.2 22.1 95.5 24.8 141.7 7.4l34.7-13c12.5-4.7 20.8-16.6 20.8-30V66c0-23-24.2-38-44.8-27.7l-9.6 4.8c-46.3 23.2-100.8 23.2-147.1 0c-35.1-17.6-75.4-22-113.5-12.5L64 48z"/></symbol>
+  <symbol id="i-database" viewBox="0 0 448 512"><path d="M448 80v48c0 44.2-100.3 80-224 80S0 172.2 0 128V80C0 35.8 100.3 0 224 0s224 35.8 224 80m-54.8 134.7c20.8-7.4 39.9-16.9 54.8-28.6V288c0 44.2-100.3 80-224 80S0 332.2 0 288V186.1c14.9 11.8 34 21.2 54.8 28.6C99.7 230.7 159.5 240 224 240s124.3-9.3 169.2-25.3M0 346.1c14.9 11.8 34 21.2 54.8 28.6C99.7 390.7 159.5 400 224 400s124.3-9.3 169.2-25.3c20.8-7.4 39.9-16.9 54.8-28.6V432c0 44.2-100.3 80-224 80S0 476.2 0 432z"/></symbol>
+  <symbol id="i-fire" viewBox="0 0 448 512"><path d="M159.3 5.4c7.8-7.3 19.9-7.2 27.7.1c27.6 25.9 53.5 53.8 77.7 84c11-14.4 23.5-30.1 37-42.9c7.9-7.4 20.1-7.4 28 .1c34.6 33 63.9 76.6 84.5 118c20.3 40.8 33.8 82.5 33.8 111.9C448 404.2 348.2 512 224 512C98.4 512 0 404.1 0 276.5c0-38.4 17.8-85.3 45.4-131.7C73.3 97.7 112.7 48.6 159.3 5.4M225.7 416c25.3 0 47.7-7 68.8-21c42.1-29.4 53.4-88.2 28.1-134.4c-4.5-9-16-9.6-22.5-2l-25.2 29.3c-6.6 7.6-18.5 7.4-24.7-.5c-16.5-21-46-58.5-62.8-79.8c-6.3-8-18.3-8.1-24.7-.1c-33.8 42.5-50.8 69.3-50.8 99.4c.1 68.5 50.7 109.1 113.8 109.1"/></symbol>
+  <symbol id="i-chart-line" viewBox="0 0 512 512"><path d="M64 64c0-17.7-14.3-32-32-32S0 46.3 0 64v336c0 44.2 35.8 80 80 80h400c17.7 0 32-14.3 32-32s-14.3-32-32-32H80c-8.8 0-16-7.2-16-16zm406.6 86.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L320 210.7l-57.4-57.4c-12.5-12.5-32.8-12.5-45.3 0l-112 112c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0l89.4-89.3l57.4 57.4c12.5 12.5 32.8 12.5 45.3 0l128-128z"/></symbol>
+  <symbol id="i-bug" viewBox="0 0 512 512"><path d="M256 0c53 0 96 43 96 96v3.6c0 15.7-12.7 28.4-28.4 28.4H188.5c-15.7 0-28.4-12.7-28.4-28.4V96c0-53 43-96 96-96zM41.4 105.4c12.5-12.5 32.8-12.5 45.3 0l64 64c.7.7 1.3 1.4 1.9 2.1c14.2-7.3 30.4-11.4 47.5-11.4h112c17.1 0 33.2 4.1 47.5 11.4c.6-.7 1.2-1.4 1.9-2.1l64-64c12.5-12.5 32.8-12.5 45.3 0s12.5 32.8 0 45.3l-64 64c-.7.7-1.4 1.3-2.1 1.9c6.2 12 10.1 25.3 11.1 39.5h64.3c17.7 0 32 14.3 32 32s-14.3 32-32 32h-64c0 24.6-5.5 47.8-15.4 68.6q3.3 1.95 6 4.8l64 64c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0l-63.1-63.1c-24.5 21.8-55.8 36.2-90.3 39.6V240c0-8.8-7.2-16-16-16s-16 7.2-16 16v239.2c-34.5-3.4-65.8-17.8-90.3-39.6l-63.1 63c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3l64-64c1.9-1.9 3.9-3.4 6-4.8C101.5 367.8 96 344.6 96 320H32c-17.7 0-32-14.3-32-32s14.3-32 32-32h64.3c1.1-14.1 5-27.5 11.1-39.5c-.7-.6-1.4-1.2-2.1-1.9l-64-64c-12.5-12.5-12.5-32.8 0-45.3z"/></symbol>
+  <symbol id="i-vial" viewBox="0 0 512 512"><path d="M342.6 9.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l9.4 9.4L28.1 342.6C10.1 360.6 0 385 0 410.5v5.5c0 53 43 96 96 96h5.5c25.5 0 49.9-10.1 67.9-28.1L448 205.3l9.4 9.4c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3l-32-32l-96-96l-32-32zM205.3 256L352 109.3l50.7 50.7l-96 96H205.2z"/></symbol>
+  <symbol id="i-timeline" viewBox="0 0 640 512"><path d="M128 72a24 24 0 1 1 0 48a24 24 0 1 1 0-48m32 97.3c28.3-12.3 48-40.5 48-73.3c0-44.2-35.8-80-80-80S48 51.8 48 96c0 32.8 19.7 61 48 73.3V224H32c-17.7 0-32 14.3-32 32s14.3 32 32 32h256v54.7c-28.3 12.3-48 40.5-48 73.3c0 44.2 35.8 80 80 80s80-35.8 80-80c0-32.8-19.7-61-48-73.3V288h256c17.7 0 32-14.3 32-32s-14.3-32-32-32h-64v-54.7c28.3-12.3 48-40.5 48-73.3c0-44.2-35.8-80-80-80s-80 35.8-80 80c0 32.8 19.7 61 48 73.3V224H160zM488 96a24 24 0 1 1 48 0a24 24 0 1 1-48 0M320 392a24 24 0 1 1 0 48a24 24 0 1 1 0-48"/></symbol>
+  <symbol id="i-language" viewBox="0 0 640 512"><path d="M0 128c0-35.3 28.7-64 64-64h512c35.3 0 64 28.7 64 64v256c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64zm320 0v256h256V128zm-141.7 47.9c-3.2-7.2-10.4-11.9-18.3-11.9s-15.1 4.7-18.3 11.9l-64 144c-4.5 10.1.1 21.9 10.2 26.4s21.9-.1 26.4-10.2l8.9-20.1h73.6l8.9 20.1c4.5 10.1 16.3 14.6 26.4 10.2s14.6-16.3 10.2-26.4zM160 233.2l19 42.8h-38zM448 164c11 0 20 9 20 20v4h60c11 0 20 9 20 20s-9 20-20 20h-2l-1.6 4.5c-8.9 24.4-22.4 46.6-39.6 65.4c.9.6 1.8 1.1 2.7 1.6l18.9 11.3c9.5 5.7 12.5 18 6.9 27.4s-18 12.5-27.4 6.9L467 333.8c-4.5-2.7-8.8-5.5-13.1-8.5c-10.6 7.5-21.9 14-34 19.4l-3.6 1.6c-10.1 4.5-21.9-.1-26.4-10.2s.1-21.9 10.2-26.4l3.6-1.6c6.4-2.9 12.6-6.1 18.5-9.8L410 286.1c-7.8-7.8-7.8-20.5 0-28.3s20.5-7.8 28.3 0l14.6 14.6l.5.5c12.4-13.1 22.5-28.3 29.8-45l-35.2.1h-72c-11 0-20-9-20-20s9-20 20-20h52v-4c0-11 9-20 20-20"/></symbol>
+</svg>
 
 <nav class="nav">
   <div class="container nav-inner">
@@ -96,6 +229,7 @@
       <a href="#install">Install</a>
       <a href="#agents">Agents</a>
       <a href="#languages">Languages</a>
+      <a href="#faq">FAQ</a>
       <a class="nav-link-strong" href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
     </div>
   </div>
@@ -109,7 +243,7 @@
   <div class="container">
     <div class="hero-grid-2">
       <div class="hero-content">
-        <div class="eyebrow">LIVE &middot; LOCAL &middot; AGENT-READY</div>
+        <div class="eyebrow">OPEN SOURCE &middot; MIT &middot; v0.8.1</div>
         <h1>A structural <span class="highlight">X-ray</span> for the codebases AI agents are writing.</h1>
         <p class="lead">
           A diff doesn't tell you whether your codebase is getting better-shaped or worse-shaped. With AI agents committing dozens of edits an hour, that gap is too big to bridge by reading review threads. Raysense scores the shape directly: six structural dimensions, graded A through F, aggregated into a single 0-to-100 number. The score is published to your CI as a pass/fail gate, to a live treemap in your browser, and to the agent itself over MCP, before its next edit.
@@ -238,7 +372,7 @@
     <div class="section-eyebrow">AGENT INTEGRATION</div>
     <h2>MCP server for any AI coding agent.</h2>
     <p class="section-lead">
-      Raysense ships as a Claude Code plugin and as a stdio MCP server compatible with any client that speaks the Model Context Protocol. Install the plugin and the agent gets five skills covering the edit loop: scan and baseline at session start, blast radius before edits, regression diff after, audits on demand, and a Rayfall query skill for any question the typed tools do not already answer. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
+      Raysense ships as a Claude Code plugin and as a stdio MCP server compatible with any client that speaks the Model Context Protocol. Install the plugin and the agent gets six skills covering the edit loop: scan and baseline at session start, blast radius before edits, regression diff after, drift across a time window, full audits on demand, and a Rayfall query skill for any question the typed tools do not already answer. Project state lives in <code>&lt;repo&gt;/.raysense/</code>, never in a global registry, so two sessions on two repositories stay strictly independent.
     </p>
 
     <div class="code-block code-block-wide">
@@ -256,29 +390,52 @@
 
     <div class="phase-grid">
       <div class="phase-card">
-        <div class="phase-step">1</div>
+        <div class="phase-card-head">
+          <svg class="card-icon" aria-hidden="true"><use href="#i-rocket"/></svg>
+          <span class="phase-step">1</span>
+        </div>
         <h3>Bootstrap</h3>
-        <p>At session start. Scan, save baseline, materialize the splayed-table memory.</p>
+        <p>At session start, raysense scans the working tree, saves a baseline under <code>.raysense/baseline/</code>, and materializes the splayed-table memory the agent will read for the rest of the session. The first scan is the slow one. Every follow-up question is an instant columnar read against the saved tables, not a re-walk of the source.</p>
       </div>
       <div class="phase-card">
-        <div class="phase-step">2</div>
+        <div class="phase-card-head">
+          <svg class="card-icon" aria-hidden="true"><use href="#i-bullseye"/></svg>
+          <span class="phase-step">2</span>
+        </div>
         <h3>Impact</h3>
-        <p>Before non-trivial edits. Blast radius, coupling, cycle exposure.</p>
+        <p>Before non-trivial edits, the agent calls <code>raysense_blast_radius</code> on the file in play. The reply lists every file that imports it transitively, the cycles it sits on, and the change-coupling neighbors that historically move with it. The agent sees the structural footprint before it touches the working tree, not after the regression lands in CI.</p>
       </div>
       <div class="phase-card">
-        <div class="phase-step">3</div>
+        <div class="phase-card-head">
+          <svg class="card-icon" aria-hidden="true"><use href="#i-circle-check"/></svg>
+          <span class="phase-step">3</span>
+        </div>
         <h3>Verify</h3>
-        <p>After edits. Rescan, rule check, baseline diff.</p>
+        <p>After a batch of edits, verify rescans and runs the same rule set as the CI gate against the new state. It diffs the score, the dimension grades, and the rule findings against the bootstrap baseline. If a previously-clean dimension regressed (Equality went B to D), it surfaces immediately, named by file, before the agent moves on.</p>
       </div>
       <div class="phase-card">
-        <div class="phase-step">4</div>
+        <div class="phase-card-head">
+          <svg class="card-icon" aria-hidden="true"><use href="#i-wind"/></svg>
+          <span class="phase-step">4</span>
+        </div>
+        <h3>Drift</h3>
+        <p>Periodically (daily, weekly, or pre-PR), drift compares the latest scan to the trend history across a configurable window (7d, 30d, 90d). It returns three lists: dimensions whose grades worsened, files newly entered the top hotspots, and rule codes that newly tripped. Answers "what got worse since N days ago", a question neither verify (single session) nor audit (no time axis) covers alone.</p>
+      </div>
+      <div class="phase-card">
+        <div class="phase-card-head">
+          <svg class="card-icon" aria-hidden="true"><use href="#i-magnifying-glass-chart"/></svg>
+          <span class="phase-step">5</span>
+        </div>
         <h3>Audit</h3>
-        <p>On request. Architecture, DSM, evolution, test gaps.</p>
+        <p>On request, audit returns the deeper views: full architecture report, dependency-structure matrix (DSM), evolution signals (bus factor, change-coupling pairs, temporal hotspots), test-gap ranking, dead-code detection, and cycle-break recommendations. The same data the dashboard renders, served as JSON the agent can read and quote.</p>
       </div>
       <div class="phase-card">
-        <div class="phase-step">5</div>
+        <div class="phase-card-head">
+          <svg class="card-icon" aria-hidden="true"><use href="#i-terminal"/></svg>
+          <span class="phase-step">6</span>
+        </div>
         <h3>Query</h3>
-        <p>Anytime. Custom Rayfall slices over the saved baseline.</p>
+        <p>Any structural question the typed tools do not directly answer becomes a Rayfall expression over the saved baseline. Filter, project, aggregate, run <code>.graph.*</code> algorithms (PageRank, betweenness, shortest-path), or write a Datalog rule for declarative reachability. The agent gets the same query surface a human operator has, no new vocabulary to learn.</p>
       </div>
     </div>
   </div>
@@ -306,18 +463,22 @@
 
     <div class="feature-grid">
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-terminal"/></svg>
         <h3>Ad-hoc Rayfall queries</h3>
         <p>Agents call <code>raysense_baseline_query</code> with a Rayfall expression. The named baseline table is bound as <code>t</code> and the result returns as JSON. Three modes: select for filter/project/aggregate, <code>.graph.*</code> for centrality and shortest-path, Datalog for transitive reachability that mirrors blast-radius in two lines.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-file-shield"/></svg>
         <h3>Pinned policies</h3>
         <p><code>raysense policy check</code> walks <code>.raysense/policies/*.rfl</code>, evaluates each, returns findings in the same envelope as built-in rules. Exit code 0 for pass, 1 for any policy that failed to evaluate, 2 for any error-severity finding. Wire it into a pre-commit hook or a CI gate without touching raysense's release cadence.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-shuffle"/></svg>
         <h3>One vocabulary, two surfaces</h3>
         <p>An <code>.rfl</code> policy and an interactive query reference the same baseline tables - <code>files</code>, <code>module_edges</code>, <code>change_coupling</code>, <code>file_ownership</code>, <code>call_edges</code> - because there is only one substrate. Promote a one-off query into a committed rule by renaming the file.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-clock-rotate-left"/></svg>
         <h3>Composable across history</h3>
         <p>The baseline already carries change-coupling, file-ages, ownership, and rule-violation tables alongside the structural ones. Cross-time queries like "files tightly coupled in the last 60 days that sit on cycles and changed without test edits" stay one Rayfall expression, not three tools.</p>
       </div>
@@ -348,18 +509,22 @@
 
     <div class="feature-grid">
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-table"/></svg>
         <h3>External signals as tables</h3>
         <p>Coverage, lint counts, error budgets, runtime traces, ownership-from-elsewhere - any CSV becomes addressable from <code>baseline query</code>, <code>policy check</code>, and the MCP tools.  Subsequent re-imports overwrite cleanly; the schema-version stamp keeps stale baselines from silently mis-rendering.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-network-wired"/></svg>
         <h3>Vector search as policy</h3>
         <p>Pair CSV import with embeddings: <code>cos-dist</code> for direct similarity, <code>knn</code> for brute-force scans on small sets, <code>hnsw-build</code> + <code>ann</code> for sub-linear queries on &gt;10k vectors.  An <code>.rfl</code> policy that flags near-duplicate functions is six lines.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-diagram-project"/></svg>
         <h3>One sym table, one schema</h3>
         <p>Imported tables share the baseline's interned-string space, so <code>path</code> in <code>coverage</code> and <code>path</code> in <code>files</code> point to the same sym ID.  Joins are predicate equality, not ETL plumbing - and the schema-version stamp catches imports against an out-of-date baseline directory.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-wave-square"/></svg>
         <h3>Live progress on stderr</h3>
         <p>Long Rayfall queries print throttled progress lines to stderr - <code>op_name</code>, <code>phase</code>, <code>rows_done / rows_total</code>, elapsed seconds, memory used.  JSON callers stay byte-clean; humans on a TTY get the live signal.  Quick queries (under 200ms) stay silent by design.</p>
       </div>
@@ -370,42 +535,51 @@
 <section class="section">
   <div class="container">
     <div class="section-eyebrow">CAPABILITIES</div>
-    <h2>Beyond the score.</h2>
+    <h2>Edit-risk, drift, bug density - one number per file.</h2>
 
     <div class="feature-grid">
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-table-cells"/></svg>
         <h3>Live treemap dashboard</h3>
-        <p>Every file, every metric, every cycle. Open in your browser while you work, refreshes on save.</p>
+        <p>A treemap of the working tree color-graded A through F, served at <code>http://localhost:7000</code> while you work. Tiles are sized by file weight and tinted by structural grade; click a tile for the per-file metrics that drove the color. Refreshes within the watch interval of the next save.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-flag"/></svg>
         <h3>Baselines and what-if</h3>
         <p>Diff against a saved snapshot. Simulate an edit (delete a file, break a cycle) before touching the working tree.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-database"/></svg>
         <h3>Splayed-table agent memory</h3>
         <p>Scan results materialized as columnar tables. An agent's follow-up questions are instant reads, not re-scans.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-fire"/></svg>
         <h3>Edit-risk per file</h3>
         <p>One number per file ranking which the next agent edit is most likely to break. Combines churn, max complexity, single-owner penalty, and missing-tests penalty into a composite score updated on every save.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-chart-line"/></svg>
         <h3>Score drift per session</h3>
         <p>Every baseline save appends a sample. The verify step diffs against the previous one and surfaces per-dimension drift (Equality went B to D after the last session) instead of just an aggregate delta.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-bug"/></svg>
         <h3>Bug-density per file</h3>
         <p>Files where most of the churn is fix commits surface immediately. Conventional Commits prefixes (fix, hotfix, revert) drive the classifier; absolute count and ratio against total commits both feed the ranking.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-vial"/></svg>
         <h3>Test gap detection</h3>
         <p>Files without nearby tests, ranked by structural risk. Feeds directly into the edit-risk score so untested files in churn-heavy areas float to the top.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-timeline"/></svg>
         <h3>Evolution signal</h3>
         <p>Bus factor per file, change-coupling pairs, temporal hotspots (churn x complexity), file age windows, and bug-fix concentration. Six lenses on how the codebase has actually moved over the last 500 commits.</p>
       </div>
       <div class="feature-card">
+        <svg class="card-icon" aria-hidden="true"><use href="#i-language"/></svg>
         <h3>69 languages out of the box</h3>
         <p>Eleven tree-sitter built-ins with full AST analysis, Rayfall with native S-expression extraction, plus 57 configurable plugins covering everything from Solidity to COBOL. <a href="#languages">See the coverage map &rarr;</a></p>
       </div>
@@ -428,75 +602,75 @@
     </div>
 
     <div class="lang-grid">
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/mdi/chip.svg" onerror="this.remove()"><span class="lang-name">Assembly</span></div>
-      <div class="lang-cell lang-tier-2"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/c/c-original.svg" onerror="this.remove()"><span class="lang-name">C</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/csharp/csharp-plain.svg" onerror="this.remove()"><span class="lang-name">C#</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/cplusplus/cplusplus-plain.svg" onerror="this.remove()"><span class="lang-name">C++</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/clojure/clojure-line.svg" onerror="this.remove()"><span class="lang-name">Clojure</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/cmake/cmake-plain.svg" onerror="this.remove()"><span class="lang-name">CMake</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/cobol/cobol-original.svg" onerror="this.remove()"><span class="lang-name">COBOL</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/coffeescript/coffeescript-original.svg" onerror="this.remove()"><span class="lang-name">CoffeeScript</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/crystal/crystal-original.svg" onerror="this.remove()"><span class="lang-name">Crystal</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/css3/css3-plain.svg" onerror="this.remove()"><span class="lang-name">CSS</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/simple-icons/d.svg" onerror="this.remove()"><span class="lang-name">D</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/dart/dart-plain.svg" onerror="this.remove()"><span class="lang-name">Dart</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/docker/docker-plain.svg" onerror="this.remove()"><span class="lang-name">Dockerfile</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/elixir/elixir-plain.svg" onerror="this.remove()"><span class="lang-name">Elixir</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/elm/elm-plain.svg" onerror="this.remove()"><span class="lang-name">Elm</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/erlang/erlang-plain.svg" onerror="this.remove()"><span class="lang-name">Erlang</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/fsharp/fsharp-plain.svg" onerror="this.remove()"><span class="lang-name">F#</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/fortran/fortran-original.svg" onerror="this.remove()"><span class="lang-name">Fortran</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/godot/godot-plain.svg" onerror="this.remove()"><span class="lang-name">GDScript</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/opengl/opengl-plain.svg" onerror="this.remove()"><span class="lang-name">GLSL</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/go/go-original-wordmark.svg" onerror="this.remove()"><span class="lang-name">Go</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/gradle/gradle-original.svg" onerror="this.remove()"><span class="lang-name">Gradle</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/graphql/graphql-plain.svg" onerror="this.remove()"><span class="lang-name">GraphQL</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/groovy/groovy-plain.svg" onerror="this.remove()"><span class="lang-name">Groovy</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/haskell/haskell-plain.svg" onerror="this.remove()"><span class="lang-name">Haskell</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/terraform/terraform-plain.svg" onerror="this.remove()"><span class="lang-name">HCL</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/html5/html5-plain.svg" onerror="this.remove()"><span class="lang-name">HTML</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/java/java-plain.svg" onerror="this.remove()"><span class="lang-name">Java</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/json/json-plain.svg" onerror="this.remove()"><span class="lang-name">JSON</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/file-icons/jsonnet.svg" onerror="this.remove()"><span class="lang-name">Jsonnet</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/julia/julia-plain.svg" onerror="this.remove()"><span class="lang-name">Julia</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/kotlin/kotlin-plain.svg" onerror="this.remove()"><span class="lang-name">Kotlin</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/file-icons/lisp.svg" onerror="this.remove()"><span class="lang-name">Lisp</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/lua/lua-plain.svg" onerror="this.remove()"><span class="lang-name">Lua</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/simple-icons/gnu.svg" onerror="this.remove()"><span class="lang-name">Make</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/markdown/markdown-original.svg" onerror="this.remove()"><span class="lang-name">Markdown</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/matlab/matlab-plain.svg" onerror="this.remove()"><span class="lang-name">MATLAB</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/nim/nim-plain.svg" onerror="this.remove()"><span class="lang-name">Nim</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/objectivec/objectivec-plain.svg" onerror="this.remove()"><span class="lang-name">Objective-C</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/ocaml/ocaml-plain.svg" onerror="this.remove()"><span class="lang-name">OCaml</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/file-icons/pascal.svg" onerror="this.remove()"><span class="lang-name">Pascal</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/perl/perl-plain.svg" onerror="this.remove()"><span class="lang-name">Perl</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/php/php-plain.svg" onerror="this.remove()"><span class="lang-name">PHP</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/powershell/powershell-plain.svg" onerror="this.remove()"><span class="lang-name">PowerShell</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/grpc/grpc-plain.svg" onerror="this.remove()"><span class="lang-name">Proto</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/python/python-plain.svg" onerror="this.remove()"><span class="lang-name">Python</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/r/r-plain.svg" onerror="this.remove()"><span class="lang-name">R</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="assets/img/rayforce-mark.svg" onerror="this.remove()"><span class="lang-name">Rayfall</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/simple-icons/rescript.svg" onerror="this.remove()"><span class="lang-name">ReScript</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/ruby/ruby-plain.svg" onerror="this.remove()"><span class="lang-name">Ruby</span></div>
-      <div class="lang-cell lang-tier-2"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/rust/rust-original.svg" onerror="this.remove()"><span class="lang-name">Rust</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/scala/scala-plain.svg" onerror="this.remove()"><span class="lang-name">Scala</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/file-icons/scheme.svg" onerror="this.remove()"><span class="lang-name">Scheme</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/bash/bash-plain.svg" onerror="this.remove()"><span class="lang-name">Shell</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/solidity/solidity-plain.svg" onerror="this.remove()"><span class="lang-name">Solidity</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/mysql/mysql-original.svg" onerror="this.remove()"><span class="lang-name">SQL</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/svelte/svelte-plain.svg" onerror="this.remove()"><span class="lang-name">Svelte</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/swift/swift-plain.svg" onerror="this.remove()"><span class="lang-name">Swift</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/terraform/terraform-plain.svg" onerror="this.remove()"><span class="lang-name">Terraform</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/simple-icons/apache.svg" onerror="this.remove()"><span class="lang-name">Thrift</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/simple-icons/toml.svg" onerror="this.remove()"><span class="lang-name">TOML</span></div>
-      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/typescript/typescript-plain.svg" onerror="this.remove()"><span class="lang-name">TypeScript</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://api.iconify.design/simple-icons/v.svg" onerror="this.remove()"><span class="lang-name">V</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/visualbasic/visualbasic-plain.svg" onerror="this.remove()"><span class="lang-name">VB</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/vuejs/vuejs-plain.svg" onerror="this.remove()"><span class="lang-name">Vue</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/vyper/vyper-original.svg" onerror="this.remove()"><span class="lang-name">Vyper</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/xml/xml-plain.svg" onerror="this.remove()"><span class="lang-name">XML</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/yaml/yaml-plain.svg" onerror="this.remove()"><span class="lang-name">YAML</span></div>
-      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/zig/zig-original.svg" onerror="this.remove()"><span class="lang-name">Zig</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/mdi/chip.svg" onerror="this.remove()"><span class="lang-name">Assembly</span></div>
+      <div class="lang-cell lang-tier-2"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/c/c-original.svg" onerror="this.remove()"><span class="lang-name">C</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/csharp/csharp-plain.svg" onerror="this.remove()"><span class="lang-name">C#</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/cplusplus/cplusplus-plain.svg" onerror="this.remove()"><span class="lang-name">C++</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/clojure/clojure-line.svg" onerror="this.remove()"><span class="lang-name">Clojure</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/cmake/cmake-plain.svg" onerror="this.remove()"><span class="lang-name">CMake</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/cobol/cobol-original.svg" onerror="this.remove()"><span class="lang-name">COBOL</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/coffeescript/coffeescript-original.svg" onerror="this.remove()"><span class="lang-name">CoffeeScript</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/crystal/crystal-original.svg" onerror="this.remove()"><span class="lang-name">Crystal</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/css3/css3-plain.svg" onerror="this.remove()"><span class="lang-name">CSS</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/simple-icons/d.svg" onerror="this.remove()"><span class="lang-name">D</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/dart/dart-plain.svg" onerror="this.remove()"><span class="lang-name">Dart</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/docker/docker-plain.svg" onerror="this.remove()"><span class="lang-name">Dockerfile</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/elixir/elixir-plain.svg" onerror="this.remove()"><span class="lang-name">Elixir</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/elm/elm-plain.svg" onerror="this.remove()"><span class="lang-name">Elm</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/erlang/erlang-plain.svg" onerror="this.remove()"><span class="lang-name">Erlang</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/fsharp/fsharp-plain.svg" onerror="this.remove()"><span class="lang-name">F#</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/fortran/fortran-original.svg" onerror="this.remove()"><span class="lang-name">Fortran</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/godot/godot-plain.svg" onerror="this.remove()"><span class="lang-name">GDScript</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/opengl/opengl-plain.svg" onerror="this.remove()"><span class="lang-name">GLSL</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/go/go-original-wordmark.svg" onerror="this.remove()"><span class="lang-name">Go</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/gradle/gradle-original.svg" onerror="this.remove()"><span class="lang-name">Gradle</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/graphql/graphql-plain.svg" onerror="this.remove()"><span class="lang-name">GraphQL</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/groovy/groovy-plain.svg" onerror="this.remove()"><span class="lang-name">Groovy</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/haskell/haskell-plain.svg" onerror="this.remove()"><span class="lang-name">Haskell</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/terraform/terraform-plain.svg" onerror="this.remove()"><span class="lang-name">HCL</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/html5/html5-plain.svg" onerror="this.remove()"><span class="lang-name">HTML</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/java/java-plain.svg" onerror="this.remove()"><span class="lang-name">Java</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/json/json-plain.svg" onerror="this.remove()"><span class="lang-name">JSON</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/file-icons/jsonnet.svg" onerror="this.remove()"><span class="lang-name">Jsonnet</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/julia/julia-plain.svg" onerror="this.remove()"><span class="lang-name">Julia</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/kotlin/kotlin-plain.svg" onerror="this.remove()"><span class="lang-name">Kotlin</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/file-icons/lisp.svg" onerror="this.remove()"><span class="lang-name">Lisp</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/lua/lua-plain.svg" onerror="this.remove()"><span class="lang-name">Lua</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/simple-icons/gnu.svg" onerror="this.remove()"><span class="lang-name">Make</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/markdown/markdown-original.svg" onerror="this.remove()"><span class="lang-name">Markdown</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/matlab/matlab-plain.svg" onerror="this.remove()"><span class="lang-name">MATLAB</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/nim/nim-plain.svg" onerror="this.remove()"><span class="lang-name">Nim</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/objectivec/objectivec-plain.svg" onerror="this.remove()"><span class="lang-name">Objective-C</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/ocaml/ocaml-plain.svg" onerror="this.remove()"><span class="lang-name">OCaml</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/file-icons/pascal.svg" onerror="this.remove()"><span class="lang-name">Pascal</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/perl/perl-plain.svg" onerror="this.remove()"><span class="lang-name">Perl</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/php/php-plain.svg" onerror="this.remove()"><span class="lang-name">PHP</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/powershell/powershell-plain.svg" onerror="this.remove()"><span class="lang-name">PowerShell</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/grpc/grpc-plain.svg" onerror="this.remove()"><span class="lang-name">Proto</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/python/python-plain.svg" onerror="this.remove()"><span class="lang-name">Python</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/r/r-plain.svg" onerror="this.remove()"><span class="lang-name">R</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="assets/img/rayforce-mark.svg" onerror="this.remove()"><span class="lang-name">Rayfall</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/simple-icons/rescript.svg" onerror="this.remove()"><span class="lang-name">ReScript</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/ruby/ruby-plain.svg" onerror="this.remove()"><span class="lang-name">Ruby</span></div>
+      <div class="lang-cell lang-tier-2"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/rust/rust-original.svg" onerror="this.remove()"><span class="lang-name">Rust</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/scala/scala-plain.svg" onerror="this.remove()"><span class="lang-name">Scala</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/file-icons/scheme.svg" onerror="this.remove()"><span class="lang-name">Scheme</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/bash/bash-plain.svg" onerror="this.remove()"><span class="lang-name">Shell</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/solidity/solidity-plain.svg" onerror="this.remove()"><span class="lang-name">Solidity</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/mysql/mysql-original.svg" onerror="this.remove()"><span class="lang-name">SQL</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/svelte/svelte-plain.svg" onerror="this.remove()"><span class="lang-name">Svelte</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/swift/swift-plain.svg" onerror="this.remove()"><span class="lang-name">Swift</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/terraform/terraform-plain.svg" onerror="this.remove()"><span class="lang-name">Terraform</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/simple-icons/apache.svg" onerror="this.remove()"><span class="lang-name">Thrift</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/simple-icons/toml.svg" onerror="this.remove()"><span class="lang-name">TOML</span></div>
+      <div class="lang-cell lang-tier-3"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/typescript/typescript-plain.svg" onerror="this.remove()"><span class="lang-name">TypeScript</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://api.iconify.design/simple-icons/v.svg" onerror="this.remove()"><span class="lang-name">V</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/visualbasic/visualbasic-plain.svg" onerror="this.remove()"><span class="lang-name">VB</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/vuejs/vuejs-plain.svg" onerror="this.remove()"><span class="lang-name">Vue</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/vyper/vyper-original.svg" onerror="this.remove()"><span class="lang-name">Vyper</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/xml/xml-plain.svg" onerror="this.remove()"><span class="lang-name">XML</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/yaml/yaml-plain.svg" onerror="this.remove()"><span class="lang-name">YAML</span></div>
+      <div class="lang-cell lang-tier-1"><img class="lang-icon" loading="lazy" alt="" width="24" height="24" src="https://cdn.jsdelivr.net/gh/devicons/devicon@v2.17.0/icons/zig/zig-original.svg" onerror="this.remove()"><span class="lang-name">Zig</span></div>
     </div>
 
     <p class="lang-footnote">
@@ -504,6 +678,155 @@
     </p>
   </div>
 </section>
+
+<section id="faq" class="section">
+  <div class="container narrow">
+    <div class="section-eyebrow">FAQ</div>
+    <h2>Common questions about scoring, scope, and integration.</h2>
+
+    <div class="faq-list">
+      <div class="faq-item">
+        <h3>What does Raysense actually measure?</h3>
+        <p>Six structural dimensions of a code repository: modularity (how cleanly module boundaries hold), acyclicity (how few directed cycles exist), depth (whether layering is appropriate), equality (how evenly responsibility is distributed), redundancy (how much logic is duplicated), and uniformity (how consistent naming and structural patterns are). Each is graded A through F against the dependency graph and 500-commit history. The aggregate is one weighted 0-to-100 number.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>How is Raysense different from SonarQube, CodeScene, or NDepend?</h3>
+        <p>SonarQube measures token-level quality (complexity, duplication, lints) inside individual files; Raysense measures graph-level shape across the whole repository. CodeScene focuses on hotspots in commit history; Raysense uses commit history as one input among several but its primary output is a structural grade, not a list. NDepend is a closed-source .NET-first tool with a UI-driven workflow; Raysense is a single open-source Rust binary with a stdio MCP server, so the agent can read structural state before every edit. The honest comparison page is at <a href="/compare/">/compare/</a>.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>Does the score require git history?</h3>
+        <p>The structural dimensions (modularity, acyclicity, depth, equality, redundancy, uniformity) work on the current working tree alone. Evolution signals (bus factor, change coupling, temporal hotspots, bug-density) require git history and walk the last 500 commits by default. A repository with no git history will return a complete grade for the structural dimensions and skip the evolution section with an explicit note.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>How does the MCP server stay in sync with the CLI tools?</h3>
+        <p>Both surfaces dispatch to the same Rust functions in <code>src/mcp.rs</code> and <code>src/cli.rs</code>. The MCP tool registry and the CLI command registry are two views over one set of typed handlers; adding a capability registers it in both lists in the same commit. There is no separate API server, no JSON-RPC translation layer, and no schema drift to debug.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>What is Rayfall and why is it needed?</h3>
+        <p>Rayfall is the query language exposed by Rayforce, the columnar runtime Raysense uses for its baseline tables. Saved scan results are queryable as Rayfall expressions (filter, project, aggregate, <code>.graph.*</code> algorithms, Datalog rules). The same expression that runs as an ad-hoc query becomes a CI gate when dropped in <code>.raysense/policies/*.rfl</code>. One vocabulary, two surfaces, no YAML schema to maintain.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>Can I use Raysense without an AI agent?</h3>
+        <p>Yes. The CLI (<code>raysense .</code>, <code>raysense . --check</code>, <code>raysense . --watch</code>, <code>raysense . --ui</code>) is fully usable on its own as a structural-health tool. The MCP surface is additive - the same scan results back the CLI, the live dashboard, and the agent skills. Most teams start with the CI gate and the dashboard, then enable the MCP server when they introduce an agent into the loop.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>What languages get full AST analysis?</h3>
+        <p>Eleven tree-sitter built-ins get full AST parsing: C and Rust at tier 2 (cyclomatic and cognitive complexity), and Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, and Ruby at tier 3 (complexity plus type-inheritance graphs). Rayfall (the RayforceDB query language) joins tier 3 with native S-expression extraction. The remaining 57 languages are covered by configurable prefix-pattern plugins that extract functions and imports without an AST. Every other metric on the page (edit-risk, drift, evolution, blast radius) works at every tier.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>Does Raysense send any data anywhere?</h3>
+        <p>No. Raysense runs entirely on the local machine. The CLI writes scan results to <code>.raysense/baseline/</code> in the project directory; the dashboard binds to <code>localhost:7000</code>; the MCP server speaks stdio to the local agent client. No telemetry, no usage analytics, no remote registry, no opt-out flag because there is nothing to opt out of.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>How accurate is the redundancy dimension?</h3>
+        <p>The redundancy detector finds copy-paste blocks (token-shingled comparison) and functionally equivalent definitions across files. It is conservative on purpose: false positives are worse than misses for this signal because they push agents toward incorrect "deduplication" refactors. Expect ~10-25% redundancy on healthy multi-language codebases and 40%+ on repos with heavy boilerplate (generated clients, scaffolding tools, snapshot tests). The <code>raysense_remediations</code> tool lists the top duplicate clusters so you can verify before acting.</p>
+      </div>
+
+      <div class="faq-item">
+        <h3>Is it free for commercial use?</h3>
+        <p>Yes. Raysense is open source under the MIT license. You can use it, modify it, embed it in commercial products, and ship it inside your own toolchain without restriction. The license header on every source file states the same thing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "@id": "https://sense.rayforcedb.com/#faq",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What does Raysense actually measure?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Six structural dimensions of a code repository: modularity (how cleanly module boundaries hold), acyclicity (how few directed cycles exist), depth (whether layering is appropriate), equality (how evenly responsibility is distributed), redundancy (how much logic is duplicated), and uniformity (how consistent naming and structural patterns are). Each is graded A through F against the dependency graph and 500-commit history. The aggregate is one weighted 0-to-100 number."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is Raysense different from SonarQube, CodeScene, or NDepend?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "SonarQube measures token-level quality (complexity, duplication, lints) inside individual files; Raysense measures graph-level shape across the whole repository. CodeScene focuses on hotspots in commit history; Raysense uses commit history as one input among several but its primary output is a structural grade, not a list. NDepend is a closed-source .NET-first tool with a UI-driven workflow; Raysense is a single open-source Rust binary with a stdio MCP server, so the agent can read structural state before every edit."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does the score require git history?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The structural dimensions (modularity, acyclicity, depth, equality, redundancy, uniformity) work on the current working tree alone. Evolution signals (bus factor, change coupling, temporal hotspots, bug-density) require git history and walk the last 500 commits by default. A repository with no git history will return a complete grade for the structural dimensions and skip the evolution section with an explicit note."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How does the MCP server stay in sync with the CLI tools?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Both surfaces dispatch to the same Rust functions in src/mcp.rs and src/cli.rs. The MCP tool registry and the CLI command registry are two views over one set of typed handlers; adding a capability registers it in both lists in the same commit. There is no separate API server, no JSON-RPC translation layer, and no schema drift to debug."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What is Rayfall and why is it needed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Rayfall is the query language exposed by Rayforce, the columnar runtime Raysense uses for its baseline tables. Saved scan results are queryable as Rayfall expressions (filter, project, aggregate, .graph.* algorithms, Datalog rules). The same expression that runs as an ad-hoc query becomes a CI gate when dropped in .raysense/policies/*.rfl. One vocabulary, two surfaces, no YAML schema to maintain."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use Raysense without an AI agent?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The CLI (raysense ., raysense . --check, raysense . --watch, raysense . --ui) is fully usable on its own as a structural-health tool. The MCP surface is additive - the same scan results back the CLI, the live dashboard, and the agent skills. Most teams start with the CI gate and the dashboard, then enable the MCP server when they introduce an agent into the loop."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What languages get full AST analysis?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Eleven tree-sitter built-ins get full AST parsing: C and Rust at tier 2 (cyclomatic and cognitive complexity), and Python, TypeScript, C++, Java, C#, Kotlin, Scala, Swift, and Ruby at tier 3 (complexity plus type-inheritance graphs). Rayfall joins tier 3 with native S-expression extraction. The remaining 57 languages are covered by configurable prefix-pattern plugins that extract functions and imports without an AST. Every other metric on the page (edit-risk, drift, evolution, blast radius) works at every tier."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Raysense send any data anywhere?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. Raysense runs entirely on the local machine. The CLI writes scan results to .raysense/baseline/ in the project directory; the dashboard binds to localhost:7000; the MCP server speaks stdio to the local agent client. No telemetry, no usage analytics, no remote registry, no opt-out flag because there is nothing to opt out of."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How accurate is the redundancy dimension?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The redundancy detector finds copy-paste blocks (token-shingled comparison) and functionally equivalent definitions across files. It is conservative on purpose: false positives are worse than misses for this signal because they push agents toward incorrect deduplication refactors. Expect 10 to 25 percent redundancy on healthy multi-language codebases and 40 percent or more on repos with heavy boilerplate (generated clients, scaffolding tools, snapshot tests). The raysense_remediations tool lists the top duplicate clusters so you can verify before acting."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Raysense free for commercial use?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Raysense is open source under the MIT license. You can use it, modify it, embed it in commercial products, and ship it inside your own toolchain without restriction. The license header on every source file states the same thing."
+      }
+    }
+  ]
+}
+</script>
 
 <section class="section section-rayforce">
   <div class="container narrow">
@@ -535,11 +858,17 @@
       <span>raysense</span>
     </div>
     <div class="footer-links">
+      <a href="/about/">About</a>
+      <a href="/compare/">Compare</a>
       <a href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
       <a href="https://crates.io/crates/raysense" target="_blank" rel="noopener">crates.io</a>
       <a href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">Rayforce</a>
     </div>
-    <div class="footer-meta">MIT licensed. (c) 2025-2026 <a href="https://github.com/RayforceDB" target="_blank" rel="noopener">Anton Kundenko</a>.</div>
+    <div class="footer-meta">
+      <span>MIT licensed. (c) 2025-2026 <a href="https://github.com/RayforceDB" target="_blank" rel="noopener">Anton Kundenko</a>.</span>
+      <span class="footer-meta-sep" aria-hidden="true">&middot;</span>
+      <span>v0.8.1, updated <time datetime="2026-05-04">2026-05-04</time>.</span>
+    </div>
   </div>
 </footer>
 

@@ -442,9 +442,12 @@ em { font-style: normal; color: var(--accent); font-weight: 600; }
 .hl-key  { color: var(--text-mute); }
 
 /* ───────── phase grid (for-agents) ───────── */
+/* Phase grid is exactly 6 cards (Bootstrap -> Impact -> Verify -> Drift ->
+   Audit -> Query). 3 cols x 2 rows is the only layout where every row
+   is full at every supported width. */
 .phase-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-top: 32px;
 }
@@ -456,6 +459,17 @@ em { font-style: normal; color: var(--accent); font-weight: 600; }
   border-radius: var(--radius-md);
   padding: 22px 20px;
   position: relative;
+  transition: border-color 0.2s, background 0.15s;
+}
+.phase-card:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-card-2);
+}
+.phase-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
 }
 .phase-step {
   font-family: var(--font-mono);
@@ -463,7 +477,8 @@ em { font-style: normal; color: var(--accent); font-weight: 600; }
   font-weight: 600;
   color: var(--accent);
   letter-spacing: 0.12em;
-  margin-bottom: 8px;
+  margin-bottom: 0;
+  opacity: 0.65;
 }
 .phase-card h3 {
   font-family: var(--font-display);
@@ -484,8 +499,17 @@ em { font-style: normal; color: var(--accent); font-weight: 600; }
   gap: 20px;
   margin-top: 32px;
 }
+/* Auto-detect "exactly 4 cards" and switch to 2x2 to avoid the orphan
+   that 3-col gives (3 + 1). :has() is universally supported since
+   early 2024. */
+.feature-grid:has(> .feature-card:nth-child(4):last-child) {
+  grid-template-columns: repeat(2, 1fr);
+}
 @media (max-width: 880px) { .feature-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 540px) { .feature-grid { grid-template-columns: 1fr; } }
+@media (max-width: 540px) { .feature-grid,
+                            .feature-grid:has(> .feature-card:nth-child(4):last-child) {
+                              grid-template-columns: 1fr;
+                            } }
 .feature-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -509,6 +533,21 @@ em { font-style: normal; color: var(--accent); font-weight: 600; }
   color: var(--text-mute);
   line-height: 1.6;
 }
+
+/* ───────── card icons (Font Awesome via inline SVG sprite) ───────── */
+.card-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+  fill: currentColor;
+  display: block;
+  flex-shrink: 0;
+  transition: transform 0.18s ease, color 0.18s;
+}
+.feature-card .card-icon { margin-bottom: 16px; }
+.phase-card .card-icon  { width: 24px; height: 24px; }
+.feature-card:hover .card-icon,
+.phase-card:hover  .card-icon { transform: translateY(-2px) scale(1.05); }
 
 /* ───────── built on rayforce ───────── */
 .section-rayforce { background: var(--bg-section); }
@@ -686,6 +725,192 @@ em { font-style: normal; color: var(--accent); font-weight: 600; }
   line-height: 1.6;
   max-width: 720px;
 }
+
+/* ───────── faq ───────── */
+.faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 32px;
+}
+.faq-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 24px 28px;
+  transition: border-color 0.2s;
+}
+.faq-item:hover { border-color: var(--border-hover); }
+.faq-item h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.1rem;
+  margin-bottom: 10px;
+  color: var(--text);
+}
+.faq-item p {
+  font-size: 0.95rem;
+  color: var(--text-mute);
+  line-height: 1.65;
+  margin: 0;
+}
+
+/* ───────── footer meta separator ───────── */
+.footer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.footer-meta-sep { color: var(--text-dim); opacity: 0.55; }
+
+/* ───────── prose pages (about, posts, compare) ───────── */
+.prose {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 80px 0 60px;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--text-mute);
+}
+.prose h1 {
+  font-family: var(--font-display);
+  font-size: 2.4rem;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0 0 24px;
+}
+.prose h2 {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  line-height: 1.3;
+  color: var(--text);
+  margin: 40px 0 14px;
+}
+.prose h3 {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  line-height: 1.3;
+  color: var(--text);
+  margin: 28px 0 10px;
+}
+.prose p, .prose ul, .prose ol { margin: 0 0 16px; }
+.prose ul, .prose ol { padding-left: 24px; }
+.prose li { margin: 0 0 8px; }
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  color: var(--text);
+}
+.prose pre {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  overflow-x: auto;
+  margin: 16px 0 24px;
+}
+.prose pre code { background: none; border: none; padding: 0; }
+.prose a { color: var(--accent); }
+.prose a:hover { text-decoration: underline; }
+.prose .meta {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin: 0 0 36px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.prose blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 16px 0 24px;
+  padding: 4px 0 4px 20px;
+  color: var(--text);
+  font-style: italic;
+}
+.prose .lede {
+  font-size: 1.1rem;
+  color: var(--text);
+}
+
+/* ───────── post list ───────── */
+.post-list {
+  list-style: none;
+  padding: 0;
+  margin: 32px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.post-list li {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px 24px;
+  transition: border-color 0.2s;
+}
+.post-list li:hover { border-color: var(--border-hover); }
+.post-list a {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.1rem;
+  color: var(--text);
+}
+.post-list a:hover { color: var(--accent); }
+.post-list .post-date {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  letter-spacing: 0.03em;
+}
+.post-list .post-summary {
+  margin: 8px 0 0;
+  color: var(--text-mute);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+/* ───────── compare table ───────── */
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 24px 0;
+  font-size: 0.92rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.compare-table th, .compare-table td {
+  text-align: left;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.compare-table thead th {
+  background: var(--bg-card);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.compare-table tbody td:first-child {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text);
+}
+.compare-table tr:last-child td { border-bottom: none; }
+.compare-yes { color: #5eead4; }
+.compare-no { color: var(--text-dim); }
+.compare-partial { color: #e9a033; }
 
 /* ───────── selection ───────── */
 ::selection { background: rgba(94, 234, 212, 0.32); color: var(--text); }

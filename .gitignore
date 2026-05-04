@@ -7,3 +7,9 @@ Cargo.lock
 .codex
 /deps/rayforce/
 /vendor/
+
+# GEO audit working artifacts (kept locally; not part of the product)
+/GEO-*.md
+/drafts/
+/schema-extended.json
+/llms.txt

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>About - Raysense</title>
+  <meta name="description" content="Raysense is built and maintained by Anton Kundenko, founder of RayforceDB. Background, prior work, and how to get in touch."/>
+  <meta name="theme-color" content="#0a0e13"/>
+
+  <link rel="canonical" href="https://sense.rayforcedb.com/about/"/>
+
+  <meta property="og:type" content="profile"/>
+  <meta property="og:title" content="About Raysense"/>
+  <meta property="og:description" content="Raysense is built and maintained by Anton Kundenko, founder of RayforceDB."/>
+  <meta property="og:url" content="https://sense.rayforcedb.com/about/"/>
+  <meta property="og:image" content="https://sense.rayforcedb.com/assets/img/og-card.png"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+  <meta name="twitter:image" content="https://sense.rayforcedb.com/assets/img/og-card.png"/>
+
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg"/>
+  <link rel="preload" href="/assets/fonts/inter.woff2" as="font" type="font/woff2" crossorigin/>
+  <link rel="preload" href="/assets/fonts/oswald.woff2" as="font" type="font/woff2" crossorigin/>
+  <link rel="preload" href="/assets/fonts/jbmono.woff2" as="font" type="font/woff2" crossorigin/>
+
+  <link rel="stylesheet" href="/style.css"/>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "AboutPage",
+    "name": "About Raysense",
+    "url": "https://sense.rayforcedb.com/about/",
+    "description": "Raysense is built and maintained by Anton Kundenko, founder of RayforceDB.",
+    "isPartOf": { "@id": "https://sense.rayforcedb.com/#website" },
+    "mainEntity": { "@id": "https://sense.rayforcedb.com/#person-anton" }
+  }
+  </script>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="/" class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="24" height="24">
+          <rect width="64" height="64" rx="12" fill="#0a0e13"/>
+          <path d="M 6 34 L 24 34 L 26 32 L 30 8 L 34 52 L 38 34 L 58 34"
+                fill="none" stroke="#5eead4" stroke-width="3"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="58" cy="34" r="3.5" fill="#e9a033"/>
+        </svg>
+      </span>
+      <span class="brand-name">raysense</span>
+    </a>
+    <div class="nav-links">
+      <a href="/#grading">Grading</a>
+      <a href="/#install">Install</a>
+      <a href="/#agents">Agents</a>
+      <a href="/#languages">Languages</a>
+      <a href="/#faq">FAQ</a>
+      <a class="nav-link-strong" href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<main class="container">
+  <article class="prose">
+    <h1>About Raysense</h1>
+    <p class="meta">Maintainer &middot; org &middot; contact</p>
+
+    <p class="lede">Raysense is an open-source structural-health tool for code repositories. It is built and maintained by Anton Kundenko under the RayforceDB umbrella, alongside the Rayforce in-memory analytics runtime that powers its splayed-table memory.</p>
+
+    <h2>Maintainer</h2>
+
+    <p><strong>Anton Kundenko</strong> is the founder of RayforceDB and the sole maintainer of Raysense and Rayforce. The work focuses on the intersection of columnar analytics, dependency-graph algorithms, and tooling for AI-driven software development. Anton has spent years on systems that have to be both fast and structurally legible: in-memory database engines, query languages, agent-shaped developer tooling. Raysense is what those two interests look like when they collide.</p>
+
+    <p>Public profile: <a href="https://github.com/RayforceDB" target="_blank" rel="noopener">github.com/RayforceDB</a>. Email is published in the SECURITY.md of the source repository.</p>
+
+    <h2>Organization</h2>
+
+    <p><strong>RayforceDB</strong> is the GitHub organization behind two open-source projects:</p>
+
+    <ul>
+      <li><a href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">Rayforce</a> - an in-memory analytics runtime optimised for graph-shaped queries, with a LISP-like query language called Rayfall. 129+ stars, actively maintained since early 2023.</li>
+      <li><a href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">Raysense</a> - the codebase architecture scorer, built on Rayforce. Single Rust crate, MIT licensed, MCP-native.</li>
+    </ul>
+
+    <p>Both projects are MIT licensed. Both are written in Rust against Rayforce's C core. Releases ship as crates on crates.io and as Claude Code plugins via the marketplace.</p>
+
+    <h2>Why Raysense exists</h2>
+
+    <p>The premise is that AI coding agents and the humans reviewing them are looking at the same narrow surface (the diff) and missing the same load-bearing fact (where in the dependency graph that diff sits). The solution is not another linter; it is a small, fast, locally-runnable structural map that the agent can consult before, during, and after every non-trivial edit. The dashboard is the same thing for humans - one screen, one number, six grades, refreshed on save.</p>
+
+    <p>That premise drives the architectural choices: open source so it can be audited, single binary so it ships in a CI step without infrastructure, MCP-native so it integrates with any agent that speaks the protocol, on-disk baseline so two sessions on two repos stay strictly independent, no telemetry so the work stays where you do.</p>
+
+    <h2>Get in touch</h2>
+
+    <ul>
+      <li>Source code, issues, discussions: <a href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">github.com/RayforceDB/raysense</a></li>
+      <li>Sister project: <a href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">github.com/RayforceDB/rayforce</a></li>
+      <li>Crate: <a href="https://crates.io/crates/raysense" target="_blank" rel="noopener">crates.io/crates/raysense</a></li>
+      <li>Security disclosure: see <a href="https://github.com/RayforceDB/raysense/blob/main/SECURITY.md" target="_blank" rel="noopener">SECURITY.md</a> in the repo</li>
+    </ul>
+
+    <p>Bug reports, feature requests, architectural questions, and benchmark results from your own repo are all welcome on GitHub Issues. Pull requests are reviewed by the maintainer.</p>
+  </article>
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="20" height="20">
+          <rect width="64" height="64" rx="12" fill="#0a0e13"/>
+          <path d="M 6 34 L 24 34 L 26 32 L 30 8 L 34 52 L 38 34 L 58 34"
+                fill="none" stroke="#5eead4" stroke-width="3"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="58" cy="34" r="3.5" fill="#e9a033"/>
+        </svg>
+      </span>
+      <span>raysense</span>
+    </div>
+    <div class="footer-links">
+      <a href="/about/">About</a>
+      <a href="/compare/">Compare</a>
+      <a href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://crates.io/crates/raysense" target="_blank" rel="noopener">crates.io</a>
+      <a href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">Rayforce</a>
+    </div>
+    <div class="footer-meta">
+      <span>MIT licensed. (c) 2025-2026 <a href="https://github.com/RayforceDB" target="_blank" rel="noopener">Anton Kundenko</a>.</span>
+      <span class="footer-meta-sep" aria-hidden="true">&middot;</span>
+      <span>v0.8.1, updated <time datetime="2026-05-04">2026-05-04</time>.</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

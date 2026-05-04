@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Raysense vs SonarQube, CodeScene, NDepend, Sourcegraph - Raysense</title>
+  <meta name="description" content="Honest comparison of Raysense to SonarQube, CodeScene, NDepend, and Sourcegraph on architecture grading, MCP support, license, scope, and CI integration."/>
+  <meta name="theme-color" content="#0a0e13"/>
+
+  <link rel="canonical" href="https://sense.rayforcedb.com/compare/"/>
+
+  <meta property="og:type" content="article"/>
+  <meta property="og:title" content="Raysense vs SonarQube, CodeScene, NDepend, Sourcegraph"/>
+  <meta property="og:description" content="Honest comparison of Raysense to SonarQube, CodeScene, NDepend, and Sourcegraph on architecture grading, MCP support, license, scope, and CI integration."/>
+  <meta property="og:url" content="https://sense.rayforcedb.com/compare/"/>
+  <meta property="og:image" content="https://sense.rayforcedb.com/assets/img/og-card.png"/>
+  <meta name="twitter:card" content="summary_large_image"/>
+  <meta name="twitter:image" content="https://sense.rayforcedb.com/assets/img/og-card.png"/>
+
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg"/>
+  <link rel="preload" href="/assets/fonts/inter.woff2" as="font" type="font/woff2" crossorigin/>
+  <link rel="preload" href="/assets/fonts/oswald.woff2" as="font" type="font/woff2" crossorigin/>
+  <link rel="preload" href="/assets/fonts/jbmono.woff2" as="font" type="font/woff2" crossorigin/>
+
+  <link rel="stylesheet" href="/style.css"/>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Raysense vs SonarQube, CodeScene, NDepend, Sourcegraph",
+    "description": "Honest comparison of Raysense to SonarQube, CodeScene, NDepend, and Sourcegraph on architecture grading, MCP support, license, scope, and CI integration.",
+    "url": "https://sense.rayforcedb.com/compare/",
+    "datePublished": "2026-05-04",
+    "dateModified": "2026-05-04",
+    "inLanguage": "en",
+    "author": { "@type": "Person", "name": "Anton Kundenko", "url": "https://sense.rayforcedb.com/about/" },
+    "publisher": { "@type": "Organization", "name": "RayforceDB", "url": "https://github.com/RayforceDB" },
+    "about": { "@id": "https://sense.rayforcedb.com/#software" },
+    "mainEntityOfPage": "https://sense.rayforcedb.com/compare/"
+  }
+  </script>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="/" class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="24" height="24">
+          <rect width="64" height="64" rx="12" fill="#0a0e13"/>
+          <path d="M 6 34 L 24 34 L 26 32 L 30 8 L 34 52 L 38 34 L 58 34"
+                fill="none" stroke="#5eead4" stroke-width="3"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="58" cy="34" r="3.5" fill="#e9a033"/>
+        </svg>
+      </span>
+      <span class="brand-name">raysense</span>
+    </a>
+    <div class="nav-links">
+      <a href="/#grading">Grading</a>
+      <a href="/#install">Install</a>
+      <a href="/#agents">Agents</a>
+      <a href="/#languages">Languages</a>
+      <a href="/#faq">FAQ</a>
+      <a class="nav-link-strong" href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<main class="container">
+  <article class="prose">
+    <h1>Raysense vs the alternatives</h1>
+    <p class="meta">Honest comparison &middot; updated <time datetime="2026-05-04">2026-05-04</time></p>
+
+    <p class="lede">Raysense is one of several tools that try to make codebase health legible. The four that come up most in conversations about "how is this different from..." are SonarQube, CodeScene, NDepend, and Sourcegraph. They overlap with Raysense in places and target completely different problems in others. This page is an honest read on where each tool wins and where it does not.</p>
+
+    <p>Where this page calls a competitor's strength its strength, that is a real strength. Where it calls a Raysense gap a gap, that is a real gap. The goal is not to win the table - it is to be the page you would still trust after you tried both products.</p>
+
+    <h2>At a glance</h2>
+
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th>Capability</th>
+          <th>Raysense</th>
+          <th>SonarQube</th>
+          <th>CodeScene</th>
+          <th>NDepend</th>
+          <th>Sourcegraph</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Primary scope</td>
+          <td>Graph-level architecture grading + agent memory</td>
+          <td>Token-level quality (lints, smells, coverage)</td>
+          <td>Behavioural code analysis (hotspots, ownership)</td>
+          <td>Static .NET architecture analysis</td>
+          <td>Code search and navigation</td>
+        </tr>
+        <tr>
+          <td>License</td>
+          <td><span class="compare-yes">MIT (open source)</span></td>
+          <td><span class="compare-partial">LGPL community + commercial</span></td>
+          <td><span class="compare-no">Commercial</span></td>
+          <td><span class="compare-no">Commercial</span></td>
+          <td><span class="compare-partial">Apache 2.0 OSS + commercial</span></td>
+        </tr>
+        <tr>
+          <td>Aggregate 0-to-100 architecture score</td>
+          <td><span class="compare-yes">Yes (six dimensions)</span></td>
+          <td><span class="compare-partial">Quality gate (pass/fail)</span></td>
+          <td><span class="compare-partial">Code Health 1-10 (per-file)</span></td>
+          <td><span class="compare-partial">Quality gates, no aggregate score</span></td>
+          <td><span class="compare-no">No</span></td>
+        </tr>
+        <tr>
+          <td>Stdio MCP server (AI agent native)</td>
+          <td><span class="compare-yes">Yes</span></td>
+          <td><span class="compare-no">No</span></td>
+          <td><span class="compare-no">No</span></td>
+          <td><span class="compare-no">No</span></td>
+          <td><span class="compare-partial">Cody (separate product)</span></td>
+        </tr>
+        <tr>
+          <td>CI gate</td>
+          <td><span class="compare-yes">raysense --check exit code</span></td>
+          <td><span class="compare-yes">Quality Gate API</span></td>
+          <td><span class="compare-yes">CI plugins</span></td>
+          <td><span class="compare-yes">Build server integration</span></td>
+          <td><span class="compare-partial">Code Insights (separate)</span></td>
+        </tr>
+        <tr>
+          <td>Local-only (no server)</td>
+          <td><span class="compare-yes">Yes (single binary)</span></td>
+          <td><span class="compare-no">Server + database required</span></td>
+          <td><span class="compare-no">Server required</span></td>
+          <td><span class="compare-partial">Visual Studio plugin or console</span></td>
+          <td><span class="compare-no">Server required</span></td>
+        </tr>
+        <tr>
+          <td>Languages with full AST</td>
+          <td>11 + Rayfall (12)</td>
+          <td>30+</td>
+          <td>30+</td>
+          <td>.NET only</td>
+          <td>20+</td>
+        </tr>
+        <tr>
+          <td>Languages with at least imports/functions</td>
+          <td>69</td>
+          <td>30+</td>
+          <td>30+</td>
+          <td>.NET only</td>
+          <td>20+</td>
+        </tr>
+        <tr>
+          <td>Query language for ad-hoc questions</td>
+          <td><span class="compare-yes">Rayfall (Datalog + .graph.*)</span></td>
+          <td><span class="compare-no">No</span></td>
+          <td><span class="compare-partial">SQL-like (CodeScene Query)</span></td>
+          <td><span class="compare-yes">CQLinq</span></td>
+          <td><span class="compare-yes">Sourcegraph search</span></td>
+        </tr>
+        <tr>
+          <td>Architectural rules as policy code</td>
+          <td><span class="compare-yes">.rfl files in repo</span></td>
+          <td><span class="compare-partial">Java rules SDK</span></td>
+          <td><span class="compare-no">UI configuration</span></td>
+          <td><span class="compare-yes">CQLinq files</span></td>
+          <td><span class="compare-no">No</span></td>
+        </tr>
+        <tr>
+          <td>Live treemap dashboard</td>
+          <td><span class="compare-yes">localhost:7000</span></td>
+          <td><span class="compare-yes">Server UI</span></td>
+          <td><span class="compare-yes">Server UI</span></td>
+          <td><span class="compare-yes">Visual Studio panel</span></td>
+          <td><span class="compare-partial">Code Insights</span></td>
+        </tr>
+        <tr>
+          <td>Telemetry / phone-home</td>
+          <td><span class="compare-yes">None</span></td>
+          <td><span class="compare-partial">Configurable</span></td>
+          <td><span class="compare-partial">Configurable</span></td>
+          <td><span class="compare-partial">Configurable</span></td>
+          <td><span class="compare-partial">Configurable</span></td>
+        </tr>
+        <tr>
+          <td>Per-file edit-risk score</td>
+          <td><span class="compare-yes">Yes (churn x complexity x bus-factor x tests)</span></td>
+          <td><span class="compare-no">No</span></td>
+          <td><span class="compare-yes">Hotspots</span></td>
+          <td><span class="compare-no">No</span></td>
+          <td><span class="compare-no">No</span></td>
+        </tr>
+        <tr>
+          <td>Mature ecosystem (years in market)</td>
+          <td><span class="compare-no">Brand new (2026)</span></td>
+          <td><span class="compare-yes">15+ years</span></td>
+          <td><span class="compare-yes">10+ years</span></td>
+          <td><span class="compare-yes">15+ years</span></td>
+          <td><span class="compare-yes">10+ years</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>vs SonarQube</h2>
+
+    <p>SonarQube is the dominant token-level quality scanner. It runs hundreds of rules per language inside individual files: dead code, copy-paste, complexity, security smells, code coverage. Its strength is breadth - 30+ languages with deep, vendor-curated rule sets and 15 years of ecosystem maturity. If you want to know "how clean is this single file", Sonar is the answer.</p>
+
+    <p>What SonarQube does not do: read the dependency graph as a graph, score the codebase as one shape, or expose itself as an MCP server an agent can consult between edits. The Quality Gate is binary (pass/fail); there is no aggregate "is the codebase getting better-shaped". The product is a server: it needs a database, a service to run, and ongoing operations.</p>
+
+    <p><strong>Pick SonarQube if:</strong> you want token-level smells across many languages, a server-hosted dashboard for many teams, and you do not need agent integration. <strong>Pick Raysense if:</strong> you want the structural shape (graph-level), a single binary in CI, and a way for AI agents to read structural state before every edit.</p>
+
+    <h2>vs CodeScene</h2>
+
+    <p>CodeScene reads the same git history Raysense reads, but with a different emphasis: behavioural code analysis. Hotspots (files where most of the churn lands), knowledge maps (who owns what), temporal coupling (files that move together). Its <em>Code Health</em> score is per-file (1-10) and is the closest competitor to Raysense's per-file edit-risk number. CodeScene's strength is the depth of the behavioural side - hotspot ranking, knowledge loss detection, and the visualisations are best-in-class.</p>
+
+    <p>What CodeScene does not do: produce a single aggregate architecture score, expose the data to AI coding agents over MCP, or run as a single local binary. It is a hosted product (or self-hosted server), with UI-driven configuration rather than committed policy files.</p>
+
+    <p><strong>Pick CodeScene if:</strong> behavioural analysis is the primary use case, the team is large enough to operate the server, and you want the polished visualisations. <strong>Pick Raysense if:</strong> you want one number for the whole repo, your rules to live as code in the repo, and an MCP integration for the agent.</p>
+
+    <h2>vs NDepend</h2>
+
+    <p>NDepend is the long-standing .NET architecture analyzer. Its query language (CQLinq) is one of the most powerful "rules as code" surfaces in the static-analysis space - you can write architectural constraints in a typed query language and have them enforced at build time. The dependency-structure matrix and abstractness/instability metrics it pioneered (Robert Martin's metrics) are conceptually similar to several Raysense dimensions.</p>
+
+    <p>What NDepend does not do: cover languages other than .NET, run as an open-source single binary, or speak MCP. The pricing and tooling are oriented to Visual Studio shops; the product is excellent for that audience and not designed for any other.</p>
+
+    <p><strong>Pick NDepend if:</strong> you are .NET-only and want the most mature architecture-rules-as-code experience available. <strong>Pick Raysense if:</strong> your repo is polyglot, you want open source, or you need MCP integration.</p>
+
+    <h2>vs Sourcegraph</h2>
+
+    <p>Sourcegraph is primarily a code search and navigation product, with a code intelligence layer (Code Insights) and an AI side-product (Cody) that answers questions about a codebase. It excels at "find every reference to this function across 200 repos" and "show me the diff history for this file across the org". The graph it builds is a symbol graph, used for navigation more than for grading.</p>
+
+    <p>What Sourcegraph does not do: produce an architecture grade, expose blast-radius and cycle data over MCP from a single binary, or grade the structural shape of a single repo. Cody is closer to the AI integration story but is a separate commercial product, not an MCP server you can drop into any client.</p>
+
+    <p><strong>Pick Sourcegraph if:</strong> you want enterprise-scale code search and navigation across many repos, with an AI assistant on top. <strong>Pick Raysense if:</strong> you want a structural-health signal for one repo, MCP-native, single binary, free.</p>
+
+    <h2>Where Raysense is honestly weaker</h2>
+
+    <p>Raysense was published to crates.io for the first time in late April 2026. The competitors above have 10-15 years of vendor-curated rules, integrations, and certifications. A few honest gaps to know about:</p>
+
+    <ul>
+      <li><strong>Maturity.</strong> Single maintainer, single Rust crate, four days old at the time of writing. No SOC 2, no enterprise support contract, no 24/7 phone line. The license is MIT, the source is on GitHub, and the issue tracker is the support surface.</li>
+      <li><strong>Rule library breadth.</strong> Token-level smells (dead code, naming, simple lints) are not the focus. If you need 600 prebuilt rules out of the box for Java idioms, SonarQube wins.</li>
+      <li><strong>UI polish.</strong> The treemap dashboard is functional, not designed-for-marketing. CodeScene and Sourcegraph have invested far more in visualisation engineering.</li>
+      <li><strong>Hosted offering.</strong> There is no hosted Raysense. Run the binary in your CI step, or point your agent at the MCP server. If you need a multi-tenant dashboard for 50 teams, the others have it; Raysense does not.</li>
+    </ul>
+
+    <h2>Where Raysense is honestly stronger</h2>
+
+    <ul>
+      <li><strong>MCP-native.</strong> The same scan results back the CLI, the dashboard, and the agent's tool calls. The agent reads structural state from the running stdio server, not from a screenshot or a third-party API. None of the four competitors ship an MCP server today.</li>
+      <li><strong>Single binary, no server.</strong> <code>cargo install raysense</code> and you have CI gate, dashboard, and agent integration. No database, no separate service, no licence dance.</li>
+      <li><strong>Aggregate architecture score.</strong> Six structural dimensions, A through F, weighted into one 0-to-100 number. The number moves with structure, not with cosmetics. SonarQube's Quality Gate is binary; CodeScene's score is per-file; NDepend has gates but no aggregate.</li>
+      <li><strong>Rules as code in the repo.</strong> A <code>.rfl</code> policy lives next to the code it governs, gets reviewed in pull requests, and runs on the same query substrate as ad-hoc queries. NDepend's CQLinq is the closest analog; the others bury rules in a UI.</li>
+      <li><strong>Open source, MIT.</strong> No commercial dance, no per-seat licensing, no audit-firewall to navigate before adoption. Read the source, fix the bug, send a PR.</li>
+    </ul>
+
+    <h2>Bottom line</h2>
+
+    <p>Raysense is not a SonarQube replacement; it is the structural layer that does not exist anywhere else as an open-source single binary with MCP support. Several teams will end up running both: SonarQube for token-level quality, Raysense for graph-level shape and the agent surface. The same is true for CodeScene's behavioural depth - the two are complementary, not substitutes.</p>
+
+    <p>If the question is "we have AI agents committing dozens of edits an hour and a diff-only review surface, what reads structure for us and the agent simultaneously", Raysense is the answer because that is the question the project was built to answer.</p>
+
+    <p><a href="/">Back to the overview &rarr;</a></p>
+  </article>
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="20" height="20">
+          <rect width="64" height="64" rx="12" fill="#0a0e13"/>
+          <path d="M 6 34 L 24 34 L 26 32 L 30 8 L 34 52 L 38 34 L 58 34"
+                fill="none" stroke="#5eead4" stroke-width="3"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="58" cy="34" r="3.5" fill="#e9a033"/>
+        </svg>
+      </span>
+      <span>raysense</span>
+    </div>
+    <div class="footer-links">
+      <a href="/about/">About</a>
+      <a href="/compare/">Compare</a>
+      <a href="https://github.com/RayforceDB/raysense" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://crates.io/crates/raysense" target="_blank" rel="noopener">crates.io</a>
+      <a href="https://github.com/RayforceDB/rayforce" target="_blank" rel="noopener">Rayforce</a>
+    </div>
+    <div class="footer-meta">
+      <span>MIT licensed. (c) 2025-2026 <a href="https://github.com/RayforceDB" target="_blank" rel="noopener">Anton Kundenko</a>.</span>
+      <span class="footer-meta-sep" aria-hidden="true">&middot;</span>
+      <span>v0.8.1, updated <time datetime="2026-05-04">2026-05-04</time>.</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
